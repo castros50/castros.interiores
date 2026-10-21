@@ -1,0 +1,62 @@
+<%- include('partials/head', { titulo: 'Novo atendimento' }) %>
+<%- include('partials/header') %>
+<div class="container">
+  <div class="card">
+    <h1>Novo atendimento</h1>
+    <% if (erro) { %><div class="erro-msg"><%= erro %></div><% } %>
+    <p style="color:#6a6258; font-size:0.9rem;">Você pode salvar com informações incompletas e continuar depois. Não preencha dados que o cliente ainda não informou.</p>
+    <form method="post" action="/atendimentos">
+      <div class="grid cols-2">
+        <div class="campo">
+          <label for="cliente_nome">Nome do cliente</label>
+          <input type="text" id="cliente_nome" name="cliente_nome" value="<%= valores.cliente_nome || '' %>">
+        </div>
+        <div class="campo">
+          <label for="cliente_telefone">Telefone</label>
+          <input type="text" id="cliente_telefone" name="cliente_telefone" value="<%= valores.cliente_telefone || '' %>">
+        </div>
+        <div class="campo">
+          <label for="tipo_movel">Tipo de móvel</label>
+          <input type="text" id="tipo_movel" name="tipo_movel" placeholder="Ex.: sofá 3 lugares, poltrona, cadeira">
+        </div>
+        <div class="campo">
+          <label for="quantidade_pecas">Quantidade de peças</label>
+          <input type="text" id="quantidade_pecas" name="quantidade_pecas">
+        </div>
+        <div class="campo">
+          <label for="medidas">Medidas aproximadas</label>
+          <input type="text" id="medidas" name="medidas" placeholder="Informadas pelo cliente, se houver">
+        </div>
+        <div class="campo">
+          <label for="tempo_uso">Tempo de uso</label>
+          <input type="text" id="tempo_uso" name="tempo_uso">
+        </div>
+      </div>
+      <div class="campo">
+        <label for="defeitos_relatados">Defeitos relatados pelo cliente</label>
+        <textarea id="defeitos_relatados" name="defeitos_relatados"></textarea>
+      </div>
+      <div class="campo">
+        <label for="servico_desejado">Serviço desejado</label>
+        <textarea id="servico_desejado" name="servico_desejado"></textarea>
+      </div>
+      <div class="campo">
+        <label for="historico_reformas">Histórico de reformas anteriores</label>
+        <textarea id="historico_reformas" name="historico_reformas"></textarea>
+      </div>
+      <div class="campo">
+        <label for="preferencia_tecido">Preferência de tecido e conforto</label>
+        <textarea id="preferencia_tecido" name="preferencia_tecido"></textarea>
+      </div>
+      <div class="campo">
+        <label for="observacoes">Observações</label>
+        <textarea id="observacoes" name="observacoes"></textarea>
+      </div>
+      <div class="botoes">
+        <button type="submit">Salvar e continuar</button>
+        <a class="botao secundario" href="/">Cancelar</a>
+      </div>
+    </form>
+  </div>
+</div>
+<%- include('partials/footer') %>

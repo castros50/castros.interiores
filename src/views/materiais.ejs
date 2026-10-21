@@ -1,0 +1,45 @@
+<%- include('partials/head', { titulo: 'Materiais e serviços' }) %>
+<%- include('partials/header') %>
+<div class="container">
+  <div class="card">
+    <h1>Materiais e serviços</h1>
+    <% if (erro) { %><div class="erro-msg"><%= erro %></div><% } %>
+    <table>
+      <thead><tr><th>Nome</th><th>Unidade</th><th>Custo unitário</th><th>Fornecedor</th><th>Atualizado</th><th></th></tr></thead>
+      <tbody>
+        <% materiais.forEach(function(m) { %>
+          <tr>
+            <form method="post" action="/materiais/<%= m.id %>/editar">
+            <td><input type="text" name="nome" value="<%= m.nome %>" required></td>
+            <td><input type="text" name="unidade" value="<%= m.unidade %>" required></td>
+            <td><input type="text" name="custo_unitario" value="<%= m.custo_unitario !== null ? m.custo_unitario : '' %>" placeholder="pendente"></td>
+            <td><input type="text" name="fornecedor" value="<%= m.fornecedor || '' %>"></td>
+            <td style="font-size:0.75rem; color:#6a6258;"><%= m.atualizado_em %></td>
+            <td style="white-space:nowrap;">
+              <button type="submit" class="botao pequeno">Salvar</button>
+            </form>
+            <form method="post" action="/materiais/<%= m.id %>/excluir" data-confirmar="Excluir este material?" style="display:inline;">
+              <button type="submit" class="botao perigo pequeno">Excluir</button>
+            </form>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Adicionar material ou serviço</h2>
+    <form method="post" action="/materiais">
+      <div class="grid cols-2">
+        <div class="campo"><label>Nome</label><input type="text" name="nome" required></div>
+        <div class="campo"><label>Unidade</label><input type="text" name="unidade" placeholder="m, un, kg..." required></div>
+        <div class="campo"><label>Custo unitário</label><input type="text" name="custo_unitario" placeholder="deixe em branco se pendente"></div>
+        <div class="campo"><label>Fornecedor (opcional)</label><input type="text" name="fornecedor"></div>
+      </div>
+      <button type="submit">Adicionar</button>
+    </form>
+  </div>
+  <a class="botao secundario" href="/">Voltar</a>
+</div>
+<%- include('partials/footer') %>

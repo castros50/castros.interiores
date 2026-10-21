@@ -1,0 +1,20 @@
+<%- include('partials/head', { titulo: 'Entrar' }) %>
+<div class="container" style="max-width:420px; margin-top:60px;">
+  <div class="card">
+    <h1>Castros Interiores</h1>
+    <p style="color:#6a6258; margin-top:-8px;">Avaliação de Estofados — acesso interno</p>
+    <% if (erro) { %><div class="erro-msg"><%= erro %></div><% } %>
+    <form method="post" action="/login">
+      <div class="campo">
+        <label for="username">Usuário</label>
+        <input type="text" id="username" name="username" required autofocus>
+      </div>
+      <div class="campo">
+        <label for="password">Senha</label>
+        <input type="password" id="password" name="password" required>
+      </div>
+      <button type="submit">Entrar</button>
+    </form>
+  </div>
+</div>
+<%- include('partials/footer') %>

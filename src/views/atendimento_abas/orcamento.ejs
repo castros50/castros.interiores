@@ -1,0 +1,84 @@
+<%
+  let totalInterno = 0;
+  let temPendente = false;
+  atendimento.orcamentoItens.forEach(function(i){
+    if (i.subtotal === null) temPendente = true;
+    else totalInterno += i.subtotal;
+  });
+%>
+<div class="card">
+  <h2>Itens do orçamento</h2>
+  <% if (atendimento.orcamentoItens.length === 0) { %>
+    <p style="color:#6a6258;">Nenhum item lançado ainda.</p>
+  <% } else { %>
+    <table>
+      <thead><tr><th>Tipo</th><th>Descrição</th><th>Qtd.</th><th>Unid.</th><th>Custo unit.</th><th>Subtotal</th><th></th></tr></thead>
+      <tbody>
+        <% atendimento.orcamentoItens.forEach(function(i) { %>
+          <tr>
+            <td><%= i.tipo %></td>
+            <td><%= i.descricao %><% if (i.material_nome) { %> <span style="color:#6a6258; font-size:0.8rem;">(<%= i.material_nome %>)</span><% } %></td>
+            <td><%= i.quantidade %></td>
+            <td><%= i.unidade || '—' %></td>
+            <td><%= i.custo_unitario !== null ? ('R$ ' + i.custo_unitario.toFixed(2).replace('.',',')) : 'Pendente' %></td>
+            <td><%= i.subtotal !== null ? ('R$ ' + i.subtotal.toFixed(2).replace('.',',')) : 'Pendente' %></td>
+            <td>
+              <form method="post" action="/atendimentos/<%= atendimento.id %>/orcamento/itens/<%= i.id %>/excluir" data-confirmar="Remover este item?">
+                <button type="submit" class="botao perigo pequeno">Remover</button>
+              </form>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <p style="margin-top:10px;"><strong>Custo interno total (itens com valor definido): R$ <%= totalInterno.toFixed(2).replace('.',',') %></strong>
+      <% if (temPendente) { %><span style="color:#8a5a00;"> — há itens pendentes de valor</span><% } %>
+    </p>
+  <% } %>
+</div>
+
+<div class="card">
+  <h3>Adicionar item</h3>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/orcamento/itens">
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Tipo</label>
+        <select name="tipo">
+          <option value="material">Material</option>
+          <option value="mao_obra">Mão de obra</option>
+          <option value="terceirizado">Serviço terceirizado</option>
+          <option value="transporte">Transporte</option>
+          <option value="outro">Outro</option>
+        </select>
+      </div>
+      <div class="campo">
+        <label>Material cadastrado (opcional)</label>
+        <select name="material_id">
+          <option value="">— nenhum —</option>
+          <% materiaisDisponiveis.forEach(function(m) { %>
+            <option value="<%= m.id %>"><%= m.nome %> (<%= m.unidade %>)</option>
+          <% }) %>
+        </select>
+      </div>
+    </div>
+    <div class="campo"><label>Descrição</label><input type="text" name="descricao" required></div>
+    <div class="grid cols-3">
+      <div class="campo"><label>Quantidade</label><input type="text" name="quantidade" placeholder="ou 'a levantar'"></div>
+      <div class="campo"><label>Unidade</label><input type="text" name="unidade"></div>
+      <div class="campo"><label>Custo unitário</label><input type="text" name="custo_unitario" placeholder="deixe em branco se pendente"></div>
+    </div>
+    <button type="submit">Adicionar item</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Preço de venda</h3>
+  <p style="color:#6a6258; font-size:0.9rem;">O custo interno e a margem não aparecem no relatório do cliente — apenas o preço final definido aqui.</p>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/orcamento/preco-venda">
+    <div class="campo">
+      <label>Preço de venda informado ao cliente</label>
+      <input type="text" name="preco_venda" value="<%= atendimento.preco_venda !== null ? atendimento.preco_venda : '' %>" placeholder="deixe em branco se pendente">
+    </div>
+    <button type="submit">Salvar preço de venda</button>
+  </form>
+</div>

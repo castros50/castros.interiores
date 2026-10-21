@@ -1,0 +1,14 @@
+<div class="topbar">
+  <a class="marca" href="/">Castros Interiores
+    <small>Avaliação de Estofados</small>
+  </a>
+  <% if (typeof usuarioNome !== 'undefined' && usuarioNome) { %>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <a href="/materiais" style="color:#fff; font-size:0.85rem;">Materiais e serviços</a>
+      <span style="font-size:0.85rem;">Olá, <%= usuarioNome %></span>
+      <form action="/logout" method="post" data-no-lock="1">
+        <button type="submit" class="botao secundario pequeno">Sair</button>
+      </form>
+    </div>
+  <% } %>
+</div>
