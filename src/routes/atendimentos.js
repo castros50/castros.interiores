@@ -114,10 +114,10 @@ router.post('/analise-rapida', uploadMemoria.array('fotos', 20), async (req, res
   versionamento.registrar({ atendimentoId: id, entidade: 'atendimento', entidadeId: id, acao: 'criado_avaliacao_rapida', usuarioId: req.session.userId });
 
   const insertFoto = db.prepare('INSERT INTO fotos (atendimento_id, categoria, arquivo, legenda, ordem) VALUES (?, ?, ?, ?, ?)');
-  arquivos.forEach((f, idx) => {
-    const nomeArquivo = salvarArquivoEmDisco(id, f);
+  for (let idx = 0; idx < arquivos.length; idx++) {
+    const nomeArquivo = await salvarArquivoEmDisco(id, arquivos[idx]);
     insertFoto.run(id, 'detalhes_defeitos', nomeArquivo, null, idx + 1);
-  });
+  }
 
   statusService.avancar(id, 'pronto_para_analise');
 
@@ -198,7 +198,7 @@ router.post('/atendimentos/:id/editar', (req, res) => {
 });
 
 // ---------- Fotos ----------
-router.post('/atendimentos/:id/fotos', upload.array('fotos', 20), (req, res) => {
+router.post('/atendimentos/:id/fotos', upload.array('fotos', 20), async (req, res) => {
   const id = req.params.id;
   const atendimento = db.prepare('SELECT * FROM atendimentos WHERE id = ?').get(id);
   if (!atendimento) return res.status(404).render('erro', { titulo: 'Não encontrado', mensagem: 'Atendimento não encontrado.' });
@@ -210,10 +210,11 @@ router.post('/atendimentos/:id/fotos', upload.array('fotos', 20), (req, res) => 
   const legendas = Array.isArray(req.body.legenda) ? req.body.legenda : [req.body.legenda];
   const insert = db.prepare('INSERT INTO fotos (atendimento_id, categoria, arquivo, legenda, ordem) VALUES (?, ?, ?, ?, ?)');
   const maxOrdem = db.prepare('SELECT COALESCE(MAX(ordem),0) AS m FROM fotos WHERE atendimento_id = ? AND categoria = ?').get(id, categoria).m;
-  arquivos.forEach((f, idx) => {
+  for (let idx = 0; idx < arquivos.length; idx++) {
+    const nomeArquivo = await salvarArquivoEmDisco(id, arquivos[idx]);
     const legenda = (legendas[idx] || legendas[0] || '').toString().trim() || null;
-    insert.run(id, categoria, f.filename, legenda, maxOrdem + idx + 1);
-  });
+    insert.run(id, categoria, nomeArquivo, legenda, maxOrdem + idx + 1);
+  }
 
   if (arquivos.length > 0) {
     statusService.avancar(id, 'pronto_para_analise');
