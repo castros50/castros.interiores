@@ -1,0 +1,150 @@
+<%
+  let totalInterno = 0;
+  let temPendente = false;
+  atendimento.orcamentoItens.forEach(function(i){
+    if (i.subtotal === null) temPendente = true;
+    else totalInterno += i.subtotal;
+  });
+%>
+<div class="card">
+  <h2>Painel do Analista</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">
+    Envie fotos, rode a análise, confira os achados e os cálculos de orçamento, e gere os relatórios —
+    tudo nesta mesma tela. Nenhum valor ou medida é inventado: o que não foi informado aparece como "pendente".
+  </p>
+</div>
+
+<div class="card">
+  <h3>1. Fotos</h3>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/fotos" enctype="multipart/form-data" data-upload="1">
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Categoria</label>
+        <select name="categoria" required>
+          <% categoriasFoto.forEach(function(c) { %><option value="<%= c.valor %>"><%= c.rotulo %></option><% }) %>
+        </select>
+      </div>
+      <div class="campo">
+        <label>Legenda (opcional)</label>
+        <input type="text" name="legenda">
+      </div>
+    </div>
+    <div class="campo">
+      <label>Fotos (câmera ou galeria)</label>
+      <input type="file" name="fotos" accept="image/*" capture="environment" multiple data-preview="#preview-fotos-painel" data-contador="#contador-fotos-painel">
+      <div id="contador-fotos-painel" style="font-size:0.8rem; color:#6a6258; margin-top:4px;"></div>
+    </div>
+    <div id="preview-fotos-painel" class="fotos-grade" style="margin-bottom:10px;"></div>
+    <div class="progresso"><div></div></div>
+    <div class="carregando"><span class="spinner"></span> Enviando fotos, aguarde...</div>
+    <button type="submit">Adicionar fotos</button>
+  </form>
+
+  <% if (atendimento.fotos.length > 0) { %>
+    <div class="fotos-grade" style="margin-top:14px;">
+      <% atendimento.fotos.forEach(function(f) { %>
+        <div class="foto-card">
+          <img src="/atendimentos/<%= atendimento.id %>/fotos/<%= f.id %>/arquivo" alt="<%= f.legenda || f.categoria %>" data-ampliar>
+          <div class="legenda"><%= f.categoria %><%= f.legenda ? (' — ' + f.legenda) : '' %></div>
+        </div>
+      <% }) %>
+    </div>
+  <% } else { %>
+    <p style="color:#6a6258;">Nenhuma foto enviada ainda.</p>
+  <% } %>
+</div>
+
+<div class="card">
+  <h3>2. Análise</h3>
+  <% if (atendimento.ultimaAnaliseIA) { %>
+    <p style="font-size:0.85rem; color:#6a6258;">
+      Última execução: <%= atendimento.ultimaAnaliseIA.criado_em %> —
+      <% if (atendimento.ultimaAnaliseIA.status === 'concluida') { %>concluída<%
+         } else if (atendimento.ultimaAnaliseIA.status === 'nao_configurado') { %><span style="color:#a32626;">IA não configurada</span><%
+         } else { %><span style="color:#a32626;">falhou — <%= atendimento.ultimaAnaliseIA.erro %></span><% } %>
+    </p>
+  <% } %>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/analisar">
+    <button type="submit" <%= atendimento.fotos.length === 0 ? 'disabled' : '' %>>Analisar fotos</button>
+  </form>
+
+  <% if (atendimento.achados.length > 0) { %>
+    <table style="margin-top:12px;">
+      <thead><tr><th>Área</th><th>Descrição</th><th>Gravidade</th><th>Situação</th></tr></thead>
+      <tbody>
+        <% atendimento.achados.forEach(function(a) { %>
+          <tr>
+            <td><%= mapAreaRotulo(a.area) %></td>
+            <td><%= a.descricao %></td>
+            <td class="gravidade-<%= a.gravidade %>"><%= a.gravidade.replace(/_/g,' ') %></td>
+            <td><%= a.status_revisao %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  <% } else { %>
+    <p style="color:#6a6258; margin-top:10px;">Nenhum achado ainda.</p>
+  <% } %>
+  <p style="margin-top:10px;"><a href="?tab=analise">Revisar achados em detalhe (confirmar / editar / descartar) →</a></p>
+</div>
+
+<div class="card">
+  <h3>3. Cálculo de orçamento</h3>
+  <p style="color:#6a6258; font-size:0.9rem;">O sistema soma os itens lançados — ele não estima metragem, preço ou quantidade a partir da foto.</p>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/orcamento/itens">
+    <div class="grid cols-3">
+      <div class="campo">
+        <label>Tipo</label>
+        <select name="tipo">
+          <option value="material">Material</option>
+          <option value="mao_obra">Mão de obra</option>
+          <option value="terceirizado">Serviço terceirizado</option>
+          <option value="transporte">Transporte</option>
+          <option value="outro">Outro</option>
+        </select>
+      </div>
+      <div class="campo"><label>Descrição</label><input type="text" name="descricao" required></div>
+      <div class="campo"><label>Custo unitário</label><input type="text" name="custo_unitario" placeholder="deixe em branco se pendente"></div>
+    </div>
+    <div class="grid cols-2">
+      <div class="campo"><label>Quantidade</label><input type="text" name="quantidade" placeholder="ou 'a levantar'"></div>
+      <div class="campo"><label>Unidade</label><input type="text" name="unidade"></div>
+    </div>
+    <button type="submit" class="botao secundario pequeno">Adicionar item</button>
+  </form>
+
+  <% if (atendimento.orcamentoItens.length > 0) { %>
+    <table style="margin-top:12px;">
+      <thead><tr><th>Descrição</th><th>Qtd.</th><th>Custo unit.</th><th>Subtotal</th></tr></thead>
+      <tbody>
+        <% atendimento.orcamentoItens.forEach(function(i) { %>
+          <tr>
+            <td><%= i.descricao %></td>
+            <td><%= i.quantidade %> <%= i.unidade || '' %></td>
+            <td><%= i.custo_unitario !== null ? ('R$ ' + i.custo_unitario.toFixed(2).replace('.',',')) : 'Pendente' %></td>
+            <td><%= i.subtotal !== null ? ('R$ ' + i.subtotal.toFixed(2).replace('.',',')) : 'Pendente' %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <p style="margin-top:8px;"><strong>Custo interno total calculado: R$ <%= totalInterno.toFixed(2).replace('.',',') %></strong>
+      <% if (temPendente) { %><span style="color:#8a5a00;"> — há itens pendentes de valor</span><% } %>
+    </p>
+  <% } %>
+  <p style="margin-top:6px;"><a href="?tab=orcamento">Ver orçamento completo e definir preço de venda →</a></p>
+</div>
+
+<div class="card">
+  <h3>4. Relatórios</h3>
+  <% if (!atendimento.revisado_em) { %>
+    <p class="aviso">Avaliação preliminar por fotos. Serviços e orçamento sujeitos à confirmação pelo responsável da Castros Interiores.</p>
+  <% } %>
+  <div class="botoes">
+    <a class="botao" href="/atendimentos/<%= atendimento.id %>/relatorio/cliente.pdf" target="_blank">Gerar relatório para o cliente</a>
+    <a class="botao" href="/atendimentos/<%= atendimento.id %>/relatorio/interno.pdf" target="_blank">Gerar relatório financeiro / matéria-prima (interno)</a>
+  </div>
+  <p style="color:#6a6258; font-size:0.85rem; margin-top:8px;">
+    O relatório financeiro/interno traz custos, materiais e reaproveitamento — é o documento para o setor de compras/matéria-prima.
+    O relatório do cliente não mostra custo interno nem margem.
+  </p>
+</div>

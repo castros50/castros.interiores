@@ -20,6 +20,7 @@
   <% if (query.erroIA) { %><div class="erro-msg">Não foi possível concluir a análise automática: <%= query.erroIA %></div><% } %>
 
   <div class="tabs">
+    <a class="<%= abaAtiva === 'painel' ? 'ativa' : '' %>" href="?tab=painel">Painel do Analista</a>
     <a class="<%= abaAtiva === 'cadastro' ? 'ativa' : '' %>" href="?tab=cadastro">Cadastro</a>
     <a class="<%= abaAtiva === 'fotos' ? 'ativa' : '' %>" href="?tab=fotos">Fotos (<%= atendimento.fotos.length %>)</a>
     <a class="<%= abaAtiva === 'analise' ? 'ativa' : '' %>" href="?tab=analise">Análise e revisão</a>
@@ -31,7 +32,9 @@
     <a class="<%= abaAtiva === 'historico' ? 'ativa' : '' %>" href="?tab=historico">Histórico</a>
   </div>
 
-  <% if (abaAtiva === 'cadastro') { %>
+  <% if (abaAtiva === 'painel') { %>
+    <%- include('atendimento_abas/painel') %>
+  <% } else if (abaAtiva === 'cadastro') { %>
     <%- include('atendimento_abas/cadastro') %>
   <% } else if (abaAtiva === 'fotos') { %>
     <%- include('atendimento_abas/fotos') %>

@@ -45,4 +45,21 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024, files: 20 }
 });
 
-module.exports = { upload, UPLOAD_ROOT, CATEGORIAS_FOTO };
+// Usado quando ainda não existe um atendimento (ex.: avaliação rápida) — os arquivos
+// ficam em memória até o atendimento ser criado e só então são gravados em disco.
+const uploadMemoria = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: filtroArquivo,
+  limits: { fileSize: 15 * 1024 * 1024, files: 20 }
+});
+
+function salvarArquivoEmDisco(atendimentoId, file) {
+  const dir = path.join(UPLOAD_ROOT, String(atendimentoId));
+  fs.mkdirSync(dir, { recursive: true });
+  const ext = (path.extname(file.originalname) || '.jpg').toLowerCase();
+  const nome = Date.now() + '-' + crypto.randomBytes(6).toString('hex') + ext;
+  fs.writeFileSync(path.join(dir, nome), file.buffer);
+  return nome;
+}
+
+module.exports = { upload, uploadMemoria, salvarArquivoEmDisco, UPLOAD_ROOT, CATEGORIAS_FOTO };

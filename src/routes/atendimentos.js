@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const db = require('../db/db');
-const { upload, UPLOAD_ROOT, CATEGORIAS_FOTO } = require('../middleware/upload');
+const { upload, uploadMemoria, salvarArquivoEmDisco, UPLOAD_ROOT, CATEGORIAS_FOTO } = require('../middleware/upload');
 const { gerarNumero } = require('../services/numeroAtendimento');
 const statusService = require('../services/statusService');
 const versionamento = require('../services/versionamento');
@@ -86,6 +86,49 @@ function baseLocals(req, atendimento, abaAtiva) {
 router.get('/', (req, res) => {
   const atendimentos = db.prepare('SELECT * FROM atendimentos ORDER BY atualizado_em DESC').all();
   res.render('dashboard', { atendimentos, statusRotulos: statusService.ROTULOS });
+});
+
+// ---------- Avaliação rápida (envia foto(s) + descrição e já roda a análise) ----------
+router.get('/analise-rapida', (req, res) => {
+  res.render('analise_rapida', { erro: null, iaConfigurada: !!process.env.ANTHROPIC_API_KEY });
+});
+
+router.post('/analise-rapida', uploadMemoria.array('fotos', 20), async (req, res) => {
+  const arquivos = req.files || [];
+  if (arquivos.length === 0) {
+    return res.render('analise_rapida', { erro: 'Envie ao menos uma foto para iniciar a avaliação.', iaConfigurada: !!process.env.ANTHROPIC_API_KEY });
+  }
+
+  const numero = gerarNumero();
+  const campos = extrairCamposCadastro({
+    cliente_nome: req.body.cliente_nome,
+    tipo_movel: req.body.tipo_movel,
+    defeitos_relatados: req.body.descricao,
+    observacoes: 'Criado pela Avaliação rápida.'
+  });
+  const info = db.prepare(`
+    INSERT INTO atendimentos (numero, status, cliente_nome, tipo_movel, defeitos_relatados, observacoes, criado_por)
+    VALUES (?, 'rascunho', ?, ?, ?, ?, ?)
+  `).run(numero, campos.cliente_nome, campos.tipo_movel, campos.defeitos_relatados, campos.observacoes, req.session.userId);
+  const id = info.lastInsertRowid;
+  versionamento.registrar({ atendimentoId: id, entidade: 'atendimento', entidadeId: id, acao: 'criado_avaliacao_rapida', usuarioId: req.session.userId });
+
+  const insertFoto = db.prepare('INSERT INTO fotos (atendimento_id, categoria, arquivo, legenda, ordem) VALUES (?, ?, ?, ?, ?)');
+  arquivos.forEach((f, idx) => {
+    const nomeArquivo = salvarArquivoEmDisco(id, f);
+    insertFoto.run(id, 'detalhes_defeitos', nomeArquivo, null, idx + 1);
+  });
+
+  statusService.avancar(id, 'pronto_para_analise');
+
+  let erroIA = null;
+  if (process.env.ANTHROPIC_API_KEY) {
+    const resultadoIA = await executarAnaliseIA(id, req.session.userId);
+    if (!resultadoIA.ok) erroIA = resultadoIA.erro;
+  }
+
+  const destino = '/atendimentos/' + id + '?tab=painel&ok=1' + (erroIA ? '&erroIA=' + encodeURIComponent(erroIA) : '');
+  res.redirect(destino);
 });
 
 // ---------- Cadastro ----------
@@ -200,14 +243,12 @@ router.post('/atendimentos/:id/fotos/:fotoId/excluir', (req, res) => {
 });
 
 // ---------- Análise por IA ----------
-router.post('/atendimentos/:id/analisar', async (req, res) => {
-  const id = req.params.id;
+// Função compartilhada entre a análise normal (dentro do atendimento) e a avaliação rápida.
+async function executarAnaliseIA(id, usuarioId) {
   const atendimento = db.prepare('SELECT * FROM atendimentos WHERE id = ?').get(id);
-  if (!atendimento) return res.status(404).render('erro', { titulo: 'Não encontrado', mensagem: 'Atendimento não encontrado.' });
+  if (!atendimento) return { ok: false, erro: 'Atendimento não encontrado.' };
   const fotosDb = db.prepare('SELECT * FROM fotos WHERE atendimento_id = ?').all(id);
-  if (fotosDb.length === 0) {
-    return res.redirect('/atendimentos/' + id + '?tab=fotos&erro=sem_fotos');
-  }
+  if (fotosDb.length === 0) return { ok: false, erro: 'sem_fotos' };
 
   const fotosComBase64 = fotosDb.map(f => {
     const caminho = path.join(UPLOAD_ROOT, String(id), f.arquivo);
@@ -224,7 +265,7 @@ router.post('/atendimentos/:id/analisar', async (req, res) => {
   const analiseId = db.prepare('SELECT last_insert_rowid() AS id').get().id;
 
   if (resultado.status !== 'concluida') {
-    return res.redirect('/atendimentos/' + id + '?tab=analise&erroIA=' + encodeURIComponent(resultado.erro || 'Falha na análise.'));
+    return { ok: false, erro: resultado.erro || 'Falha na análise.' };
   }
 
   const insertAchado = db.prepare(`
@@ -244,7 +285,17 @@ router.post('/atendimentos/:id/analisar', async (req, res) => {
 
   statusService.avancar(id, 'analise_preliminar_concluida');
   statusService.invalidarRevisaoSeNecessario(id);
-  versionamento.registrar({ atendimentoId: id, entidade: 'achado', acao: 'analise_ia_executada', snapshot: { analiseId, quantidade: resultado.resultado.achados.length }, usuarioId: req.session.userId });
+  versionamento.registrar({ atendimentoId: id, entidade: 'achado', acao: 'analise_ia_executada', snapshot: { analiseId, quantidade: resultado.resultado.achados.length }, usuarioId });
+  return { ok: true, quantidade: resultado.resultado.achados.length };
+}
+
+router.post('/atendimentos/:id/analisar', async (req, res) => {
+  const id = req.params.id;
+  const resultado = await executarAnaliseIA(id, req.session.userId);
+  if (!resultado.ok) {
+    if (resultado.erro === 'sem_fotos') return res.redirect('/atendimentos/' + id + '?tab=fotos&erro=sem_fotos');
+    return res.redirect('/atendimentos/' + id + '?tab=analise&erroIA=' + encodeURIComponent(resultado.erro));
+  }
   res.redirect('/atendimentos/' + id + '?tab=analise&ok=1');
 });
 
