@@ -8,9 +8,12 @@ const { requireAuth } = require('./middleware/auth');
 const authRoutes = require('./routes/auth');
 const atendimentosRoutes = require('./routes/atendimentos');
 const materiaisRoutes = require('./routes/materiais');
+const { seedIfNeeded } = require('./db/seed');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+seedIfNeeded();
 
 const app = express();
 const atrasDeProxyHttps = process.env.TRUST_PROXY === '1';
