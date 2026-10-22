@@ -1,0 +1,138 @@
+<div class="card">
+  <h2>Análise automática</h2>
+  <% if (atendimento.ultimaAnaliseIA) { %>
+    <p style="font-size:0.85rem; color:#6a6258;">
+      Última execução: <%= atendimento.ultimaAnaliseIA.criado_em %> —
+      <% if (atendimento.ultimaAnaliseIA.status === 'concluida') { %>
+        concluída (modelo: <%= atendimento.ultimaAnaliseIA.modelo || 'não informado' %>)
+      <% } else if (atendimento.ultimaAnaliseIA.status === 'nao_configurado') { %>
+        <span style="color:#a32626;">IA não configurada — <%= atendimento.ultimaAnaliseIA.erro %></span>
+      <% } else { %>
+        <span style="color:#a32626;">falhou — <%= atendimento.ultimaAnaliseIA.erro %></span>
+      <% } %>
+    </p>
+  <% } else { %>
+    <p style="color:#6a6258; font-size:0.9rem;">Nenhuma análise executada ainda.</p>
+  <% } %>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/analisar">
+    <button type="submit" <%= atendimento.fotos.length === 0 ? 'disabled' : '' %>>Analisar fotos novamente</button>
+  </form>
+  <p class="aviso" style="margin-top:10px;">Nenhuma avaliação automática deve ser considerada aprovada pelo responsável até a revisão explícita abaixo.</p>
+</div>
+
+<div class="card">
+  <h2>Achados por área</h2>
+  <% if (atendimento.achados.length === 0) { %>
+    <p style="color:#6a6258;">Nenhum achado registrado ainda. Rode a análise automática ou adicione um achado manualmente abaixo.</p>
+  <% } %>
+  <% atendimento.achados.forEach(function(a) { %>
+    <div class="achado-card">
+      <div class="meta">
+        <strong><%= mapAreaRotulo(a.area) %></strong>
+        — <span class="origem-tag"><%= a.origem.replace(/_/g,' ') %></span>
+        — <span class="gravidade-<%= a.gravidade %>"><%= a.gravidade.replace(/_/g,' ') %></span>
+        — situação: <%= a.status_revisao %> <%= a.gerado_por_ia ? '· sugerido por IA' : '· manual' %>
+        <% if (a.foto_id) { %> · <a href="/atendimentos/<%= atendimento.id %>/fotos/<%= a.foto_id %>/arquivo" target="_blank">ver foto de referência</a><% } %>
+      </div>
+      <form method="post" action="/atendimentos/<%= atendimento.id %>/achados/<%= a.id %>">
+        <input type="hidden" name="acao" value="editar">
+        <div class="campo"><label>Descrição</label><textarea name="descricao"><%= a.descricao %></textarea></div>
+        <div class="grid cols-3">
+          <div class="campo">
+            <label>Origem</label>
+            <select name="origem">
+              <option value="observado_foto" <%= a.origem==='observado_foto'?'selected':'' %>>Observado na foto</option>
+              <option value="relatado_cliente" <%= a.origem==='relatado_cliente'?'selected':'' %>>Relatado pelo cliente</option>
+              <option value="suspeita" <%= a.origem==='suspeita'?'selected':'' %>>Suspeita a confirmar</option>
+              <option value="confirmado_oficina" <%= a.origem==='confirmado_oficina'?'selected':'' %>>Confirmado pela oficina</option>
+              <option value="nao_avaliavel" <%= a.origem==='nao_avaliavel'?'selected':'' %>>Não avaliável</option>
+            </select>
+          </div>
+          <div class="campo">
+            <label>Gravidade aparente</label>
+            <select name="gravidade">
+              <option value="leve" <%= a.gravidade==='leve'?'selected':'' %>>Leve</option>
+              <option value="moderada" <%= a.gravidade==='moderada'?'selected':'' %>>Moderada</option>
+              <option value="grave" <%= a.gravidade==='grave'?'selected':'' %>>Grave</option>
+              <option value="nao_avaliavel" <%= a.gravidade==='nao_avaliavel'?'selected':'' %>>Não avaliável</option>
+            </select>
+          </div>
+          <div class="campo"><label>Inspeção/teste necessário</label><input type="text" name="inspecao_necessaria" value="<%= a.inspecao_necessaria || '' %>"></div>
+        </div>
+        <div class="campo"><label>Intervenção sugerida</label><input type="text" name="intervencao_sugerida" value="<%= a.intervencao_sugerida || '' %>"></div>
+        <div class="botoes">
+          <button type="submit" class="botao secundario pequeno">Salvar edição</button>
+        </div>
+      </form>
+      <div class="botoes">
+        <form method="post" action="/atendimentos/<%= atendimento.id %>/achados/<%= a.id %>"><input type="hidden" name="acao" value="confirmar"><button type="submit" class="botao pequeno">Confirmar</button></form>
+        <form method="post" action="/atendimentos/<%= atendimento.id %>/achados/<%= a.id %>" data-confirmar="Descartar este achado?"><input type="hidden" name="acao" value="descartar"><button type="submit" class="botao perigo pequeno">Descartar</button></form>
+      </div>
+    </div>
+  <% }) %>
+  <% if (atendimento.achadosDescartados.length > 0) { %>
+    <h3 style="margin-top:16px;">Achados descartados (mantidos no histórico)</h3>
+    <% atendimento.achadosDescartados.forEach(function(a) { %>
+      <div class="achado-card" style="opacity:0.6;">
+        <div class="meta"><strong><%= mapAreaRotulo(a.area) %></strong> — descartado em <%= a.atualizado_em %></div>
+        <div><%= a.descricao %></div>
+      </div>
+    <% }) %>
+  <% } %>
+</div>
+
+<div class="card">
+  <h3>Adicionar achado manualmente</h3>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/achados">
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Área</label>
+        <select name="area" required>
+          <% areasAchado.forEach(function(a) { %><option value="<%= a.valor %>"><%= a.rotulo %></option><% }) %>
+        </select>
+      </div>
+      <div class="campo">
+        <label>Origem</label>
+        <select name="origem">
+          <option value="confirmado_oficina">Confirmado pela oficina</option>
+          <option value="relatado_cliente">Relatado pelo cliente</option>
+          <option value="suspeita">Suspeita a confirmar</option>
+          <option value="nao_avaliavel">Não avaliável</option>
+        </select>
+      </div>
+    </div>
+    <div class="campo"><label>Descrição</label><textarea name="descricao" required></textarea></div>
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Gravidade aparente</label>
+        <select name="gravidade">
+          <option value="leve">Leve</option>
+          <option value="moderada">Moderada</option>
+          <option value="grave">Grave</option>
+          <option value="nao_avaliavel" selected>Não avaliável</option>
+        </select>
+      </div>
+      <div class="campo"><label>Inspeção/teste necessário</label><input type="text" name="inspecao_necessaria"></div>
+    </div>
+    <div class="campo"><label>Intervenção sugerida</label><input type="text" name="intervencao_sugerida"></div>
+    <button type="submit">Adicionar achado</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Revisão do responsável</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">Confirme, edite ou descarte todos os achados acima antes de revisar. A revisão registra quem validou a análise.</p>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/revisar">
+    <div class="campo">
+      <label>Nome do responsável pela revisão</label>
+      <input type="text" name="responsavel_nome" value="<%= atendimento.responsavel_nome || '' %>" placeholder="<%= usuarioId ? '' : '' %>">
+    </div>
+    <button type="submit">Revisar análise</button>
+  </form>
+  <% if (atendimento.revisado_em) { %>
+    <p class="ok-msg" style="margin-top:10px;">Revisado em <%= atendimento.revisado_em %> por <%= atendimento.responsavel_nome %>.</p>
+  <% } %>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/marcar-aguardando-inspecao" style="margin-top:8px;">
+    <button type="submit" class="botao secundario">Marcar como aguardando inspeção na oficina</button>
+  </form>
+</div>

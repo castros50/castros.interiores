@@ -1,0 +1,39 @@
+<div class="card">
+  <h2>Propostas de reforma</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">Monte até três propostas. O responsável pode editar livremente cada uma.</p>
+</div>
+
+<%
+  const TIPOS = [
+    { valor: 'essencial', rotulo: 'Essencial', desc: 'Reparos necessários, mantendo componentes aprovados.' },
+    { valor: 'recomendada', rotulo: 'Recomendada', desc: 'Reparos e melhorias justificadas de conforto e acabamento.' },
+    { valor: 'completa', rotulo: 'Completa', desc: 'Renovação ampla, mantendo os componentes tecnicamente aprovados.' }
+  ];
+%>
+<% TIPOS.forEach(function(tipo) { %>
+  <% const p = atendimento.propostas.find(function(x){ return x.tipo === tipo.valor; }); %>
+  <% const selecionada = p && atendimento.proposta_selecionada_id === p.id; %>
+  <div class="card proposta-card">
+    <h3><%= tipo.rotulo %> <% if (selecionada) { %><span class="selo concluido">selecionada</span><% } %></h3>
+    <p style="font-size:0.85rem; color:#6a6258;"><%= tipo.desc %></p>
+    <form method="post" action="/atendimentos/<%= atendimento.id %>/propostas/<%= tipo.valor %>">
+      <div class="campo"><label>Serviços</label><textarea name="servicos"><%= p ? (p.servicos||'') : '' %></textarea></div>
+      <div class="grid cols-3">
+        <div class="campo"><label>Componentes a manter</label><textarea name="manter"><%= p ? (p.manter||'') : '' %></textarea></div>
+        <div class="campo"><label>Componentes a recuperar</label><textarea name="recuperar"><%= p ? (p.recuperar||'') : '' %></textarea></div>
+        <div class="campo"><label>Componentes a substituir</label><textarea name="substituir"><%= p ? (p.substituir||'') : '' %></textarea></div>
+      </div>
+      <div class="campo"><label>Pendências</label><textarea name="pendencias"><%= p ? (p.pendencias||'') : '' %></textarea></div>
+      <div class="grid cols-2">
+        <div class="campo"><label>Benefícios</label><textarea name="beneficios"><%= p ? (p.beneficios||'') : '' %></textarea></div>
+        <div class="campo"><label>Limitações</label><textarea name="limitacoes"><%= p ? (p.limitacoes||'') : '' %></textarea></div>
+      </div>
+      <button type="submit" class="botao secundario pequeno">Salvar proposta <%= tipo.rotulo.toLowerCase() %></button>
+    </form>
+    <% if (p) { %>
+      <form method="post" action="/atendimentos/<%= atendimento.id %>/propostas/<%= tipo.valor %>/selecionar" style="margin-top:8px;">
+        <button type="submit" class="botao pequeno" <%= selecionada ? 'disabled' : '' %>><%= selecionada ? 'Esta é a proposta selecionada' : 'Selecionar esta proposta' %></button>
+      </form>
+    <% } %>
+  </div>
+<% }) %>

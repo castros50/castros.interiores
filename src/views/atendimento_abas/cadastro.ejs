@@ -1,0 +1,59 @@
+<div class="card">
+  <h2>Dados do atendimento</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">Pode salvar informações incompletas e continuar depois.</p>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/editar">
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Nome do cliente</label>
+        <input type="text" name="cliente_nome" value="<%= atendimento.cliente_nome || '' %>">
+      </div>
+      <div class="campo">
+        <label>Telefone</label>
+        <input type="text" name="cliente_telefone" value="<%= atendimento.cliente_telefone || '' %>">
+      </div>
+      <div class="campo">
+        <label>Tipo de móvel</label>
+        <input type="text" name="tipo_movel" value="<%= atendimento.tipo_movel || '' %>">
+      </div>
+      <div class="campo">
+        <label>Quantidade de peças</label>
+        <input type="text" name="quantidade_pecas" value="<%= atendimento.quantidade_pecas || '' %>">
+      </div>
+      <div class="campo">
+        <label>Medidas aproximadas</label>
+        <input type="text" name="medidas" value="<%= atendimento.medidas || '' %>">
+      </div>
+      <div class="campo">
+        <label>Tempo de uso</label>
+        <input type="text" name="tempo_uso" value="<%= atendimento.tempo_uso || '' %>">
+      </div>
+    </div>
+    <div class="campo">
+      <label>Defeitos relatados pelo cliente</label>
+      <textarea name="defeitos_relatados"><%= atendimento.defeitos_relatados || '' %></textarea>
+    </div>
+    <div class="campo">
+      <label>Serviço desejado</label>
+      <textarea name="servico_desejado"><%= atendimento.servico_desejado || '' %></textarea>
+    </div>
+    <div class="campo">
+      <label>Histórico de reformas anteriores</label>
+      <textarea name="historico_reformas"><%= atendimento.historico_reformas || '' %></textarea>
+    </div>
+    <div class="campo">
+      <label>Preferência de tecido e conforto</label>
+      <textarea name="preferencia_tecido"><%= atendimento.preferencia_tecido || '' %></textarea>
+    </div>
+    <div class="campo">
+      <label>Observações</label>
+      <textarea name="observacoes"><%= atendimento.observacoes || '' %></textarea>
+    </div>
+    <div class="campo" style="font-size:0.8rem; color:#6a6258;">
+      Criado em <%= atendimento.criado_em %> · Atualizado em <%= atendimento.atualizado_em %>
+    </div>
+    <div class="botoes">
+      <button type="submit">Salvar</button>
+      <a class="botao secundario" href="/">Voltar ao início</a>
+    </div>
+  </form>
+</div>

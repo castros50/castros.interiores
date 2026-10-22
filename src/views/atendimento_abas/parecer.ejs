@@ -1,0 +1,27 @@
+<div class="card">
+  <h2>Parecer de viabilidade</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">Sem inspeção e orçamento completos, o parecer permanece marcado como preliminar automaticamente.</p>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/parecer">
+    <div class="campo">
+      <label>Conclusão</label>
+      <select name="conclusao">
+        <option value="vantajosa" <%= atendimento.parecer && atendimento.parecer.conclusao==='vantajosa' ? 'selected':'' %>>Reforma potencialmente vantajosa</option>
+        <option value="viavel_com_ressalvas" <%= atendimento.parecer && atendimento.parecer.conclusao==='viavel_com_ressalvas' ? 'selected':'' %>>Reforma viável com ressalvas</option>
+        <option value="pouco_vantajosa" <%= atendimento.parecer && atendimento.parecer.conclusao==='pouco_vantajosa' ? 'selected':'' %>>Reforma aparentemente pouco vantajosa</option>
+        <option value="dados_insuficientes" <%= (!atendimento.parecer || atendimento.parecer.conclusao==='dados_insuficientes') ? 'selected':'' %>>Dados insuficientes para concluir</option>
+      </select>
+    </div>
+    <div class="campo">
+      <label>Explicação da conclusão e pendências</label>
+      <textarea name="texto"><%= atendimento.parecer ? (atendimento.parecer.texto || '') : '' %></textarea>
+    </div>
+    <div class="campo">
+      <label>Preço de um móvel novo equivalente (se informado)</label>
+      <input type="text" name="preco_movel_novo" value="<%= atendimento.parecer && atendimento.parecer.preco_movel_novo !== null ? atendimento.parecer.preco_movel_novo : '' %>">
+    </div>
+    <button type="submit">Salvar parecer</button>
+  </form>
+  <% if (atendimento.parecer && atendimento.parecer.preliminar) { %>
+    <p class="aviso" style="margin-top:10px;">Este parecer está marcado como preliminar — sem inspeção e orçamento completos, não deve ser tratado como decisão final.</p>
+  <% } %>
+</div>

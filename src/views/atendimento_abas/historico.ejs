@@ -1,0 +1,19 @@
+<div class="card">
+  <h2>Histórico de versões</h2>
+  <% if (historico.length === 0) { %>
+    <p style="color:#6a6258;">Nenhum registro de histórico ainda.</p>
+  <% } %>
+  <table>
+    <thead><tr><th>Data</th><th>Entidade</th><th>Ação</th><th>Usuário</th></tr></thead>
+    <tbody>
+      <% historico.forEach(function(h) { %>
+        <tr>
+          <td><%= h.criado_em %></td>
+          <td><%= h.entidade %><%= h.entidade_id ? (' #' + h.entidade_id) : '' %></td>
+          <td><%= h.acao %></td>
+          <td><%= h.usuario_nome || '—' %></td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>

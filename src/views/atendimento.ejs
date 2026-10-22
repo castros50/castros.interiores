@@ -1,0 +1,58 @@
+<%- include('partials/head', { titulo: 'Atendimento ' + atendimento.numero }) %>
+<%- include('partials/header') %>
+<div class="container">
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px;">
+      <div>
+        <h1 style="margin-bottom:4px;">Atendimento <%= atendimento.numero %></h1>
+        <div><%= atendimento.cliente_nome || 'Cliente não informado' %> — <%= atendimento.tipo_movel || 'Tipo de móvel não informado' %></div>
+      </div>
+      <span class="selo <%= atendimento.status %>"><%= statusRotulos[atendimento.status] || atendimento.status %></span>
+    </div>
+  </div>
+
+  <% if (query.ok) { %><div class="ok-msg">Ação realizada com sucesso.</div><% } %>
+  <% if (query.erro === 'pendentes') { %><div class="erro-msg">Revise todos os achados (confirme, edite ou descarte) antes de concluir a revisão.</div><% } %>
+  <% if (query.erro === 'sem_fotos') { %><div class="erro-msg">Envie ao menos uma foto antes de solicitar a análise.</div><% } %>
+  <% if (query.erro === 'sem_revisao') { %><div class="erro-msg">É necessário revisar a análise antes de concluir o atendimento.</div><% } %>
+  <% if (query.erro === 'categoria') { %><div class="erro-msg">Selecione uma categoria válida para as fotos.</div><% } %>
+  <% if (query.erroIA) { %><div class="erro-msg">Não foi possível concluir a análise automática: <%= query.erroIA %></div><% } %>
+
+  <div class="tabs">
+    <a class="<%= abaAtiva === 'painel' ? 'ativa' : '' %>" href="?tab=painel">Painel do Analista</a>
+    <a class="<%= abaAtiva === 'cadastro' ? 'ativa' : '' %>" href="?tab=cadastro">Cadastro</a>
+    <a class="<%= abaAtiva === 'fotos' ? 'ativa' : '' %>" href="?tab=fotos">Fotos (<%= atendimento.fotos.length %>)</a>
+    <a class="<%= abaAtiva === 'analise' ? 'ativa' : '' %>" href="?tab=analise">Análise e revisão</a>
+    <a class="<%= abaAtiva === 'reaproveitamento' ? 'ativa' : '' %>" href="?tab=reaproveitamento">Reaproveitamento</a>
+    <a class="<%= abaAtiva === 'propostas' ? 'ativa' : '' %>" href="?tab=propostas">Propostas</a>
+    <a class="<%= abaAtiva === 'orcamento' ? 'ativa' : '' %>" href="?tab=orcamento">Custos</a>
+    <a class="<%= abaAtiva === 'parecer' ? 'ativa' : '' %>" href="?tab=parecer">Viabilidade</a>
+    <a class="<%= abaAtiva === 'relatorio' ? 'ativa' : '' %>" href="?tab=relatorio">Relatório</a>
+    <a class="<%= abaAtiva === 'historico' ? 'ativa' : '' %>" href="?tab=historico">Histórico</a>
+  </div>
+
+  <% if (abaAtiva === 'painel') { %>
+    <%- include('atendimento_abas/painel') %>
+  <% } else if (abaAtiva === 'cadastro') { %>
+    <%- include('atendimento_abas/cadastro') %>
+  <% } else if (abaAtiva === 'fotos') { %>
+    <%- include('atendimento_abas/fotos') %>
+  <% } else if (abaAtiva === 'analise') { %>
+    <%- include('atendimento_abas/analise') %>
+  <% } else if (abaAtiva === 'reaproveitamento') { %>
+    <%- include('atendimento_abas/reaproveitamento') %>
+  <% } else if (abaAtiva === 'propostas') { %>
+    <%- include('atendimento_abas/propostas') %>
+  <% } else if (abaAtiva === 'orcamento') { %>
+    <%- include('atendimento_abas/orcamento') %>
+  <% } else if (abaAtiva === 'parecer') { %>
+    <%- include('atendimento_abas/parecer') %>
+  <% } else if (abaAtiva === 'relatorio') { %>
+    <%- include('atendimento_abas/relatorio') %>
+  <% } else if (abaAtiva === 'historico') { %>
+    <%- include('atendimento_abas/historico') %>
+  <% } %>
+
+</div>
+<%- include('partials/footer') %>

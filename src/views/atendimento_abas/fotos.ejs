@@ -1,0 +1,59 @@
+<div class="card">
+  <h2>Enviar fotos</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">Selecione a categoria e envie uma ou mais fotos (galeria ou câmera do celular). A foto só é confirmada como salva depois de gravada no servidor.</p>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/fotos" enctype="multipart/form-data" data-upload="1">
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Categoria</label>
+        <select name="categoria" required>
+          <% categoriasFoto.forEach(function(c) { %>
+            <option value="<%= c.valor %>"><%= c.rotulo %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div class="campo">
+        <label>Legenda (opcional, aplicada a todas as fotos deste envio)</label>
+        <input type="text" name="legenda">
+      </div>
+    </div>
+    <div class="campo">
+      <label>Fotos (câmera ou galeria)</label>
+      <input type="file" name="fotos" accept="image/*" capture="environment" multiple data-preview="#preview-fotos" data-contador="#contador-fotos">
+      <div id="contador-fotos" style="font-size:0.8rem; color:#6a6258; margin-top:4px;"></div>
+    </div>
+    <div id="preview-fotos" class="fotos-grade" style="margin-bottom:10px;"></div>
+    <div class="progresso"><div></div></div>
+    <div class="carregando"><span class="spinner"></span> Enviando fotos, aguarde...</div>
+    <div class="botoes">
+      <button type="submit">Adicionar fotos</button>
+    </div>
+  </form>
+</div>
+
+<% categoriasFoto.forEach(function(cat) { %>
+  <% const fotosCategoria = atendimento.fotos.filter(function(f){ return f.categoria === cat.valor; }); %>
+  <% if (fotosCategoria.length > 0) { %>
+    <div class="card fotos-categoria">
+      <h3><%= cat.rotulo %> (<%= fotosCategoria.length %>)</h3>
+      <div class="fotos-grade">
+        <% fotosCategoria.forEach(function(f) { %>
+          <div class="foto-card">
+            <img src="/atendimentos/<%= atendimento.id %>/fotos/<%= f.id %>/arquivo" alt="<%= f.legenda || cat.rotulo %>" data-ampliar>
+            <div class="legenda"><%= f.legenda || '—' %></div>
+            <form method="post" action="/atendimentos/<%= atendimento.id %>/fotos/<%= f.id %>/excluir" data-confirmar="Excluir esta foto?" style="padding:0 6px 6px;">
+              <button type="submit" class="botao perigo pequeno">Excluir</button>
+            </form>
+          </div>
+        <% }) %>
+      </div>
+    </div>
+  <% } %>
+<% }) %>
+
+<div class="card">
+  <h2>Analisar fotos</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">Envia as fotos para análise automática pelo agente de IA. O resultado é apenas uma sugestão preliminar — veja e revise na aba "Análise e revisão".</p>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/analisar">
+    <button type="submit" <%= atendimento.fotos.length === 0 ? 'disabled' : '' %>>Analisar fotos</button>
+  </form>
+</div>

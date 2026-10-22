@@ -1,0 +1,48 @@
+<div class="card">
+  <h2>Reaproveitamento de materiais</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">
+    Toda classificação é preliminar e sujeita à inspeção da oficina. Para espuma coberta, peça inspeção;
+    para espuma acessível, registre o retorno após compressão, deformação, esfarelamento, odor e umidade informados pela oficina.
+    Sem orçamento, descreva apenas a possibilidade de economia, sem inventar percentuais ou valores.
+  </p>
+</div>
+
+<% componentesPadrao.forEach(function(comp) { %>
+  <% const existente = atendimento.reaproveitamento.find(function(r){ return r.componente === comp.valor; }); %>
+  <div class="card reap-card">
+    <h3><%= comp.rotulo %></h3>
+    <form method="post" action="/atendimentos/<%= atendimento.id %>/reaproveitamento">
+      <input type="hidden" name="componente" value="<%= comp.valor %>">
+      <div class="campo">
+        <label>Condição observada</label>
+        <textarea name="condicao" placeholder="Descrição objetiva, sem inventar dados não avaliáveis por foto"><%= existente ? (existente.condicao || '') : '' %></textarea>
+      </div>
+      <div class="grid cols-2">
+        <div class="campo">
+          <label>Possibilidade de reaproveitamento</label>
+          <select name="possibilidade">
+            <option value="pendente" <%= (!existente || existente.possibilidade==='pendente')?'selected':'' %>>Decisão pendente</option>
+            <option value="candidato" <%= existente && existente.possibilidade==='candidato'?'selected':'' %>>Candidato a reaproveitamento, sujeito à inspeção</option>
+            <option value="recuperavel" <%= existente && existente.possibilidade==='recuperavel'?'selected':'' %>>Recuperável com reparo, sujeito à inspeção</option>
+            <option value="substituicao" <%= existente && existente.possibilidade==='substituicao'?'selected':'' %>>Substituição indicada</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label>Reparo necessário</label>
+          <input type="text" name="reparo_necessario" value="<%= existente ? (existente.reparo_necessario || '') : '' %>">
+        </div>
+      </div>
+      <div class="grid cols-2">
+        <div class="campo">
+          <label>Critério para aprovação</label>
+          <input type="text" name="criterio_aprovacao" value="<%= existente ? (existente.criterio_aprovacao || '') : '' %>" placeholder="O que precisa ser confirmado na oficina">
+        </div>
+        <div class="campo">
+          <label>Efeito esperado no custo</label>
+          <input type="text" name="efeito_custo" value="<%= existente ? (existente.efeito_custo || '') : '' %>" placeholder="Sem percentuais ou valores inventados">
+        </div>
+      </div>
+      <button type="submit" class="botao secundario pequeno">Salvar <%= comp.rotulo.toLowerCase() %></button>
+    </form>
+  </div>
+<% }) %>

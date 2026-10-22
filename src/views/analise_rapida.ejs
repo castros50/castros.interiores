@@ -1,0 +1,46 @@
+<%- include('partials/head', { titulo: 'Avaliação rápida' }) %>
+<%- include('partials/header') %>
+<div class="container">
+  <div class="card">
+    <h1>Avaliação rápida</h1>
+    <p style="color:#6a6258; font-size:0.9rem;">
+      Envie a foto do estofado com uma breve descrição. O sistema cria o atendimento automaticamente,
+      roda a análise por IA (se estiver configurada) e já deixa prontos os botões de relatório para o
+      cliente e para o setor financeiro/compras de matéria-prima.
+    </p>
+    <% if (!iaConfigurada) { %>
+      <div class="aviso">A análise automática por IA ainda não está configurada (falta a chave da API no servidor). Você ainda pode enviar as fotos e preencher a avaliação manualmente.</div>
+    <% } %>
+    <% if (erro) { %><div class="erro-msg"><%= erro %></div><% } %>
+
+    <form method="post" action="/analise-rapida" enctype="multipart/form-data" data-upload="1">
+      <div class="grid cols-2">
+        <div class="campo">
+          <label>Nome do cliente (opcional)</label>
+          <input type="text" name="cliente_nome">
+        </div>
+        <div class="campo">
+          <label>Tipo de móvel (opcional)</label>
+          <input type="text" name="tipo_movel" placeholder="Ex.: sofá, poltrona, cadeira">
+        </div>
+      </div>
+      <div class="campo">
+        <label>Descrição do que você quer avaliar</label>
+        <textarea name="descricao" placeholder="Ex.: cliente relata manchas no assento e rangido na base"></textarea>
+      </div>
+      <div class="campo">
+        <label>Foto(s) (câmera ou galeria)</label>
+        <input type="file" name="fotos" accept="image/*" capture="environment" multiple required data-preview="#preview-rapida" data-contador="#contador-rapida">
+        <div id="contador-rapida" style="font-size:0.8rem; color:#6a6258; margin-top:4px;"></div>
+      </div>
+      <div id="preview-rapida" class="fotos-grade" style="margin-bottom:10px;"></div>
+      <div class="progresso"><div></div></div>
+      <div class="carregando"><span class="spinner"></span> Enviando e analisando, aguarde...</div>
+      <div class="botoes">
+        <button type="submit">Enviar e avaliar</button>
+        <a class="botao secundario" href="/">Cancelar</a>
+      </div>
+    </form>
+  </div>
+</div>
+<%- include('partials/footer') %>

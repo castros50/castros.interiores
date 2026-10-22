@@ -1,0 +1,18 @@
+<div class="card">
+  <h2>Relatórios</h2>
+  <% if (!atendimento.revisado_em) { %>
+    <p class="aviso">Avaliação preliminar por fotos. Serviços e orçamento sujeitos à confirmação pelo responsável da Castros Interiores.</p>
+  <% } %>
+  <div class="botoes">
+    <a class="botao" href="/atendimentos/<%= atendimento.id %>/relatorio/interno.pdf" target="_blank">Gerar relatório interno (PDF)</a>
+    <a class="botao" href="/atendimentos/<%= atendimento.id %>/relatorio/cliente.pdf" target="_blank">Gerar relatório do cliente (PDF)</a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Concluir atendimento</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">Só é possível concluir depois que a análise tiver sido revisada pelo responsável.</p>
+  <form method="post" action="/atendimentos/<%= atendimento.id %>/concluir">
+    <button type="submit" <%= !atendimento.revisado_em ? 'disabled' : '' %>>Concluir atendimento</button>
+  </form>
+</div>
