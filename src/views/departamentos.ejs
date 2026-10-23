@@ -1,0 +1,102 @@
+<%- include('partials/head', { titulo: 'Central de Agentes' }) %>
+<%- include('partials/header') %>
+<div class="container">
+
+  <div class="card">
+    <h1>Central de Agentes</h1>
+    <p style="color:#6a6258; font-size:0.9rem;">
+      Cinco especialistas de IA da Castros Interiores. Cada um responde como apoio para o
+      responsável revisar — nenhum texto é enviado ao cliente ou publicado automaticamente.
+    </p>
+  </div>
+
+  <% if (erro) { %><div class="erro-msg"><%= erro %></div><% } %>
+
+  <div class="grid cols-3" style="margin-bottom:16px;">
+    <% departamentos.forEach(function(d) { %>
+      <a class="botao <%= d.id === departamentoAtivo ? '' : 'secundario' %>"
+         style="flex-direction:column; align-items:flex-start; height:auto; padding:14px; text-align:left;"
+         href="?departamento=<%= d.id %><%= atendimentoSelecionadoId ? ('&atendimento_id=' + atendimentoSelecionadoId) : '' %>">
+        <strong><%= d.rotulo %></strong>
+        <span style="font-weight:400; font-size:0.78rem; display:block; margin-top:4px; opacity:0.9;"><%= d.resumo %></span>
+      </a>
+    <% }) %>
+  </div>
+
+  <%
+    const deptAtivo = departamentos.find(function(d){ return d.id === departamentoAtivo; });
+  %>
+
+  <div class="card">
+    <h2><%= deptAtivo.rotulo %></h2>
+    <p style="color:#6a6258; font-size:0.9rem;"><%= deptAtivo.papel %></p>
+
+    <form method="get" action="/departamentos" class="campo" style="max-width:420px;">
+      <input type="hidden" name="departamento" value="<%= deptAtivo.id %>">
+      <label>Atendimento relacionado (opcional)</label>
+      <select name="atendimento_id" onchange="this.form.submit()">
+        <option value="">— nenhum (resposta genérica) —</option>
+        <% atendimentos.forEach(function(a) { %>
+          <option value="<%= a.id %>" <%= String(a.id) === String(atendimentoSelecionadoId) ? 'selected' : '' %>>
+            <%= a.numero %> — <%= a.cliente_nome || 'Cliente não informado' %> (<%= a.tipo_movel || 'tipo não informado' %>)
+          </option>
+        <% }) %>
+      </select>
+    </form>
+
+    <div class="botoes" style="margin:10px 0;">
+      <% deptAtivo.quickPrompts.forEach(function(qp, i) { %>
+        <form method="post" action="/departamentos/consultar" data-no-lock="0">
+          <input type="hidden" name="departamento_id" value="<%= deptAtivo.id %>">
+          <input type="hidden" name="atendimento_id" value="<%= atendimentoSelecionadoId %>">
+          <input type="hidden" name="prompt" value="<%= qp.prompt %>">
+          <button type="submit" class="botao secundario pequeno"><%= qp.label %></button>
+        </form>
+      <% }) %>
+    </div>
+
+    <form method="post" action="/departamentos/consultar">
+      <input type="hidden" name="departamento_id" value="<%= deptAtivo.id %>">
+      <input type="hidden" name="atendimento_id" value="<%= atendimentoSelecionadoId %>">
+      <div class="campo">
+        <label>Pedido para <%= deptAtivo.nome %></label>
+        <textarea name="prompt" placeholder="Escreva o que você precisa..." required></textarea>
+      </div>
+      <div class="carregando"><span class="spinner"></span> Consultando <%= deptAtivo.nome %>...</div>
+      <button type="submit">Acionar <%= deptAtivo.nome %></button>
+    </form>
+  </div>
+
+  <% if (resultado) { %>
+    <div class="card">
+      <% if (resultado.status === 'nao_configurado') { %>
+        <div class="erro-msg">IA não configurada: <%= resultado.erro %></div>
+      <% } else if (resultado.status !== 'concluida') { %>
+        <div class="erro-msg">Não foi possível concluir: <%= resultado.erro %></div>
+      <% } else { %>
+        <h3><%= resultado.resposta.agentTitle %></h3>
+        <% if (resultado.modelo) { %><p style="font-size:0.75rem; color:#6a6258;">Modelo: <%= resultado.modelo %></p><% } %>
+        <p style="white-space:pre-line;"><%= resultado.resposta.technicalAnalysis %></p>
+
+        <% if (resultado.resposta.recommendedActions && resultado.resposta.recommendedActions.length) { %>
+          <h4>Próximos passos recomendados</h4>
+          <ul>
+            <% resultado.resposta.recommendedActions.forEach(function(a) { %><li><%= a %></li><% }) %>
+          </ul>
+        <% } %>
+
+        <% if (resultado.resposta.clientMessageSuggestion) { %>
+          <div style="background:#faf8f5; border:1px solid var(--cor-borda); border-radius:8px; padding:12px; margin-top:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <strong style="font-size:0.85rem;">Texto pronto para WhatsApp / divulgação</strong>
+              <button type="button" class="botao secundario pequeno" data-copiar-alvo="#texto-sugerido">Copiar texto</button>
+            </div>
+            <p id="texto-sugerido" style="white-space:pre-line; font-size:0.9rem;"><%= resultado.resposta.clientMessageSuggestion %></p>
+          </div>
+        <% } %>
+      <% } %>
+    </div>
+  <% } %>
+
+</div>
+<%- include('partials/footer') %>

@@ -99,4 +99,18 @@
     }
   });
 
+  // Botão "Copiar texto" (ex.: sugestão de mensagem dos agentes).
+  document.addEventListener('click', function (ev) {
+    const botao = ev.target.closest('[data-copiar-alvo]');
+    if (!botao) return;
+    const alvo = document.querySelector(botao.getAttribute('data-copiar-alvo'));
+    if (!alvo) return;
+    const texto = alvo.innerText || alvo.textContent || '';
+    navigator.clipboard.writeText(texto).then(function () {
+      const original = botao.innerHTML;
+      botao.innerHTML = 'Copiado!';
+      setTimeout(function () { botao.innerHTML = original; }, 2000);
+    }).catch(function () { /* ignorar falha de permissão de clipboard */ });
+  });
+
 })();
