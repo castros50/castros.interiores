@@ -7,6 +7,7 @@ const { uploadMemoria, salvarArquivoEmDisco, UPLOAD_ROOT } = require('../middlew
 const { gerarImagemLamina, TEMAS } = require('../services/juliaImagens');
 const pdfCatalogoJulia = require('../services/pdfCatalogoJulia');
 const { consultarDepartamento } = require('../services/departamentosAgente');
+const juliaChat = require('../services/juliaChat');
 
 const router = express.Router();
 
@@ -54,15 +55,33 @@ function baseLocals(req, abaAtiva) {
     LEFT JOIN julia_campanhas jc ON jc.id = ja.campanha_id
     ORDER BY ja.data, ja.hora
   `).all();
+  const chatMensagens = db.prepare('SELECT * FROM julia_chat_mensagens WHERE campanha_id IS ? ORDER BY criado_em')
+    .all(campanhaId || null);
   return {
-    abaAtiva, fotos, campanhas, campanhaAtiva, campanhaId, agendaGeral,
+    abaAtiva, fotos, campanhas, campanhaAtiva, campanhaId, agendaGeral, chatMensagens,
     tagsFoto: TAGS_FOTO, canais: CANAIS, formatos: FORMATOS, temas: TEMAS,
     erro: req.query.erro || null, ok: req.query.ok || null
   };
 }
 
 router.get('/julia', (req, res) => {
-  res.render('julia', baseLocals(req, req.query.tab || 'fotos'));
+  res.render('julia', baseLocals(req, req.query.tab || 'chat'));
+});
+
+// ---------- Chat de verdade com a Júlia (function calling) ----------
+router.post('/julia/chat', async (req, res) => {
+  const mensagem = (req.body.mensagem || '').trim();
+  const campanhaId = req.body.campanha_id || null;
+  if (!mensagem) return res.redirect('/julia?tab=chat' + (campanhaId ? ('&campanha_id=' + campanhaId) : ''));
+
+  const resultado = await juliaChat.conversar({ campanhaId, mensagem, usuarioId: req.session.userId });
+  const idFinal = resultado.campanhaId || campanhaId;
+
+  if (resultado.status === 'nao_configurado' || resultado.status === 'erro') {
+    return res.redirect('/julia?tab=chat' + (idFinal ? ('&campanha_id=' + idFinal) : '') +
+      '&erro=' + encodeURIComponent(resultado.erro || 'Não foi possível conversar com a Júlia agora.'));
+  }
+  res.redirect('/julia?tab=chat' + (idFinal ? ('&campanha_id=' + idFinal) : ''));
 });
 
 // ---------- Fotos ----------

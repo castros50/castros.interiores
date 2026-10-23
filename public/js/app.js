@@ -99,6 +99,42 @@
     }
   });
 
+  // Botão de microfone (ditar por voz) — Web Speech API, só no navegador, nada é enviado
+  // ao servidor como áudio: o reconhecimento já devolve texto, que só preenche o campo.
+  document.addEventListener('click', function (ev) {
+    const botao = ev.target.closest('[data-mic-alvo]');
+    if (!botao) return;
+    const Reconhecimento = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Reconhecimento) {
+      window.alert('Este navegador não tem suporte a reconhecimento de voz. Use Chrome ou Edge, ou digite a mensagem.');
+      return;
+    }
+    const alvo = document.querySelector(botao.getAttribute('data-mic-alvo'));
+    if (!alvo || botao.dataset.gravando === '1') return;
+
+    botao.dataset.gravando = '1';
+    const textoOriginalBotao = botao.innerHTML;
+    botao.innerHTML = '🔴 Ouvindo...';
+
+    const rec = new Reconhecimento();
+    rec.lang = 'pt-BR';
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    rec.onresult = function (e) {
+      const texto = e.results[0][0].transcript;
+      alvo.value = (alvo.value ? alvo.value.trim() + ' ' : '') + texto;
+      alvo.focus();
+    };
+    rec.onerror = function () {
+      window.alert('Não foi possível captar o áudio. Tente novamente ou digite a mensagem.');
+    };
+    rec.onend = function () {
+      botao.dataset.gravando = '0';
+      botao.innerHTML = textoOriginalBotao;
+    };
+    rec.start();
+  });
+
   // Botão "Copiar texto" (ex.: sugestão de mensagem dos agentes).
   document.addEventListener('click', function (ev) {
     const botao = ev.target.closest('[data-copiar-alvo]');

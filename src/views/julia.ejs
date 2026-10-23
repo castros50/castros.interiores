@@ -37,6 +37,7 @@
   </div>
 
   <div class="tabs">
+    <a class="<%= abaAtiva === 'chat' ? 'ativa' : '' %>" href="?tab=chat<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Conversar</a>
     <a class="<%= abaAtiva === 'fotos' ? 'ativa' : '' %>" href="?tab=fotos<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Fotos</a>
     <a class="<%= abaAtiva === 'campanha' ? 'ativa' : '' %>" href="?tab=campanha<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Campanha</a>
     <a class="<%= abaAtiva === 'carrossel' ? 'ativa' : '' %>" href="?tab=carrossel<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Carrossel</a>
@@ -46,7 +47,9 @@
     <a class="<%= abaAtiva === 'compartilhar' ? 'ativa' : '' %>" href="?tab=compartilhar<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Compartilhar</a>
   </div>
 
-  <% if (abaAtiva === 'fotos') { %>
+  <% if (abaAtiva === 'chat') { %>
+    <%- include('julia_abas/chat') %>
+  <% } else if (abaAtiva === 'fotos') { %>
     <%- include('julia_abas/fotos') %>
   <% } else if (!campanhaAtiva) { %>
     <div class="card"><p style="color:#6a6258;">Selecione ou crie uma campanha acima para usar esta aba.</p></div>

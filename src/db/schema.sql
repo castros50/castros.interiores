@@ -238,6 +238,16 @@ CREATE TABLE IF NOT EXISTS julia_agenda (
   criado_em TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS julia_chat_mensagens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campanha_id INTEGER REFERENCES julia_campanhas(id) ON DELETE CASCADE,
+  remetente TEXT NOT NULL, -- usuario | julia
+  texto TEXT NOT NULL,
+  criado_por INTEGER REFERENCES users(id),
+  criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_julia_chat_campanha ON julia_chat_mensagens(campanha_id);
 CREATE INDEX IF NOT EXISTS idx_julia_laminas_campanha ON julia_carrossel_laminas(campanha_id);
 CREATE INDEX IF NOT EXISTS idx_julia_catalogo_campanha ON julia_catalogo_itens(campanha_id);
 CREATE INDEX IF NOT EXISTS idx_julia_catalogo_item_fotos ON julia_catalogo_item_fotos(item_id);
