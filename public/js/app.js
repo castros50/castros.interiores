@@ -124,6 +124,14 @@
       const texto = e.results[0][0].transcript;
       alvo.value = (alvo.value ? alvo.value.trim() + ' ' : '') + texto;
       alvo.focus();
+      // Em campos marcados com data-mic-enviar, falar já envia — sem precisar clicar depois.
+      if (botao.dataset.micEnviar === '1') {
+        const form = alvo.closest('form');
+        if (form) {
+          if (form.requestSubmit) form.requestSubmit();
+          else form.submit();
+        }
+      }
     };
     rec.onerror = function () {
       window.alert('Não foi possível captar o áudio. Tente novamente ou digite a mensagem.');
