@@ -23,12 +23,15 @@
       </div>
     </div>
 
-    <% if (l.foto_arquivo) { %>
-      <div class="foto-card" style="width:160px; margin-bottom:10px;">
-        <img src="/julia/fotos/<%= l.foto_id %>/arquivo" alt="Foto da lâmina" data-ampliar>
+    <% if (l.titulo || l.corpo || l.foto_arquivo) { %>
+      <div style="margin-bottom:10px;">
+        <strong style="font-size:0.8rem; display:block; margin-bottom:6px;">Lâmina pronta:</strong>
+        <img src="/julia/campanhas/<%= campanhaAtiva.id %>/laminas/<%= l.ordem %>/imagem.png?v=<%= l.atualizado_em %>"
+             alt="Lâmina gerada" data-ampliar
+             style="max-width:220px; width:100%; border-radius:8px; border:1px solid var(--cor-borda);">
       </div>
     <% } else { %>
-      <p style="color:#6a6258; font-size:0.85rem;">Sem foto nesta lâmina ainda.</p>
+      <p style="color:#6a6258; font-size:0.85rem;">Preencha título, texto ou foto para essa lâmina ser gerada aqui.</p>
     <% } %>
 
     <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/laminas/<%= l.ordem %>" enctype="multipart/form-data">

@@ -222,6 +222,12 @@ router.post('/julia/campanhas/:id/laminas/:laminaId/mover', (req, res) => {
   res.redirect('/julia?tab=carrossel&campanha_id=' + id);
 });
 
+// Nome de campanha quase sempre tem acento (ex.: "Pôster") — sem isso, o Content-Disposition
+// grava o nome do arquivo corrompido (vira caractere inválido no download).
+function nomeArquivoSeguro(texto) {
+  return String(texto || 'arquivo').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'arquivo';
+}
+
 async function caminhoAbsolutoFoto(fotoId) {
   if (!fotoId) return null;
   const foto = db.prepare('SELECT * FROM julia_fotos WHERE id = ?').get(fotoId);
@@ -238,7 +244,7 @@ router.get('/julia/campanhas/:id/laminas/:ordem/imagem.png', async (req, res) =>
   const caminhoFoto = await caminhoAbsolutoFoto(lamina.foto_id);
   const png = await gerarImagemLamina({ titulo: lamina.titulo, corpo: lamina.corpo, caminhoFotoAbsoluto: caminhoFoto, tema: lamina.tema, rodape: 'Castros Interiores' });
   res.setHeader('Content-Type', 'image/png');
-  res.setHeader('Content-Disposition', 'inline; filename="lamina-' + ordem + '-' + (campanha ? campanha.nome : 'carrossel') + '.png"');
+  res.setHeader('Content-Disposition', 'inline; filename="lamina-' + ordem + '-' + nomeArquivoSeguro(campanha ? campanha.nome : 'carrossel') + '.png"');
   res.send(png);
 });
 
@@ -280,7 +286,7 @@ router.get('/julia/campanhas/:id/poster.png', async (req, res) => {
     rodape: campanha.cta_texto || 'Castros Interiores'
   });
   res.setHeader('Content-Type', 'image/png');
-  res.setHeader('Content-Disposition', 'inline; filename="poster-' + campanha.nome + '.png"');
+  res.setHeader('Content-Disposition', 'inline; filename="poster-' + nomeArquivoSeguro(campanha.nome) + '.png"');
   res.send(png);
 });
 
@@ -347,7 +353,7 @@ router.get('/julia/campanhas/:id/catalogo.pdf', (req, res) => {
     return { ...item, fotos };
   });
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', 'inline; filename="catalogo-' + campanha.nome + '.pdf"');
+  res.setHeader('Content-Disposition', 'inline; filename="catalogo-' + nomeArquivoSeguro(campanha.nome) + '.pdf"');
   pdfCatalogoJulia.gerar(campanha, itens, { whatsapp: campanha.whatsapp_numero }).pipe(res);
 });
 

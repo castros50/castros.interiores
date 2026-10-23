@@ -2,10 +2,17 @@
   <h2>Pôster</h2>
   <p style="color:#6a6258; font-size:0.9rem;">Usa o título, texto e CTA definidos na aba "Campanha".</p>
 
-  <% if (campanhaAtiva.poster_foto_id) { %>
-    <div class="foto-card" style="width:220px; margin-bottom:10px;">
-      <img src="/julia/fotos/<%= campanhaAtiva.poster_foto_id %>/arquivo" alt="Foto do pôster" data-ampliar>
+  <% if (campanhaAtiva.titulo || campanhaAtiva.poster_foto_id) { %>
+    <div style="margin-bottom:14px;">
+      <strong style="font-size:0.85rem; display:block; margin-bottom:6px;">Pôster pronto:</strong>
+      <img src="/julia/campanhas/<%= campanhaAtiva.id %>/poster.png?v=<%= campanhaAtiva.atualizado_em %>"
+           alt="Pôster gerado" data-ampliar
+           style="max-width:320px; width:100%; border-radius:8px; border:1px solid var(--cor-borda);">
     </div>
+  <% } else { %>
+    <p style="color:#6a6258; font-size:0.85rem;">
+      Preencha pelo menos o título na aba "Campanha" para o pôster ser gerado aqui.
+    </p>
   <% } %>
 
   <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/poster">
