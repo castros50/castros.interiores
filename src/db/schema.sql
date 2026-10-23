@@ -145,6 +145,20 @@ CREATE TABLE IF NOT EXISTS historico_versoes (
   criado_em TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS consultas_agente (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  atendimento_id INTEGER REFERENCES atendimentos(id) ON DELETE SET NULL,
+  departamento TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  status TEXT NOT NULL, -- concluida | erro
+  resposta_json TEXT,
+  erro TEXT,
+  modelo TEXT,
+  criado_por INTEGER REFERENCES users(id),
+  criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_consultas_atendimento ON consultas_agente(atendimento_id);
 CREATE INDEX IF NOT EXISTS idx_fotos_atendimento ON fotos(atendimento_id);
 CREATE INDEX IF NOT EXISTS idx_achados_atendimento ON achados(atendimento_id);
 CREATE INDEX IF NOT EXISTS idx_reaproveitamento_atendimento ON reaproveitamento(atendimento_id);
