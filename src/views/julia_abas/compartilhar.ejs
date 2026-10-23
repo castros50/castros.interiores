@@ -1,0 +1,29 @@
+<%
+  const textoBase = campanhaAtiva.texto_feed_ia || campanhaAtiva.texto || campanhaAtiva.titulo || '';
+  const textoComHashtags = textoBase + (campanhaAtiva.hashtags ? ('\n\n' + campanhaAtiva.hashtags) : '');
+  const linkWhatsapp = 'https://wa.me/' + (campanhaAtiva.whatsapp_numero ? campanhaAtiva.whatsapp_numero.replace(/\D/g,'') : '') + '?text=' + encodeURIComponent(textoComHashtags);
+%>
+<div class="card">
+  <h2>Compartilhar — <%= campanhaAtiva.nome %></h2>
+  <p class="aviso">
+    O WhatsApp não permite anexar imagens automaticamente por um link — o texto já vem pronto,
+    mas a imagem (pôster ou lâmina) precisa ser baixada e anexada manualmente na conversa.
+    Nenhuma mensagem é enviada sozinha: você escolhe o destinatário e confirma o envio.
+  </p>
+
+  <div class="campo">
+    <label>Texto que será aberto no WhatsApp</label>
+    <textarea readonly style="min-height:120px;"><%= textoComHashtags %></textarea>
+  </div>
+
+  <div class="botoes">
+    <a class="botao" href="<%= linkWhatsapp %>" target="_blank">Abrir WhatsApp com texto pronto</a>
+    <a class="botao secundario" href="/julia/campanhas/<%= campanhaAtiva.id %>/poster.png" target="_blank">1. Baixar imagem do pôster</a>
+    <a class="botao secundario" href="/julia/campanhas/<%= campanhaAtiva.id %>/carrossel.zip">1b. Baixar carrossel (ZIP)</a>
+  </div>
+
+  <p style="font-size:0.85rem; color:#6a6258; margin-top:10px;">
+    Passo a passo: baixe a imagem que quiser usar, clique em "Abrir WhatsApp com texto pronto",
+    escolha o contato ou lista de transmissão, anexe a imagem baixada na conversa e envie.
+  </p>
+</div>

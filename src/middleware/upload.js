@@ -39,8 +39,8 @@ const uploadMemoria = multer({
 // Mantido como alias — todas as rotas de foto usam o mesmo upload em memória.
 const upload = uploadMemoria;
 
-async function salvarArquivoEmDisco(atendimentoId, file) {
-  const dir = path.join(UPLOAD_ROOT, String(atendimentoId));
+async function salvarArquivoEmDisco(pasta, file) {
+  const dir = path.join(UPLOAD_ROOT, String(pasta));
   fs.mkdirSync(dir, { recursive: true });
   const nome = Date.now() + '-' + crypto.randomBytes(6).toString('hex') + '.jpg';
   try {

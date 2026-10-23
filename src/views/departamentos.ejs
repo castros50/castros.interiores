@@ -27,6 +27,14 @@
     const deptAtivo = departamentos.find(function(d){ return d.id === departamentoAtivo; });
   %>
 
+  <% if (deptAtivo.id === 'julia_marketing') { %>
+    <div class="card">
+      <h2><%= deptAtivo.rotulo %></h2>
+      <p style="color:#6a6258; font-size:0.9rem;"><%= deptAtivo.papel %></p>
+      <p>A Júlia tem um módulo próprio: biblioteca de fotos, carrossel com 5 lâminas, pôster, catálogo em PDF e agenda de publicações.</p>
+      <a class="botao" href="/julia">Abrir módulo completo da Júlia →</a>
+    </div>
+  <% } else { %>
   <div class="card">
     <h2><%= deptAtivo.rotulo %></h2>
     <p style="color:#6a6258; font-size:0.9rem;"><%= deptAtivo.papel %></p>
@@ -66,8 +74,9 @@
       <button type="submit">Acionar <%= deptAtivo.nome %></button>
     </form>
   </div>
+  <% } %>
 
-  <% if (resultado) { %>
+  <% if (resultado && deptAtivo.id !== 'julia_marketing') { %>
     <div class="card">
       <% if (resultado.status === 'nao_configurado') { %>
         <div class="erro-msg">IA não configurada: <%= resultado.erro %></div>

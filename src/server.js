@@ -9,6 +9,7 @@ const authRoutes = require('./routes/auth');
 const atendimentosRoutes = require('./routes/atendimentos');
 const materiaisRoutes = require('./routes/materiais');
 const departamentosRoutes = require('./routes/departamentos');
+const juliaRoutes = require('./routes/julia');
 const { seedIfNeeded } = require('./db/seed');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -43,6 +44,7 @@ app.use('/', authRoutes);
 app.use('/', requireAuth, atendimentosRoutes);
 app.use('/materiais', requireAuth, materiaisRoutes);
 app.use('/', requireAuth, departamentosRoutes);
+app.use('/', requireAuth, juliaRoutes);
 
 app.use((req, res) => {
   res.status(404).render('erro', { titulo: 'Página não encontrada', mensagem: 'A página solicitada não existe.' });

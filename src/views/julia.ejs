@@ -1,0 +1,68 @@
+<%- include('partials/head', { titulo: 'Júlia — Marketing' }) %>
+<%- include('partials/header') %>
+<div class="container">
+
+  <div class="card">
+    <h1>Júlia — Marketing e Divulgação</h1>
+    <p style="color:#6a6258; font-size:0.9rem;">
+      Biblioteca de fotos, criador de carrossel e catálogo com fotos reais, pôster e agenda de
+      publicações. Nada é postado automaticamente — toda publicação é planejada para envio manual,
+      a menos que uma integração oficial com Instagram/Facebook/WhatsApp seja configurada no futuro.
+    </p>
+  </div>
+
+  <% if (erro) { %><div class="erro-msg"><%= erro %></div><% } %>
+  <% if (ok) { %><div class="ok-msg">Ação realizada com sucesso.</div><% } %>
+
+  <div class="card">
+    <form method="get" action="/julia" class="grid cols-2">
+      <input type="hidden" name="tab" value="<%= abaAtiva %>">
+      <div class="campo">
+        <label>Campanha ativa</label>
+        <select name="campanha_id" onchange="this.form.submit()">
+          <option value="">— nenhuma —</option>
+          <% campanhas.forEach(function(c) { %>
+            <option value="<%= c.id %>" <%= String(c.id) === String(campanhaId) ? 'selected' : '' %>><%= c.nome %> (<%= c.formato %>)</option>
+          <% }) %>
+        </select>
+      </div>
+    </form>
+    <form method="post" action="/julia/campanhas" class="grid cols-2" style="margin-top:10px;">
+      <div class="campo">
+        <label>Nova campanha</label>
+        <input type="text" name="nome" placeholder="Ex.: Coleção Outono 2026" required>
+      </div>
+      <div style="align-self:flex-end;"><button type="submit">Criar campanha</button></div>
+    </form>
+  </div>
+
+  <div class="tabs">
+    <a class="<%= abaAtiva === 'fotos' ? 'ativa' : '' %>" href="?tab=fotos<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Fotos</a>
+    <a class="<%= abaAtiva === 'campanha' ? 'ativa' : '' %>" href="?tab=campanha<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Campanha</a>
+    <a class="<%= abaAtiva === 'carrossel' ? 'ativa' : '' %>" href="?tab=carrossel<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Carrossel</a>
+    <a class="<%= abaAtiva === 'poster' ? 'ativa' : '' %>" href="?tab=poster<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Pôster</a>
+    <a class="<%= abaAtiva === 'catalogo' ? 'ativa' : '' %>" href="?tab=catalogo<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Catálogo</a>
+    <a class="<%= abaAtiva === 'agenda' ? 'ativa' : '' %>" href="?tab=agenda<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Agenda</a>
+    <a class="<%= abaAtiva === 'compartilhar' ? 'ativa' : '' %>" href="?tab=compartilhar<%= campanhaId ? ('&campanha_id='+campanhaId) : '' %>">Compartilhar</a>
+  </div>
+
+  <% if (abaAtiva === 'fotos') { %>
+    <%- include('julia_abas/fotos') %>
+  <% } else if (!campanhaAtiva) { %>
+    <div class="card"><p style="color:#6a6258;">Selecione ou crie uma campanha acima para usar esta aba.</p></div>
+  <% } else if (abaAtiva === 'campanha') { %>
+    <%- include('julia_abas/campanha') %>
+  <% } else if (abaAtiva === 'carrossel') { %>
+    <%- include('julia_abas/carrossel') %>
+  <% } else if (abaAtiva === 'poster') { %>
+    <%- include('julia_abas/poster') %>
+  <% } else if (abaAtiva === 'catalogo') { %>
+    <%- include('julia_abas/catalogo') %>
+  <% } else if (abaAtiva === 'agenda') { %>
+    <%- include('julia_abas/agenda') %>
+  <% } else if (abaAtiva === 'compartilhar') { %>
+    <%- include('julia_abas/compartilhar') %>
+  <% } %>
+
+</div>
+<%- include('partials/footer') %>
