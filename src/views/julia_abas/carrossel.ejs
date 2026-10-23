@@ -1,0 +1,63 @@
+<div class="card">
+  <h2>Carrossel — 5 lâminas</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">Cada lâmina pode usar uma foto da biblioteca ou uma nova foto enviada agora.</p>
+  <div class="botoes">
+    <a class="botao" href="/julia/campanhas/<%= campanhaAtiva.id %>/carrossel.zip">Baixar as 5 lâminas em ZIP</a>
+  </div>
+</div>
+
+<% campanhaAtiva.laminas.forEach(function(l) { %>
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h3>Lâmina <%= l.ordem %></h3>
+      <div class="botoes">
+        <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/laminas/<%= l.id %>/mover">
+          <input type="hidden" name="direcao" value="cima">
+          <button type="submit" class="botao secundario pequeno" <%= l.ordem === 1 ? 'disabled' : '' %>>↑ Mover para cima</button>
+        </form>
+        <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/laminas/<%= l.id %>/mover">
+          <input type="hidden" name="direcao" value="baixo">
+          <button type="submit" class="botao secundario pequeno" <%= l.ordem === 5 ? 'disabled' : '' %>>↓ Mover para baixo</button>
+        </form>
+        <a class="botao secundario pequeno" href="/julia/campanhas/<%= campanhaAtiva.id %>/laminas/<%= l.ordem %>/imagem.png" target="_blank">Baixar PNG</a>
+      </div>
+    </div>
+
+    <% if (l.foto_arquivo) { %>
+      <div class="foto-card" style="width:160px; margin-bottom:10px;">
+        <img src="/julia/fotos/<%= l.foto_id %>/arquivo" alt="Foto da lâmina" data-ampliar>
+      </div>
+    <% } else { %>
+      <p style="color:#6a6258; font-size:0.85rem;">Sem foto nesta lâmina ainda.</p>
+    <% } %>
+
+    <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/laminas/<%= l.ordem %>" enctype="multipart/form-data">
+      <div class="campo"><label>Título da lâmina</label><input type="text" name="titulo" value="<%= l.titulo || '' %>"></div>
+      <div class="campo"><label>Texto</label><textarea name="corpo"><%= l.corpo || '' %></textarea></div>
+      <div class="grid cols-2">
+        <div class="campo">
+          <label>Usar foto da biblioteca</label>
+          <select name="foto_biblioteca_id">
+            <option value="">— manter atual / nenhuma —</option>
+            <% fotos.forEach(function(f) { %>
+              <option value="<%= f.id %>" <%= String(f.id) === String(l.foto_id) ? 'selected' : '' %>><%= f.tag %><%= f.legenda ? (' — ' + f.legenda) : '' %> (#<%= f.id %>)</option>
+            <% }) %>
+          </select>
+        </div>
+        <div class="campo">
+          <label>Ou enviar nova foto</label>
+          <input type="file" name="nova_foto" accept="image/*">
+        </div>
+      </div>
+      <div class="campo">
+        <label>Cor/tema</label>
+        <select name="tema">
+          <% Object.keys(temas).forEach(function(chave) { %>
+            <option value="<%= chave %>" <%= l.tema === chave ? 'selected' : '' %>><%= temas[chave].rotulo %></option>
+          <% }) %>
+        </select>
+      </div>
+      <button type="submit" class="botao secundario">Salvar lâmina <%= l.ordem %></button>
+    </form>
+  </div>
+<% }) %>

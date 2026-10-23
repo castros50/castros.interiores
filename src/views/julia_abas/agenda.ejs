@@ -1,0 +1,76 @@
+<div class="card">
+  <p class="aviso">
+    Não existe integração automática com Instagram, Facebook ou WhatsApp nesta versão —
+    toda publicação aqui é <strong>planejada</strong> e precisa ser feita manualmente pela
+    pessoa responsável. Quando a campanha for publicada de verdade, marque abaixo como "Concluída".
+  </p>
+</div>
+
+<div class="card">
+  <h3>Planejar publicação — <%= campanhaAtiva.nome %></h3>
+  <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/agenda">
+    <div class="campo"><label>Título / descrição da publicação</label><input type="text" name="titulo" required></div>
+    <div class="grid cols-3">
+      <div class="campo">
+        <label>Canal</label>
+        <select name="canal">
+          <% canais.forEach(function(c) { %><option value="<%= c %>"><%= c %></option><% }) %>
+        </select>
+      </div>
+      <div class="campo"><label>Data planejada</label><input type="date" name="data"></div>
+      <div class="campo"><label>Horário</label><input type="time" name="hora"></div>
+    </div>
+    <button type="submit">Planejar publicação</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Publicações desta campanha</h3>
+  <% if (campanhaAtiva.agenda.length === 0) { %>
+    <p style="color:#6a6258;">Nenhuma publicação planejada ainda.</p>
+  <% } %>
+  <table>
+    <thead><tr><th>Título</th><th>Canal</th><th>Data</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      <% campanhaAtiva.agenda.forEach(function(a) { %>
+        <tr>
+          <td><%= a.titulo %></td>
+          <td><%= a.canal %></td>
+          <td><%= a.data || '—' %> <%= a.hora || '' %></td>
+          <td>
+            <form method="post" action="/julia/agenda/<%= a.id %>/status" style="display:inline;">
+              <select name="status" onchange="this.form.submit()">
+                <option value="Planejada" <%= a.status === 'Planejada' ? 'selected' : '' %>>Planejada — envio manual necessário</option>
+                <option value="Concluída" <%= a.status === 'Concluída' ? 'selected' : '' %>>Concluída (publicada manualmente)</option>
+                <option value="Com erro" <%= a.status === 'Com erro' ? 'selected' : '' %>>Com erro</option>
+              </select>
+            </form>
+          </td>
+          <td>
+            <form method="post" action="/julia/agenda/<%= a.id %>/excluir" data-confirmar="Excluir este planejamento?">
+              <button type="submit" class="botao perigo pequeno">Excluir</button>
+            </form>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Todas as publicações planejadas (todas as campanhas)</h3>
+  <table>
+    <thead><tr><th>Campanha</th><th>Título</th><th>Canal</th><th>Data</th><th>Status</th></tr></thead>
+    <tbody>
+      <% agendaGeral.forEach(function(a) { %>
+        <tr>
+          <td><%= a.campanha_nome || '—' %></td>
+          <td><%= a.titulo %></td>
+          <td><%= a.canal %></td>
+          <td><%= a.data || '—' %> <%= a.hora || '' %></td>
+          <td><span class="selo <%= a.status === 'Concluída' ? 'concluido' : (a.status === 'Com erro' ? 'erro' : 'aguardando_fotos') %>"><%= a.status %></span></td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>

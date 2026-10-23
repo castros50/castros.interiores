@@ -1,0 +1,37 @@
+<div class="card">
+  <h2>Pôster</h2>
+  <p style="color:#6a6258; font-size:0.9rem;">Usa o título, texto e CTA definidos na aba "Campanha".</p>
+
+  <% if (campanhaAtiva.poster_foto_id) { %>
+    <div class="foto-card" style="width:220px; margin-bottom:10px;">
+      <img src="/julia/fotos/<%= campanhaAtiva.poster_foto_id %>/arquivo" alt="Foto do pôster" data-ampliar>
+    </div>
+  <% } %>
+
+  <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/poster">
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Foto da biblioteca</label>
+        <select name="foto_id">
+          <option value="">— nenhuma —</option>
+          <% fotos.forEach(function(f) { %>
+            <option value="<%= f.id %>" <%= String(f.id) === String(campanhaAtiva.poster_foto_id) ? 'selected' : '' %>><%= f.tag %><%= f.legenda ? (' — ' + f.legenda) : '' %> (#<%= f.id %>)</option>
+          <% }) %>
+        </select>
+      </div>
+      <div class="campo">
+        <label>Cor/tema</label>
+        <select name="tema">
+          <% Object.keys(temas).forEach(function(chave) { %>
+            <option value="<%= chave %>" <%= campanhaAtiva.poster_tema === chave ? 'selected' : '' %>><%= temas[chave].rotulo %></option>
+          <% }) %>
+        </select>
+      </div>
+    </div>
+    <button type="submit">Salvar pôster</button>
+  </form>
+
+  <div class="botoes" style="margin-top:12px;">
+    <a class="botao" href="/julia/campanhas/<%= campanhaAtiva.id %>/poster.png" target="_blank">Baixar pôster em PNG</a>
+  </div>
+</div>

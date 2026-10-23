@@ -1,0 +1,44 @@
+<div class="card">
+  <h2>Enviar fotos para a biblioteca</h2>
+  <form method="post" action="/julia/fotos" enctype="multipart/form-data" data-upload="1">
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Categoria</label>
+        <select name="tag">
+          <% tagsFoto.forEach(function(t) { %><option value="<%= t %>"><%= t %></option><% }) %>
+        </select>
+      </div>
+      <div class="campo">
+        <label>Título / legenda (opcional)</label>
+        <input type="text" name="legenda">
+      </div>
+    </div>
+    <div class="campo">
+      <label>Fotos (câmera ou galeria)</label>
+      <input type="file" name="fotos" accept="image/*" multiple required data-preview="#preview-julia-fotos" data-contador="#contador-julia-fotos">
+      <div id="contador-julia-fotos" style="font-size:0.8rem; color:#6a6258; margin-top:4px;"></div>
+    </div>
+    <div id="preview-julia-fotos" class="fotos-grade" style="margin-bottom:10px;"></div>
+    <div class="progresso"><div></div></div>
+    <div class="carregando"><span class="spinner"></span> Enviando fotos...</div>
+    <button type="submit">Adicionar à biblioteca</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Biblioteca (<%= fotos.length %>)</h2>
+  <% if (fotos.length === 0) { %>
+    <p style="color:#6a6258;">Nenhuma foto na biblioteca ainda.</p>
+  <% } %>
+  <div class="fotos-grade">
+    <% fotos.forEach(function(f) { %>
+      <div class="foto-card">
+        <img src="/julia/fotos/<%= f.id %>/arquivo" alt="<%= f.legenda || f.tag %>" data-ampliar>
+        <div class="legenda"><%= f.tag %><%= f.legenda ? (' — ' + f.legenda) : '' %></div>
+        <form method="post" action="/julia/fotos/<%= f.id %>/excluir" data-confirmar="Excluir esta foto da biblioteca?" style="padding:0 6px 6px;">
+          <button type="submit" class="botao perigo pequeno">Excluir</button>
+        </form>
+      </div>
+    <% }) %>
+  </div>
+</div>

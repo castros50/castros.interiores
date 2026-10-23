@@ -158,6 +158,91 @@ CREATE TABLE IF NOT EXISTS consultas_agente (
   criado_em TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ---------- Júlia (Marketing e Divulgação) ----------
+
+CREATE TABLE IF NOT EXISTS julia_fotos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  titulo TEXT,
+  legenda TEXT,
+  tag TEXT NOT NULL DEFAULT 'Vitrine / Catálogo',
+  arquivo TEXT NOT NULL,
+  criado_por INTEGER REFERENCES users(id),
+  criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS julia_campanhas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nome TEXT NOT NULL,
+  objetivo TEXT,
+  publico_alvo TEXT,
+  formato TEXT, -- Anúncio | Pôster | Carrossel | Catálogo
+  titulo TEXT,
+  texto TEXT,
+  texto_feed_ia TEXT,
+  texto_feed_adaptado_ia INTEGER NOT NULL DEFAULT 0,
+  texto_stories_ia TEXT,
+  texto_stories_adaptado_ia INTEGER NOT NULL DEFAULT 0,
+  hashtags TEXT,
+  cta_texto TEXT DEFAULT 'Fale conosco',
+  whatsapp_numero TEXT,
+  poster_foto_id INTEGER REFERENCES julia_fotos(id),
+  poster_tema TEXT DEFAULT 'editorial_creme',
+  criado_por INTEGER REFERENCES users(id),
+  criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+  atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS julia_carrossel_laminas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campanha_id INTEGER NOT NULL REFERENCES julia_campanhas(id) ON DELETE CASCADE,
+  ordem INTEGER NOT NULL,
+  titulo TEXT,
+  corpo TEXT,
+  foto_id INTEGER REFERENCES julia_fotos(id),
+  tema TEXT DEFAULT 'editorial_creme',
+  atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS julia_catalogo_itens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campanha_id INTEGER NOT NULL REFERENCES julia_campanhas(id) ON DELETE CASCADE,
+  ordem INTEGER NOT NULL DEFAULT 0,
+  titulo TEXT NOT NULL,
+  categoria TEXT,
+  colecao TEXT,
+  descricao TEXT,
+  medidas TEXT,
+  cores TEXT,
+  preco_texto TEXT,
+  destaque TEXT,
+  atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS julia_catalogo_item_fotos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER NOT NULL REFERENCES julia_catalogo_itens(id) ON DELETE CASCADE,
+  foto_id INTEGER NOT NULL REFERENCES julia_fotos(id),
+  ordem INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS julia_agenda (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campanha_id INTEGER REFERENCES julia_campanhas(id) ON DELETE CASCADE,
+  titulo TEXT NOT NULL,
+  canal TEXT NOT NULL, -- Instagram Feed | Instagram Stories | WhatsApp Status | Lista de Transmissão WhatsApp | Facebook
+  data TEXT,
+  hora TEXT,
+  status TEXT NOT NULL DEFAULT 'Planejada', -- Planejada | Concluída | Com erro
+  nota TEXT,
+  criado_por INTEGER REFERENCES users(id),
+  criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_julia_laminas_campanha ON julia_carrossel_laminas(campanha_id);
+CREATE INDEX IF NOT EXISTS idx_julia_catalogo_campanha ON julia_catalogo_itens(campanha_id);
+CREATE INDEX IF NOT EXISTS idx_julia_catalogo_item_fotos ON julia_catalogo_item_fotos(item_id);
+CREATE INDEX IF NOT EXISTS idx_julia_agenda_campanha ON julia_agenda(campanha_id);
+
 CREATE INDEX IF NOT EXISTS idx_consultas_atendimento ON consultas_agente(atendimento_id);
 CREATE INDEX IF NOT EXISTS idx_fotos_atendimento ON fotos(atendimento_id);
 CREATE INDEX IF NOT EXISTS idx_achados_atendimento ON achados(atendimento_id);

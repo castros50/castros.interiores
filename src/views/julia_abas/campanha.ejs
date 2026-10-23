@@ -1,0 +1,77 @@
+<div class="card">
+  <h2>Dados da campanha — <%= campanhaAtiva.nome %></h2>
+  <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/editar">
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Formato principal</label>
+        <select name="formato">
+          <% formatos.forEach(function(f) { %><option value="<%= f %>" <%= campanhaAtiva.formato === f ? 'selected' : '' %>><%= f %></option><% }) %>
+        </select>
+      </div>
+      <div class="campo">
+        <label>Objetivo da campanha</label>
+        <input type="text" name="objetivo" value="<%= campanhaAtiva.objetivo || '' %>" placeholder="Ex.: Divulgar reforma artesanal">
+      </div>
+    </div>
+    <div class="campo">
+      <label>Público-alvo</label>
+      <input type="text" name="publico_alvo" value="<%= campanhaAtiva.publico_alvo || '' %>">
+    </div>
+    <div class="campo">
+      <label>Título (usado em pôster, carrossel e anúncios)</label>
+      <input type="text" name="titulo" value="<%= campanhaAtiva.titulo || '' %>">
+    </div>
+    <div class="campo">
+      <label>Texto principal</label>
+      <textarea name="texto"><%= campanhaAtiva.texto || '' %></textarea>
+    </div>
+    <div class="grid cols-2">
+      <div class="campo">
+        <label>Hashtags</label>
+        <input type="text" name="hashtags" value="<%= campanhaAtiva.hashtags || '' %>" placeholder="#castrosinteriores #reforma">
+      </div>
+      <div class="campo">
+        <label>Texto do botão (CTA)</label>
+        <input type="text" name="cta_texto" value="<%= campanhaAtiva.cta_texto || 'Fale conosco' %>">
+      </div>
+    </div>
+    <div class="campo">
+      <label>WhatsApp para contato (opcional, só dígitos com DDI/DDD — ex.: 5591999999999)</label>
+      <input type="text" name="whatsapp_numero" value="<%= campanhaAtiva.whatsapp_numero || '' %>">
+    </div>
+    <button type="submit">Salvar dados da campanha</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Adaptar texto com IA (sem perder o original)</h3>
+  <p style="color:#6a6258; font-size:0.9rem;">
+    Gera uma versão adaptada do título/texto acima para Feed ou Stories. O texto original nunca é
+    sobrescrito — a versão adaptada fica marcada como "gerada por IA" e separada.
+  </p>
+  <div class="botoes">
+    <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/adaptar">
+      <input type="hidden" name="alvo" value="feed">
+      <button type="submit" class="botao secundario">Adaptar para Feed</button>
+    </form>
+    <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/adaptar">
+      <input type="hidden" name="alvo" value="stories">
+      <button type="submit" class="botao secundario">Adaptar para Stories</button>
+    </form>
+  </div>
+
+  <% if (campanhaAtiva.texto_feed_ia) { %>
+    <div style="background:#faf8f5; border:1px solid var(--cor-borda); border-radius:8px; padding:10px; margin-top:10px;">
+      <strong style="font-size:0.85rem;">Versão Feed <span class="selo" style="background:#efe6f7; color:#5a2a8a;">adaptado por IA</span></strong>
+      <p id="texto-feed-ia" style="white-space:pre-line; margin:6px 0;"><%= campanhaAtiva.texto_feed_ia %></p>
+      <button type="button" class="botao secundario pequeno" data-copiar-alvo="#texto-feed-ia">Copiar</button>
+    </div>
+  <% } %>
+  <% if (campanhaAtiva.texto_stories_ia) { %>
+    <div style="background:#faf8f5; border:1px solid var(--cor-borda); border-radius:8px; padding:10px; margin-top:10px;">
+      <strong style="font-size:0.85rem;">Versão Stories <span class="selo" style="background:#efe6f7; color:#5a2a8a;">adaptado por IA</span></strong>
+      <p id="texto-stories-ia" style="white-space:pre-line; margin:6px 0;"><%= campanhaAtiva.texto_stories_ia %></p>
+      <button type="button" class="botao secundario pequeno" data-copiar-alvo="#texto-stories-ia">Copiar</button>
+    </div>
+  <% } %>
+</div>
