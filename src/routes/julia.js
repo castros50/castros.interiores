@@ -137,19 +137,33 @@ router.post('/julia/campanhas/:id/editar', (req, res) => {
   res.redirect('/julia?tab=campanha&campanha_id=' + req.params.id + '&ok=1');
 });
 
-// Correção 5: adaptar texto para feed/stories SEM sobrescrever o título/texto originais,
-// e deixando explícito que foi adaptado por IA.
+// Correção 5: adaptar texto para feed/stories/facebook SEM sobrescrever o título/texto originais,
+// e deixando explícito que foi adaptado por IA. Cada rede tem sua própria regra de hashtag —
+// o WhatsApp (aba Compartilhar) nunca leva hashtag; Instagram leva todas; Facebook leva só
+// as 3 primeiras — e nenhuma hashtag nova é inventada, só as que o responsável já cadastrou.
+const DESCRICAO_ALVO_ADAPTAR = {
+  feed: 'Feed do Instagram (texto um pouco mais completo)',
+  stories: 'Stories do Instagram (texto curto, direto, para tela vertical)',
+  facebook: 'Facebook (texto comercial objetivo, destacando os diferenciais da Castros Interiores e com uma chamada para orçamento)'
+};
+const COLUNAS_ADAPTAR = {
+  feed: { texto: 'texto_feed_ia', flag: 'texto_feed_adaptado_ia' },
+  stories: { texto: 'texto_stories_ia', flag: 'texto_stories_adaptado_ia' },
+  facebook: { texto: 'texto_facebook_ia', flag: 'texto_facebook_adaptado_ia' }
+};
+
 router.post('/julia/campanhas/:id/adaptar', async (req, res) => {
   const id = req.params.id;
-  const alvo = req.body.alvo === 'stories' ? 'stories' : 'feed';
+  const alvo = DESCRICAO_ALVO_ADAPTAR[req.body.alvo] ? req.body.alvo : 'feed';
   const campanha = db.prepare('SELECT * FROM julia_campanhas WHERE id = ?').get(id);
   if (!campanha) return res.redirect('/julia?tab=campanha');
   if (!campanha.titulo && !campanha.texto) {
     return res.redirect('/julia?tab=campanha&campanha_id=' + id + '&erro=' + encodeURIComponent('Preencha título e texto da campanha antes de pedir uma adaptação.'));
   }
 
-  const prompt = 'Adapte o anúncio abaixo para o formato ' + (alvo === 'stories' ? 'Stories (texto curto, direto, para tela vertical)' : 'Feed (texto um pouco mais completo)') +
-    ' do Instagram, sem inventar preços, prazos ou dados de contato que não estejam aqui.\nTítulo original: ' + (campanha.titulo || '(não informado)') +
+  const prompt = 'Adapte o anúncio abaixo para o formato ' + DESCRICAO_ALVO_ADAPTAR[alvo] +
+    ', sem inventar preços, prazos ou dados de contato que não estejam aqui e sem incluir hashtags no texto (elas são adicionadas separadamente).' +
+    '\nTítulo original: ' + (campanha.titulo || '(não informado)') +
     '\nTexto original: ' + (campanha.texto || '(não informado)') +
     '\nColoque o texto adaptado pronto para uso no campo clientMessageSuggestion da resposta.';
 
@@ -159,13 +173,17 @@ router.post('/julia/campanhas/:id/adaptar', async (req, res) => {
     return res.redirect('/julia?tab=campanha&campanha_id=' + id + '&erro=' + encodeURIComponent(resultado.erro || 'Não foi possível adaptar o texto agora.'));
   }
 
-  if (alvo === 'stories') {
-    db.prepare("UPDATE julia_campanhas SET texto_stories_ia=?, texto_stories_adaptado_ia=1, atualizado_em=datetime('now') WHERE id=?")
-      .run(resultado.resultado.clientMessageSuggestion, id);
-  } else {
-    db.prepare("UPDATE julia_campanhas SET texto_feed_ia=?, texto_feed_adaptado_ia=1, atualizado_em=datetime('now') WHERE id=?")
-      .run(resultado.resultado.clientMessageSuggestion, id);
+  let textoFinal = resultado.resultado.clientMessageSuggestion;
+  if (campanha.hashtags) {
+    const tags = campanha.hashtags.split(/\s+/).filter(Boolean);
+    const tagsUsadas = alvo === 'facebook' ? tags.slice(0, 3) : tags;
+    if (tagsUsadas.length) textoFinal += '\n\n' + tagsUsadas.join(' ');
   }
+
+  const { texto: colunaTexto, flag: colunaFlag } = COLUNAS_ADAPTAR[alvo];
+  db.prepare(`UPDATE julia_campanhas SET ${colunaTexto}=?, ${colunaFlag}=1, atualizado_em=datetime('now') WHERE id=?`)
+    .run(textoFinal, id);
+
   res.redirect('/julia?tab=campanha&campanha_id=' + id + '&ok=2');
 });
 

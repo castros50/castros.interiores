@@ -98,6 +98,18 @@ function planejarPublicacao(campanhaId, { titulo, canal, data, hora }, usuarioId
   return { ok: true, resumo: 'Publicação "' + titulo.trim() + '" planejada — envio manual necessário (não há postagem automática).' };
 }
 
+const CANAIS_TEXTO = { feed: 'texto_feed_ia', stories: 'texto_stories_ia', facebook: 'texto_facebook_ia' };
+
+function definirTextoCanal(campanhaId, { canal, texto }) {
+  const coluna = CANAIS_TEXTO[canal];
+  if (!coluna) return { ok: false, erro: 'Canal inválido. Use feed, stories ou facebook.' };
+  if (!texto || !texto.trim()) return { ok: false, erro: 'É preciso um texto para salvar.' };
+  const flag = coluna.replace('_ia', '_adaptado_ia');
+  db.prepare(`UPDATE julia_campanhas SET ${coluna}=?, ${flag}=1, atualizado_em=datetime('now') WHERE id=?`)
+    .run(texto.trim(), campanhaId);
+  return { ok: true, resumo: 'Texto adaptado para ' + canal + ' salvo nesta campanha (texto principal e WhatsApp continuam intactos).' };
+}
+
 // Ferramentas de leitura — permitem o chat consultar o que já existe antes de agir,
 // em vez de adivinhar ids de foto ou sobrescrever dados sem saber o que já está preenchido.
 
@@ -122,7 +134,7 @@ function obterCampanha(campanhaId) {
 }
 
 module.exports = {
-  FORMATOS, CANAIS, TEMAS_VALIDOS, garantirCincoLaminas,
+  FORMATOS, CANAIS, TEMAS_VALIDOS, CANAIS_TEXTO, garantirCincoLaminas,
   criarCampanha, editarCampanha, definirLamina, definirPoster, criarItemCatalogo, adicionarFotoItemCatalogo, planejarPublicacao,
-  listarFotos, listarCampanhas, obterCampanha
+  listarFotos, listarCampanhas, obterCampanha, definirTextoCanal
 };

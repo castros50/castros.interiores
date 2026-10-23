@@ -46,32 +46,45 @@
 <div class="card">
   <h3>Adaptar texto com IA (sem perder o original)</h3>
   <p style="color:#6a6258; font-size:0.9rem;">
-    Gera uma versão adaptada do título/texto acima para Feed ou Stories. O texto original nunca é
-    sobrescrito — a versão adaptada fica marcada como "gerada por IA" e separada.
+    Gera uma versão adaptada do título/texto acima para cada rede. O texto original nunca é
+    sobrescrito — a versão adaptada fica marcada como "gerada por IA" e separada. Instagram leva
+    todas as hashtags cadastradas acima; Facebook leva só as 3 primeiras; o WhatsApp (aba
+    Compartilhar) nunca leva hashtag — nenhuma hashtag nova é inventada, só as que você cadastrou.
   </p>
   <div class="botoes">
     <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/adaptar">
       <input type="hidden" name="alvo" value="feed">
-      <button type="submit" class="botao secundario">Adaptar para Feed</button>
+      <button type="submit" class="botao secundario">Adaptar para Instagram Feed</button>
     </form>
     <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/adaptar">
       <input type="hidden" name="alvo" value="stories">
-      <button type="submit" class="botao secundario">Adaptar para Stories</button>
+      <button type="submit" class="botao secundario">Adaptar para Instagram Stories</button>
+    </form>
+    <form method="post" action="/julia/campanhas/<%= campanhaAtiva.id %>/adaptar">
+      <input type="hidden" name="alvo" value="facebook">
+      <button type="submit" class="botao secundario">Adaptar para Facebook</button>
     </form>
   </div>
 
   <% if (campanhaAtiva.texto_feed_ia) { %>
     <div style="background:#faf8f5; border:1px solid var(--cor-borda); border-radius:8px; padding:10px; margin-top:10px;">
-      <strong style="font-size:0.85rem;">Versão Feed <span class="selo" style="background:#efe6f7; color:#5a2a8a;">adaptado por IA</span></strong>
+      <strong style="font-size:0.85rem;">Versão Instagram Feed <span class="selo" style="background:#efe6f7; color:#5a2a8a;">adaptado por IA</span></strong>
       <p id="texto-feed-ia" style="white-space:pre-line; margin:6px 0;"><%= campanhaAtiva.texto_feed_ia %></p>
       <button type="button" class="botao secundario pequeno" data-copiar-alvo="#texto-feed-ia">Copiar</button>
     </div>
   <% } %>
   <% if (campanhaAtiva.texto_stories_ia) { %>
     <div style="background:#faf8f5; border:1px solid var(--cor-borda); border-radius:8px; padding:10px; margin-top:10px;">
-      <strong style="font-size:0.85rem;">Versão Stories <span class="selo" style="background:#efe6f7; color:#5a2a8a;">adaptado por IA</span></strong>
+      <strong style="font-size:0.85rem;">Versão Instagram Stories <span class="selo" style="background:#efe6f7; color:#5a2a8a;">adaptado por IA</span></strong>
       <p id="texto-stories-ia" style="white-space:pre-line; margin:6px 0;"><%= campanhaAtiva.texto_stories_ia %></p>
       <button type="button" class="botao secundario pequeno" data-copiar-alvo="#texto-stories-ia">Copiar</button>
+    </div>
+  <% } %>
+  <% if (campanhaAtiva.texto_facebook_ia) { %>
+    <div style="background:#faf8f5; border:1px solid var(--cor-borda); border-radius:8px; padding:10px; margin-top:10px;">
+      <strong style="font-size:0.85rem;">Versão Facebook <span class="selo" style="background:#efe6f7; color:#5a2a8a;">adaptado por IA</span></strong>
+      <p id="texto-facebook-ia" style="white-space:pre-line; margin:6px 0;"><%= campanhaAtiva.texto_facebook_ia %></p>
+      <button type="button" class="botao secundario pequeno" data-copiar-alvo="#texto-facebook-ia">Copiar</button>
     </div>
   <% } %>
 </div>
