@@ -1,7 +1,10 @@
 <%
+  // O WhatsApp é uma mensagem direta, não uma publicação em rede social — hashtags não fazem
+  // sentido ali, então a mensagem para esse canal sai sem elas (as hashtags continuam salvas
+  // na campanha para uso no Instagram/Facebook).
   const textoBase = campanhaAtiva.texto_feed_ia || campanhaAtiva.texto || campanhaAtiva.titulo || '';
-  const textoComHashtags = textoBase + (campanhaAtiva.hashtags ? ('\n\n' + campanhaAtiva.hashtags) : '');
-  const linkWhatsapp = 'https://wa.me/' + (campanhaAtiva.whatsapp_numero ? campanhaAtiva.whatsapp_numero.replace(/\D/g,'') : '') + '?text=' + encodeURIComponent(textoComHashtags);
+  const textoWhatsapp = textoBase;
+  const linkWhatsapp = 'https://wa.me/' + (campanhaAtiva.whatsapp_numero ? campanhaAtiva.whatsapp_numero.replace(/\D/g,'') : '') + '?text=' + encodeURIComponent(textoWhatsapp);
 %>
 <div class="card">
   <h2>Compartilhar — <%= campanhaAtiva.nome %></h2>
@@ -12,9 +15,15 @@
   </p>
 
   <div class="campo">
-    <label>Texto que será aberto no WhatsApp</label>
-    <textarea readonly style="min-height:120px;"><%= textoComHashtags %></textarea>
+    <label>Texto que será aberto no WhatsApp (sem hashtags — elas ficam só para Instagram/Facebook)</label>
+    <textarea readonly style="min-height:120px;"><%= textoWhatsapp %></textarea>
   </div>
+  <% if (campanhaAtiva.hashtags) { %>
+    <p style="font-size:0.82rem; color:#6a6258;">
+      Hashtags salvas nesta campanha (<%= campanhaAtiva.hashtags %>) — usadas se você postar no
+      Instagram ou Facebook, mas removidas automaticamente aqui no WhatsApp.
+    </p>
+  <% } %>
 
   <div class="botoes">
     <a class="botao" href="<%= linkWhatsapp %>" target="_blank">Abrir WhatsApp com texto pronto</a>
