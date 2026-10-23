@@ -115,6 +115,19 @@ const TOOLS = [
     }
   },
   {
+    name: 'definir_texto_canal',
+    description: 'Salva uma versão do texto adaptada para uma rede específica (Instagram Feed, Instagram Stories ou Facebook), sem alterar o texto principal da campanha nem a mensagem do WhatsApp. Você mesma escreve o texto adaptado antes de chamar esta ferramenta.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        campanha_id: { type: 'integer' },
+        canal: { type: 'string', enum: Object.keys(acoes.CANAIS_TEXTO) },
+        texto: { type: 'string', description: 'Texto já adaptado ao tom da rede, pronto para publicar.' }
+      },
+      required: ['campanha_id', 'canal', 'texto']
+    }
+  },
+  {
     name: 'planejar_publicacao',
     description: 'Planeja uma publicação na agenda (não publica nada automaticamente — é só um planejamento para envio manual).',
     input_schema: {
@@ -148,6 +161,12 @@ Regras obrigatórias, sempre:
 - Nenhuma publicação é enviada automaticamente a redes sociais ou WhatsApp — planejar_publicacao só
   registra um plano para envio manual depois. Deixe isso claro se o usuário parecer achar que é
   automático.
+- Hashtags são por rede: a mensagem de WhatsApp (editar_campanha / aba Compartilhar) NUNCA leva
+  hashtag — é removida automaticamente pelo sistema. Se o usuário pedir uma versão para Instagram
+  Feed, Instagram Stories ou Facebook, escreva você mesma o texto adaptado (tom e tamanho certos
+  para a rede) e salve com definir_texto_canal — use as hashtags já cadastradas na campanha
+  (campo hashtags, consulte com obter_campanha), todas para Instagram e só as 3 primeiras para
+  Facebook. Nunca invente hashtags que o usuário não pediu nem aprovou.
 - Depois de executar as ações necessárias, responda ao usuário em texto corrido, de forma breve,
   confirmando o que foi feito (ou pedindo a informação que faltou). Não devolva JSON — responda só
   com a mensagem de chat mesmo.
@@ -196,6 +215,10 @@ function executarFerramenta(nome, input, usuarioId, campanhaIdAtual) {
       }
       case 'adicionar_foto_item_catalogo':
         return { resultado: acoes.adicionarFotoItemCatalogo(input.item_id, input.foto_id), novaCampanhaId: null };
+      case 'definir_texto_canal': {
+        const { campanha_id, ...campos } = input;
+        return { resultado: acoes.definirTextoCanal(campanha_id, campos), novaCampanhaId: null };
+      }
       case 'planejar_publicacao': {
         const { campanha_id, ...campos } = input;
         return { resultado: acoes.planejarPublicacao(campanha_id, campos, usuarioId), novaCampanhaId: null };

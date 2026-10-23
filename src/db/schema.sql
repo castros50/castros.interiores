@@ -182,6 +182,8 @@ CREATE TABLE IF NOT EXISTS julia_campanhas (
   texto_feed_adaptado_ia INTEGER NOT NULL DEFAULT 0,
   texto_stories_ia TEXT,
   texto_stories_adaptado_ia INTEGER NOT NULL DEFAULT 0,
+  texto_facebook_ia TEXT,
+  texto_facebook_adaptado_ia INTEGER NOT NULL DEFAULT 0,
   hashtags TEXT,
   cta_texto TEXT DEFAULT 'Fale conosco',
   whatsapp_numero TEXT,
