@@ -1,0 +1,158 @@
+{
+  "entities": {
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Atendimento de avaliação de reforma de estofados da Castros Interiores.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID do usuário responsável pelo atendimento.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "attendanceNumber": {
+          "type": "string",
+          "description": "Número automático do atendimento (ex: CI-2026-0001).",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "clientName": {
+          "type": "string",
+          "description": "Nome do cliente.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "clientPhone": {
+          "type": "string",
+          "description": "Telefone / WhatsApp do cliente.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "furnitureType": {
+          "type": "string",
+          "description": "Tipo de móvel (Sofá, Poltrona, Cadeira, Puff, Cabeceira, Outro).",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "description": "Estado atual do atendimento.",
+          "enum": [
+            "Rascunho",
+            "Aguardando fotos",
+            "Pronto para análise",
+            "Análise preliminar concluída",
+            "Aguardando inspeção",
+            "Revisado pelo responsável",
+            "Concluído"
+          ]
+        },
+        "payloadJson": {
+          "type": "string",
+          "description": "Dados estruturados do atendimento, análises, orçamento e parecer.",
+          "minLength": 2,
+          "maxLength": 800000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp de criação no servidor."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp da última atualização no servidor."
+        }
+      },
+      "required": [
+        "ownerId",
+        "attendanceNumber",
+        "clientName",
+        "clientPhone",
+        "furnitureType",
+        "status",
+        "payloadJson",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MaterialCatalogItem": {
+      "title": "MaterialCatalogItem",
+      "description": "Item de material ou serviço cadastrado para cálculo de orçamentos.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID do usuário proprietário.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Nome do material ou serviço.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "category": {
+          "type": "string",
+          "description": "Categoria do item (Material, Mão de obra, Terceirizado, Transporte, Outro).",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "unit": {
+          "type": "string",
+          "description": "Unidade de medida (m, m², un, kg, h, serviço).",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "unitCostCents": {
+          "type": "number",
+          "description": "Custo unitário em centavos de Real."
+        },
+        "supplier": {
+          "type": "string",
+          "description": "Fornecedor opcional.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp de criação."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp de atualização."
+        }
+      },
+      "required": [
+        "ownerId",
+        "name",
+        "category",
+        "unit",
+        "unitCostCents",
+        "supplier",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/attendances/{attendanceId}": {
+      "schema": {
+        "$ref": "#/entities/Attendance"
+      },
+      "description": "Coleção principal de atendimentos da Castros Interiores."
+    },
+    "/materials/{materialId}": {
+      "schema": {
+        "$ref": "#/entities/MaterialCatalogItem"
+      },
+      "description": "Catálogo de materiais e serviços com custos unitários."
+    }
+  }
+}

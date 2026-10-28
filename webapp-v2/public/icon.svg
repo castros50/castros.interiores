@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="96" fill="#181512"/>
+  <rect x="36" y="36" width="440" height="440" rx="72" fill="none" stroke="#9A7138" stroke-width="8" stroke-opacity="0.65"/>
+  <path d="M236 168C178 168 136 206 136 256C136 306 178 344 236 344C266 344 292 332 308 314L284 290C272 302 256 310 236 310C198 310 172 288 172 256C172 224 198 202 236 202C256 202 272 210 284 222L308 198C292 180 266 168 236 168Z" fill="#F9F6F0"/>
+  <rect x="336" y="172" width="36" height="168" rx="6" fill="#9A7138"/>
+  <rect x="318" y="172" width="72" height="24" rx="4" fill="#9A7138"/>
+  <rect x="318" y="316" width="72" height="24" rx="4" fill="#9A7138"/>
+  <text x="256" y="424" text-anchor="middle" font-family="Georgia, serif" font-size="28" font-weight="bold" fill="#D6CFC5" letter-spacing="6">CASTROS</text>
+</svg>

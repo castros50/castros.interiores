@@ -1,0 +1,182 @@
+{
+  "photos": [
+    {
+      "id": "jphoto-1792769031415-gmmk",
+      "title": "Fotografia Castros Interiores #1",
+      "caption": "Fotografia preservada na biblioteca da Castros Interiores.",
+      "tag": "Estofado Pronto",
+      "imageUrl": "/api/photos/julia_jphoto-1792769031415-gmmk.jpg",
+      "thumbnailDataUrl": "",
+      "mimeType": "image/jpeg",
+      "sourceDevice": "Biblioteca Castros Interiores",
+      "createdAt": "2026-10-23T15:23:51.416Z"
+    },
+    {
+      "id": "jphoto-1792769056888-c2pu",
+      "title": "Fotografia Castros Interiores #2",
+      "caption": "Fotografia preservada na biblioteca da Castros Interiores.",
+      "tag": "Estofado Pronto",
+      "imageUrl": "/api/photos/julia_jphoto-1792769056888-c2pu.jpg",
+      "thumbnailDataUrl": "",
+      "mimeType": "image/jpeg",
+      "sourceDevice": "Biblioteca Castros Interiores",
+      "createdAt": "2026-10-23T15:24:16.890Z"
+    },
+    {
+      "id": "jphoto-1792769983551-vs2j",
+      "title": "Fotografia Castros Interiores #3",
+      "caption": "Fotografia preservada na biblioteca da Castros Interiores.",
+      "tag": "Estofado Pronto",
+      "imageUrl": "/api/photos/julia_jphoto-1792769983551-vs2j.jpg",
+      "thumbnailDataUrl": "",
+      "mimeType": "image/jpeg",
+      "sourceDevice": "Biblioteca Castros Interiores",
+      "createdAt": "2026-10-23T15:39:43.557Z"
+    }
+  ],
+  "projects": [
+    {
+      "id": "proj-julia-01",
+      "name": "Campanha Alta Estofaria Artesanal — Castros Interiores",
+      "currentStep": 1,
+      "selectedPhotoIds": [
+        "jphoto-1792769031415-gmmk",
+        "jphoto-1792769056888-c2pu",
+        "jphoto-1792769983551-vs2j"
+      ],
+      "campaignObjective": "Divulgar a excelência estética, conforto sob medida e renovação de alto padrão em sofás, poltronas e cadeiras da Castros Interiores.",
+      "targetAudience": "Clientes residenciais exigentes, arquitetos e apaixonados por decoração de interiores.",
+      "pieceFormat": "Anúncio",
+      "headline": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier",
+      "copyText": "Transforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.",
+      "adFeedText": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier\n\nTransforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.\n\nSolicite Atendimento Exclusivo\nWhatsApp: (91) 98556-9841\n\n#CastrosInteriores #EstofadosDeAltoPadrao #DesignDeInteriores #DecoracaoElegante #SalaDeEstar #AtelierDeEstofados",
+      "adStoriesText": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier\n\nTransforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.\n\nSolicite Atendimento Exclusivo\nWhatsApp: (91) 98556-9841",
+      "adFeedAdaptedByAi": false,
+      "adStoriesAdaptedByAi": false,
+      "posterConfig": {
+        "headline": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier",
+        "subheadline": "Alta Estofaria & Design Artesanal Sob Medida — Castros Interiores",
+        "badgeText": "COLEÇÃO & RENOVAÇÃO DE ALTO PADRÃO",
+        "ctaText": "Solicite Atendimento Exclusivo pelo WhatsApp",
+        "contactLine": "(91) 98556-9841",
+        "theme": "noite_ouro",
+        "photoId": "jphoto-1792769031415-gmmk"
+      },
+      "carouselSlides": [
+        {
+          "slideNumber": 1,
+          "title": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier",
+          "body": "Um estofado de presença transforma toda a atmosfera do ambiente com elegância e acolhimento.",
+          "theme": "noite_ouro",
+          "photoId": "jphoto-1792769031415-gmmk"
+        },
+        {
+          "slideNumber": 2,
+          "title": "Acabamento Artesanal de Atelier",
+          "body": "Costuras alinhadas, caimento impecável e seleção criteriosa de texturas contemporâneas.",
+          "theme": "noite_ouro",
+          "photoId": "jphoto-1792769056888-c2pu"
+        },
+        {
+          "slideNumber": 3,
+          "title": "Conforto e Ergonomia Sob Medida",
+          "body": "A sensação de um estofado renovado pensado para os melhores momentos da sua família.",
+          "theme": "noite_ouro",
+          "photoId": "jphoto-1792769983551-vs2j"
+        },
+        {
+          "slideNumber": 4,
+          "title": "Personalização para o Seu Estilo",
+          "body": "Tons neutros aquecidos, linhos nobres e detalhes que valorizam a arquitetura do seu espaço.",
+          "theme": "noite_ouro",
+          "photoId": "jphoto-1792769031415-gmmk"
+        },
+        {
+          "slideNumber": 5,
+          "title": "Fale com a Castros Interiores",
+          "body": "Envie uma foto do seu estofado pelo WhatsApp (91) 98556-9841 e receba atendimento personalizado.",
+          "theme": "noite_ouro",
+          "photoId": "jphoto-1792769056888-c2pu"
+        }
+      ],
+      "catalogEntries": [],
+      "hashtags": "#CastrosInteriores #EstofadosDeAltoPadrao #DesignDeInteriores #DecoracaoElegante #SalaDeEstar #AtelierDeEstofados",
+      "ctaButtonText": "Solicite Atendimento Exclusivo",
+      "whatsappDirectNumber": "(91) 98556-9841",
+      "scheduleChannel": "Instagram Feed",
+      "scheduleDate": "2026-10-23",
+      "scheduleTime": "18:00",
+      "scheduleMode": "planejada_manual",
+      "finalReviewNotes": "Campanha revisada e pronta para compartilhamento no Instagram, Status e Lista do WhatsApp.",
+      "stepStates": {
+        "1": {
+          "saved": true,
+          "savedAt": "2026-10-23T16:10:15.091Z"
+        }
+      },
+      "createdAt": "2026-10-23T16:10:15.091Z",
+      "updatedAt": "2026-10-24T10:53:39.895Z",
+      "targetChannel": "Todas as redes sociais",
+      "socialMediaVersions": {
+        "instagramFeed": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier\n\nTransforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.\n\nSolicite Atendimento Exclusivo\nWhatsApp: (91) 98556-9841\n\n#CastrosInteriores #EstofadosDeAltoPadrao #DesignDeInteriores #DecoracaoElegante #SalaDeEstar #AtelierDeEstofados",
+        "instagramStories": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier\n\nTransforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.\n\nToque para falar no WhatsApp: (91) 98556-9841",
+        "instagramReels": "✨ A renovação do seu estofado com padrão de atelier artesanal.\n\nA Arte de Renovar o Seu Estofado com Acabamento de Atelier\n\nTransforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de\n\nEnvie a foto do seu móvel pelo WhatsApp: (91) 98556-9841\n\n#CastrosInteriores #ReelsDesign #Estofaria #DesignDeInteriores #Decoracao",
+        "facebook": "Diferenciais Castros Interiores — Alta Estofaria Sob Medida\n\nA Arte de Renovar o Seu Estofado com Acabamento de Atelier\n\nTransforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.\n\nPor que escolher o atelier da Castros Interiores?\n✔ Acabamento artesanal com alinhamento e costuras de alta precisão\n✔ Espumas de alta resiliência e densidades adequadas para conforto duradouro\n✔ Acervo selecionado de tecidos nobres, linhos e texturas contemporâneas\n✔ Cuidado minucioso preservando o design e a ergonomia do seu móvel\n\nSolicite Atendimento Exclusivo\nWhatsApp: (91) 98556-9841\n\n#CastrosInteriores #ReformaDeEstofados",
+        "whatsappMessage": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier\nTransforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.\nSolicite Atendimento Exclusivo\nWhatsApp: (91) 98556-9841",
+        "whatsappStatus": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier ✨\n\nTransforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe ...\n\nFale conosco no WhatsApp: (91) 98556-9841",
+        "catalogNotes": "Castros Interiores — Catálogo Comercial de Produtos e Alta Estofaria\nA Arte de Renovar o Seu Estofado com Acabamento de Atelier\nTransforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.\nAtendimento Comercial: WhatsApp (91) 98556-9841",
+        "posterNotes": "Pôster Promocional Castros Interiores\nA Arte de Renovar o Seu Estofado com Acabamento de Atelier\nContato WhatsApp: (91) 98556-9841",
+        "updatedAt": "2026-10-24T10:53:39.895Z"
+      }
+    }
+  ],
+  "activeProjectId": "proj-julia-01",
+  "chatHistory": [
+    {
+      "id": "msg-julia-welcome",
+      "sender": "julia",
+      "modality": "texto",
+      "text": "Olá! Sou a Júlia, responsável por Marketing, Publicidade e Divulgação da Castros Interiores. Você pode enviar fotos direto do seu celular a qualquer momento (sem precisar de atendimento ativo), percorrer as 12 etapas do Anúncio Inteligente com os botões de Avançar, Voltar, Salvar e Corrigir, criar Anúncios, Pôsteres, Carrosséis e Catálogos, conversar comigo por voz ou texto, programar campanhas e emitir o Relatório Diário.",
+      "timestamp": "2026-10-23T16:10:15.091Z"
+    }
+  ],
+  "campaigns": [
+    {
+      "id": "camp-init-1",
+      "title": "Vitrine Semanal — Alta Estofaria Castros Interiores",
+      "format": "Carrossel",
+      "channel": "Instagram Feed",
+      "scheduledDate": "2026-10-23",
+      "scheduledTime": "18:00",
+      "status": "Programada",
+      "captionPreview": "A Arte de Renovar o Seu Estofado com Acabamento de Atelier. Fale conosco pelo WhatsApp (91) 98556-9841.",
+      "createdAt": "2026-10-23T16:10:15.091Z"
+    }
+  ],
+  "dailyReports": [
+    {
+      "id": "rep-init-1",
+      "date": "2026-10-23",
+      "summaryText": "Departamento Júlia Marketing, Publicidade e Divulgação ativo e sincronizado entre Celular, Tablet e Computador. Fluxo das 12 etapas do Anúncio Inteligente, estúdio de Pôsteres, Carrosséis e Catálogos e recepção direta de fotos do celular prontos para operação.",
+      "highlights": [
+        "Canal direto de fotos do celular habilitado sem depender de atendimento ativo.",
+        "Campanha de vitrine semanal estruturada nas 12 etapas do Anúncio Inteligente.",
+        "Estúdio de Anúncios, Pôsteres, Carrosséis e Catálogos sincronizado."
+      ],
+      "nextDayRecommendations": [
+        "Fotografar pelo celular um estofado finalizado na iluminação natural para publicar nos Stories e Status do WhatsApp.",
+        "Compartilhar o Catálogo Digital com clientes na lista de transmissão do WhatsApp."
+      ],
+      "metricsSnapshot": {
+        "photosReceived": 0,
+        "adsCreated": 1,
+        "postersCreated": 1,
+        "carouselsCreated": 1,
+        "catalogsCreated": 1,
+        "scheduledCampaigns": 1,
+        "voiceTextInteractions": 1
+      },
+      "createdAt": "2026-10-23T16:10:15.091Z"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "castros interiores central de agentes inteligentes",
+  "description": "Sistema de cadastro de atendimentos, análise técnica de defeitos em estofados com IA, avaliação de reaproveitamento de materiais, orçamentos e geração de relatórios em PDF A4 para a Castros Interiores.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

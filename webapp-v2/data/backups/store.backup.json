@@ -1,0 +1,112 @@
+{
+  "nextSequence": 1,
+  "attendances": [],
+  "materials": [
+    {
+      "id": "mat-espuma-d28",
+      "ownerId": "system",
+      "name": "Espuma D28 Certificada (Bloco/Lâmina 10cm)",
+      "category": "Material",
+      "unit": "m²",
+      "unitCostCents": 14500,
+      "supplier": "Espumas Sul Brasil",
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:00:00.000Z"
+    },
+    {
+      "id": "mat-espuma-d33",
+      "ownerId": "system",
+      "name": "Espuma D33 Alta Resiliência (Assento 12cm)",
+      "category": "Material",
+      "unit": "m²",
+      "unitCostCents": 18900,
+      "supplier": "Espumas Sul Brasil",
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:00:00.000Z"
+    },
+    {
+      "id": "mat-manta-acrilica",
+      "ownerId": "system",
+      "name": "Manta Acrílica Siliconada 200g",
+      "category": "Material",
+      "unit": "m",
+      "unitCostCents": 2400,
+      "supplier": "Textil Estofados",
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:00:00.000Z"
+    },
+    {
+      "id": "mat-percinta-italiana",
+      "ownerId": "system",
+      "name": "Percinta Elástica Italiana 70mm",
+      "category": "Material",
+      "unit": "m",
+      "unitCostCents": 680,
+      "supplier": " Casa do Tapeceiro",
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:00:00.000Z"
+    },
+    {
+      "id": "mat-linho-misto",
+      "ownerId": "system",
+      "name": "Tecido Linho Misto Impermeabilizado (Larg. 1,40m)",
+      "category": "Material",
+      "unit": "m",
+      "unitCostCents": 7800,
+      "supplier": "Castros Têxtil",
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:00:00.000Z"
+    },
+    {
+      "id": "mat-forro-tnt",
+      "ownerId": "system",
+      "name": "Forro Inferior TNT Gramatura 100g",
+      "category": "Material",
+      "unit": "m",
+      "unitCostCents": 950,
+      "supplier": "Casa do Tapeceiro",
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:00:00.000Z"
+    },
+    {
+      "id": "srv-mao-obra-sofa",
+      "ownerId": "system",
+      "name": "Mão de Obra de Tapeçaria e Costura (Sofá 3 Lugares)",
+      "category": "Mão de obra",
+      "unit": "serviço",
+      "unitCostCents": 85000,
+      "supplier": "Oficina Castros Interiores",
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:00:00.000Z"
+    },
+    {
+      "id": "srv-marcenaria-reforco",
+      "ownerId": "system",
+      "name": "Reforço Estrutural de Marcenaria e Esquadro",
+      "category": "Mão de obra",
+      "unit": "serviço",
+      "unitCostCents": 28000,
+      "supplier": "Oficina Castros Interiores",
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:00:00.000Z"
+    },
+    {
+      "id": "srv-transporte",
+      "ownerId": "system",
+      "name": "Coleta e Entrega Especializada (Ida e Volta)",
+      "category": "Transporte",
+      "unit": "viagem",
+      "unitCostCents": 18000,
+      "supplier": "Logística Castros",
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:00:00.000Z"
+    }
+  ],
+  "settings": {
+    "workshopName": "Castros Interiores",
+    "responsibleDefaultName": "",
+    "phoneWhatsapp": "(91) 98556-9841",
+    "cityState": "",
+    "geminiModel": "gemini-3.8-flash"
+  }
+}

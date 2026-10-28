@@ -1,0 +1,176 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable Hardened Primitives
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && request.auth.token.email == 'castros.interiores50@gmail.com';
+    }
+
+    function isValidStatus(status) {
+      return status is string && status.size() <= 60 && (
+        status == 'Rascunho' ||
+        status == 'Aguardando fotos' ||
+        status == 'Pronto para análise' ||
+        status == 'Análise preliminar concluída' ||
+        status == 'Aguardando inspeção' ||
+        status == 'Revisado pelo responsável' ||
+        status == 'Concluído'
+      );
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'attendanceNumber',
+          'clientName',
+          'clientPhone',
+          'furnitureType',
+          'status',
+          'payloadJson',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId',
+          'attendanceNumber',
+          'clientName',
+          'clientPhone',
+          'furnitureType',
+          'status',
+          'payloadJson',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.attendanceNumber is string && data.attendanceNumber.size() >= 1 && data.attendanceNumber.size() <= 64 &&
+        data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 200 &&
+        data.clientPhone is string && data.clientPhone.size() >= 1 && data.clientPhone.size() <= 60 &&
+        data.furnitureType is string && data.furnitureType.size() >= 1 && data.furnitureType.size() <= 120 &&
+        isValidStatus(data.status) &&
+        data.payloadJson is string && data.payloadJson.size() >= 2 && data.payloadJson.size() <= 800000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMaterial(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'name',
+          'category',
+          'unit',
+          'unitCostCents',
+          'supplier',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId',
+          'name',
+          'category',
+          'unit',
+          'unitCostCents',
+          'supplier',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
+        data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 40 &&
+        data.unitCostCents is number && data.unitCostCents >= 0 && data.unitCostCents <= 1000000000 &&
+        data.supplier is string && data.supplier.size() <= 200 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /attendances/{attendanceId} {
+      allow get: if isSignedIn() && isValidId(attendanceId) && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isSignedIn() &&
+        isValidId(attendanceId) &&
+        isValidAttendance(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidId(attendanceId) &&
+        isValidAttendance(incoming()) &&
+        (existing().ownerId == request.auth.uid || isBootstrappedAdmin()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (existing().status != 'Concluído' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'clientName',
+              'clientPhone',
+              'furnitureType',
+              'status',
+              'payloadJson',
+              'updatedAt'
+            ])
+          ) ||
+          isBootstrappedAdmin()
+        );
+
+      allow delete: if isSignedIn() && isValidId(attendanceId) && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+    }
+
+    match /materials/{materialId} {
+      allow get: if isSignedIn() && isValidId(materialId) && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isSignedIn() &&
+        isValidId(materialId) &&
+        isValidMaterial(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidId(materialId) &&
+        isValidMaterial(incoming()) &&
+        (existing().ownerId == request.auth.uid || isBootstrappedAdmin()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name',
+            'category',
+            'unit',
+            'unitCostCents',
+            'supplier',
+            'updatedAt'
+          ]) ||
+          isBootstrappedAdmin()
+        );
+
+      allow delete: if isSignedIn() && isValidId(materialId) && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+    }
+  }
+}
