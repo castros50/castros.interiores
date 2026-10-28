@@ -1510,7 +1510,13 @@ async function generateContentWithRetryAndFallback(params: {
           },
           body: JSON.stringify({
             model,
-            max_tokens: 4096,
+            // Alguns formatos pedidos no app (ex.: avaliação de reaproveitamento, com 10
+            // componentes + 3 propostas + parecer completo) são grandes demais para 4096
+            // tokens — a resposta cortava no meio, resultando num campo ausente no JSON
+            // (ex.: reuseItems undefined) e quebrando o .forEach() de quem consome o dado.
+            // 16000 é o padrão recomendado pela documentação da Anthropic para chamadas
+            // sem streaming (streaming só é exigido perto do teto de 128K).
+            max_tokens: 16000,
             system: params.systemInstruction,
             messages: [{ role: 'user', content }],
             tools: [
@@ -2586,7 +2592,7 @@ Para cada área:
 
       // Ensure all 11 mandatory areas exist and validate values
       const findingsMap = new Map<string, DefectFinding>();
-      parsed.findings.forEach((f, idx) => {
+      (parsed.findings || []).forEach((f, idx) => {
         const matchedArea =
           FURNITURE_AREAS.find((a) => a.toLowerCase() === f.area.trim().toLowerCase()) ||
           FURNITURE_AREAS[idx % FURNITURE_AREAS.length];
@@ -2951,7 +2957,7 @@ TAREFA (SEGUNDA AVALIAÇÃO — REAPROVEITAMENTO, PROPOSTAS E PARECER PRELIMINAR
       ];
 
       const reuseMap = new Map<string, ReuseEvaluationItem>();
-      parsed.reuseItems.forEach((item, idx) => {
+      (parsed.reuseItems || []).forEach((item, idx) => {
         const matchedComp =
           REUSE_COMPONENTS.find(
             (c) => c.toLowerCase() === item.component.trim().toLowerCase()
@@ -3328,7 +3334,7 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
       currentMfg.unitsCount = unitsCount;
 
       if (Array.isArray(parsed.proposedComponents) && parsed.proposedComponents.length > 0) {
-        currentMfg.components = parsed.proposedComponents.map((c: any, idx: number) => ({
+        currentMfg.components = (parsed.proposedComponents || []).map((c: any, idx: number) => ({
           id: `comp-${Date.now()}-${idx}`,
           code: c.code || `P-${String(idx + 1).padStart(2, '0')}`,
           name: c.name || `Peça ${idx + 1}`,
@@ -3348,7 +3354,7 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
       }
 
       if (Array.isArray(parsed.proposedMaterials) && parsed.proposedMaterials.length > 0) {
-        currentMfg.materials = parsed.proposedMaterials.map((m: any, idx: number) => {
+        currentMfg.materials = (parsed.proposedMaterials || []).map((m: any, idx: number) => {
           const reqPerProd = Number(m.requiredPerProduct) || 1;
           const totalReq = reqPerProd * unitsCount;
           const matchingCat = store.materials.find(
