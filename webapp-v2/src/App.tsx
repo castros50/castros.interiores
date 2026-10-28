@@ -160,7 +160,7 @@ export default function App() {
     responsibleDefaultName: '',
     phoneWhatsapp: '(91) 98556-9841',
     cityState: '',
-    geminiModel: 'gemini-3.8-flash',
+    aiModel: 'claude-sonnet-5',
   });
   const [juliaData, setJuliaData] = useState<JuliaDepartmentData | null>(null);
 
@@ -398,7 +398,7 @@ export default function App() {
             if (!exists) return [incoming, ...prev];
             return prev.map((a) => (a.id === incoming.id ? incoming : a));
           });
-          if (isFromOtherDevice || data.sourceStationName?.startsWith('IA Gemini')) {
+          if (isFromOtherDevice || data.sourceStationName?.startsWith('IA Claude')) {
             setRealtimeNotice(
               `Atendimento ${incoming.attendanceNumber} sincronizado de ${
                 data.sourceStationName || 'outro aparelho'
@@ -801,7 +801,7 @@ export default function App() {
       const data = await res.json();
       if (!res.ok || !data.attendance) {
         throw new Error(
-          data.error || 'Não foi possível concluir a análise de defeitos com o Gemini.'
+          data.error || 'Não foi possível concluir a análise de defeitos com o Claude.'
         );
       }
       if (currentUser && currentUser.emailVerified) {
@@ -815,7 +815,7 @@ export default function App() {
       setAiError(
         err instanceof Error
           ? err.message
-          : 'Erro ao executar a análise de imagens com Gemini.'
+          : 'Erro ao executar a análise de imagens com Claude.'
       );
     } finally {
       setIsAnalyzingDefects(false);
@@ -2104,10 +2104,10 @@ export default function App() {
               <section className="rounded-xl bg-white border border-[#E5DEC9] p-6 space-y-6">
                 <div className="pb-4 border-b border-[#EFECE6]">
                   <h1 className="text-2xl font-serif-display font-bold text-[#181512]">
-                    Configurações do Sistema e Modelo Gemini
+                    Configurações do Sistema e Modelo Claude
                   </h1>
                   <p className="text-xs text-[#6B6257]">
-                    Configure os parâmetros operacionais da Castros Interiores e o modelo Gemini utilizado no servidor. O sistema nunca inventa CNPJ, endereço ou assinatura nos relatórios.
+                    Configure os parâmetros operacionais da Castros Interiores e o modelo Claude utilizado no servidor. O sistema nunca inventa CNPJ, endereço ou assinatura nos relatórios.
                   </p>
                 </div>
 
@@ -2117,14 +2117,14 @@ export default function App() {
                       <>
                         <Check className="w-4 h-4 text-emerald-700" />
                         <span>
-                          Integração com Gemini no Servidor: Ativa (variável GEMINI_API_KEY detectada com segurança no servidor)
+                          Integração com Claude no Servidor: Ativa (variável ANTHROPIC_API_KEY detectada com segurança no servidor)
                         </span>
                       </>
                     ) : (
                       <>
                         <AlertTriangle className="w-4 h-4 text-amber-700" />
                         <span>
-                          Integração com Gemini no Servidor: Pendente (configure GEMINI_API_KEY no painel Secrets do ambiente)
+                          Integração com Claude no Servidor: Pendente (configure ANTHROPIC_API_KEY no painel Secrets do ambiente)
                         </span>
                       </>
                     )}
@@ -2183,26 +2183,26 @@ export default function App() {
 
                   <div>
                     <label className="block text-xs font-medium text-[#57534E] mb-1">
-                      Modelo Gemini com Suporte Multimodal a Imagens
+                      Modelo Claude com Suporte Multimodal a Imagens
                     </label>
                     <select
-                      value={settings.geminiModel}
+                      value={settings.aiModel}
                       onChange={(e) =>
                         setSettings({
                           ...settings,
-                          geminiModel: e.target.value as WorkshopSettings['geminiModel'],
+                          aiModel: e.target.value as WorkshopSettings['aiModel'],
                         })
                       }
                       className="w-full rounded-lg border border-[#D6CFC5] bg-white px-3.5 py-2 text-sm"
                     >
-                      <option value="gemini-3.8-flash">
-                        gemini-3.8-flash (Recomendado — Análise técnica multimodal rápida e estruturada)
+                      <option value="claude-sonnet-5">
+                        claude-sonnet-5 (Recomendado — Análise técnica multimodal rápida e estruturada)
                       </option>
-                      <option value="gemini-flash-latest">
-                        gemini-flash-latest (Alternativo multimodal com fallback automático)
+                      <option value="claude-opus-5-5">
+                        claude-opus-5-5 (Maior qualidade de raciocínio, mais lento)
                       </option>
-                      <option value="gemini-3.1-flash-lite">
-                        gemini-3.1-flash-lite (Ultra-rápido e leve para alta demanda)
+                      <option value="claude-haiku-5-5">
+                        claude-haiku-5-5 (Ultra-rápido e leve para alta demanda)
                       </option>
                     </select>
                   </div>

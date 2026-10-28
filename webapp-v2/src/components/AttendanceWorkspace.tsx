@@ -715,9 +715,9 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
         <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 flex items-start gap-3">
           <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
           <div className="text-sm">
-            <p className="font-semibold">Configuração externa pendente: Chave GEMINI_API_KEY</p>
+            <p className="font-semibold">Configuração externa pendente: Chave ANTHROPIC_API_KEY</p>
             <p className="text-amber-800 mt-0.5">
-              A variável de ambiente <code className="font-mono">GEMINI_API_KEY</code> não foi localizada no servidor. O cadastro, salvamento de fotos, revisão manual, cálculos de orçamento e geração de PDFs estão 100% operacionais, mas a análise automática por IA exige a configuração da chave nos Segredos do ambiente.
+              A variável de ambiente <code className="font-mono">ANTHROPIC_API_KEY</code> não foi localizada no servidor. O cadastro, salvamento de fotos, revisão manual, cálculos de orçamento e geração de PDFs estão 100% operacionais, mas a análise automática por IA exige a configuração da chave nos Segredos do ambiente.
             </p>
           </div>
         </div>
@@ -1359,7 +1359,7 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
                 className="px-4 py-2 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-2"
               >
                 <Sparkles className="w-4 h-4" />
-                {isAnalyzingDefects ? 'Analisando Imagens Reais...' : 'Analisar Fotos com Gemini'}
+                {isAnalyzingDefects ? 'Analisando Imagens Reais...' : 'Analisar Fotos com Claude'}
               </button>
               <button
                 type="button"
@@ -1475,7 +1475,7 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
                 {attendance.defectFindings.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="py-8 px-4 text-center text-[#6B6257]">
-                      Nenhuma análise gerada ainda. Clique em <strong>Analisar fotos</strong> para inspecionar as imagens com o Gemini ou adicione achados manualmente.
+                      Nenhuma análise gerada ainda. Clique em <strong>Analisar fotos</strong> para inspecionar as imagens com o Claude ou adicione achados manualmente.
                     </td>
                   </tr>
                 ) : (
