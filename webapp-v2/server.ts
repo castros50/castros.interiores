@@ -95,6 +95,10 @@ import type {
   BusinessStrategyRecommendation,
   WeeklyActionPlanItem,
   AssemblyManual,
+  ReformMaterialsList,
+  ReformMaterialListItem,
+  ReformMaterialComponentStatus,
+  ProposalTier,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -1665,6 +1669,103 @@ function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string 
   return null;
 }
 
+// Deriva a lista de materiais necessários a partir da avaliação de reaproveitamento (reuseItems,
+// estruturada por componente) e dos arrays de texto livre da proposta escolhida (materialsToKeep/
+// Recover/Replace). Não consulta IA nem inventa quantidade ou preço: tudo que não vem de um dado já
+// existente no atendimento fica "Pendente de medição" / "A cotar". Os IDs são determinísticos
+// (derivados da origem) para permitir atualizar a lista sem perder edições manuais do responsável.
+function deriveMaterialsListItems(
+  attendance: AttendanceRecord,
+  proposal: ReformProposal,
+  tier: ProposalTier
+): ReformMaterialListItem[] {
+  const now = new Date().toISOString();
+  const items: ReformMaterialListItem[] = [];
+
+  for (const reuseItem of attendance.reuseItems) {
+    let componentStatus: ReformMaterialComponentStatus;
+    let materialName: string;
+    let purchaseQuantity: number | null = null;
+    let consumptionQuantity: number | null = null;
+    let quantityStatus: ReformMaterialListItem['quantityStatus'] = 'Pendente de medição';
+
+    if (reuseItem.classification === 'Candidato a reaproveitamento, sujeito à inspeção') {
+      if (attendance.internalInspectionCompleted) {
+        componentStatus = 'Reaproveitado';
+        purchaseQuantity = 0;
+        consumptionQuantity = 0;
+        quantityStatus = 'Confirmada';
+      } else {
+        componentStatus = 'Pendente de inspeção';
+      }
+      materialName = `${reuseItem.component} — peça original (candidata a reaproveitamento)`;
+    } else if (reuseItem.classification === 'Recuperável com reparo, sujeito à inspeção') {
+      componentStatus = attendance.internalInspectionCompleted ? 'Reparado' : 'Pendente de inspeção';
+      materialName = `Material de reparo — ${reuseItem.component}`;
+    } else if (reuseItem.classification === 'Substituição indicada') {
+      componentStatus = 'Substituído';
+      materialName = `Material de substituição — ${reuseItem.component}`;
+    } else {
+      componentStatus = 'Pendente de inspeção';
+      materialName = `${reuseItem.component} — decisão pendente`;
+    }
+
+    items.push({
+      id: `matitem-reuse-${reuseItem.id}`,
+      component: reuseItem.component,
+      reuseComponentType: reuseItem.component,
+      sourceReuseItemId: reuseItem.id,
+      materialName,
+      justification: reuseItem.requiredRecovery || reuseItem.expectedCostEffect || reuseItem.condition,
+      componentStatus,
+      unit: 'un',
+      consumptionQuantity,
+      purchaseQuantity,
+      quantitySource: 'informado_oficina',
+      quantityStatus,
+      unitCostCents: null,
+      priceStatus: 'A cotar',
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  const freeTextGroups: Array<{
+    list: string[];
+    status: ReformMaterialComponentStatus;
+    key: string;
+    label: string;
+  }> = [
+    { list: proposal.materialsToReplace, status: 'Substituído', key: 'replace', label: 'a substituir' },
+    { list: proposal.materialsToRecover, status: 'Reparado', key: 'recover', label: 'a recuperar' },
+    { list: proposal.materialsToKeep, status: 'Reaproveitado', key: 'keep', label: 'a manter' },
+  ];
+
+  for (const group of freeTextGroups) {
+    group.list.forEach((text, idx) => {
+      const isKeep = group.status === 'Reaproveitado';
+      items.push({
+        id: `matitem-${tier}-${group.key}-${idx}`,
+        component: text,
+        materialName: text,
+        justification: `Proposta ${tier}: item listado pela revisão do responsável como "${group.label}".`,
+        componentStatus: group.status,
+        unit: 'un',
+        consumptionQuantity: isKeep ? 0 : null,
+        purchaseQuantity: isKeep ? 0 : null,
+        quantitySource: 'proposta_pendente',
+        quantityStatus: isKeep ? 'Confirmada' : 'Pendente de medição',
+        unitCostCents: null,
+        priceStatus: 'A cotar',
+        createdAt: now,
+        updatedAt: now,
+      });
+    });
+  }
+
+  return items;
+}
+
 const ANALYST_SYSTEM_INSTRUCTION = `Você é o analista técnico sênior de reforma de estofados da Castros Interiores.
 Sua função é avaliar tecnicamente as fotografias reais enviadas e as informações do atendimento para identificar problemas por área, possibilidades de recuperação e materiais candidatos a reaproveitamento.
 
@@ -2371,6 +2472,133 @@ async function startServer() {
       res.status(500).json({ error: 'Erro ao recalcular orçamentos.' });
     }
   });
+
+  // Lista de Materiais da Reforma — "Preparar materiais da reforma"
+  // Deriva (sem IA) a lista a partir da avaliação de reaproveitamento e da proposta escolhida.
+  // Chamar de novo com a mesma proposta selecionada atualiza a lista existente sem perder edições
+  // manuais (preserva quantidade, preço, catálogo vinculado e notas já preenchidos pelo responsável);
+  // trocar a proposta selecionada cria uma nova revisão, mantendo as anteriores no histórico.
+  app.post('/api/attendances/:id/materials-list/prepare', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const { actorName } = req.body as { actorName?: string };
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+      if (attendance.orderType === 'Fabricação') {
+        res.status(400).json({
+          error: 'Este pedido é de Fabricação Nova e não possui lista de materiais de reforma.',
+        });
+        return;
+      }
+      const tier = attendance.selectedProposalTier;
+      if (!tier) {
+        res.status(400).json({
+          error:
+            'Nenhuma proposta selecionada ainda. Escolha a proposta (Essencial, Recomendada ou Completa) antes de preparar a lista de materiais.',
+        });
+        return;
+      }
+      const proposal = attendance.proposals.find((p) => p.tier === tier);
+      if (!proposal) {
+        res.status(400).json({
+          error: 'A proposta selecionada não foi encontrada entre as propostas geradas. Gere as propostas novamente.',
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const derivedItems = deriveMaterialsListItems(attendance, proposal, tier);
+      const existingLists = attendance.materialsLists || [];
+      const latest = existingLists[existingLists.length - 1];
+      const actor = actorName || attendance.reviewerName || 'Responsável pela avaliação';
+
+      if (latest && latest.proposalTier === tier) {
+        // Mesma proposta: atualiza a lista vigente preservando edições manuais já feitas.
+        const existingById = new Map(latest.items.map((it) => [it.id, it]));
+        const mergedItems: ReformMaterialListItem[] = derivedItems.map((derived) => {
+          const prev = existingById.get(derived.id);
+          if (!prev) return derived;
+          if (prev.componentStatus !== derived.componentStatus) {
+            // A avaliação mudou de fato (ex.: inspeção interna concluída depois da última
+            // preparação) — a situação da peça não é mais a mesma, então a linha derivada
+            // substitui a anterior em vez de manter dados que presumiam a situação antiga.
+            return derived;
+          }
+          return { ...prev, component: derived.component, justification: derived.justification };
+        });
+        const derivedIds = new Set(derivedItems.map((d) => d.id));
+        const keptManualItems = latest.items.filter((it) => !derivedIds.has(it.id));
+        latest.items = [...mergedItems, ...keptManualItems];
+        latest.updatedAt = now;
+
+        attendance.auditHistory.unshift({
+          id: `log-${Date.now()}`,
+          timestamp: now,
+          actor,
+          stage: 'Lista de materiais',
+          action: 'Lista de materiais atualizada a partir da avaliação revisada',
+          details: `Lista ${latest.listCode} (rev. ${latest.revision}) agora com ${latest.items.length} item(ns).`,
+        });
+        attendance.updatedAt = now;
+        saveStore(store);
+        broadcastRealtimeEvent({
+          type: 'attendance:updated',
+          timestamp: now,
+          sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+          attendance,
+        });
+        res.json({ ok: true, created: false, materialsList: latest, attendance });
+        return;
+      }
+
+      const revision = latest ? latest.revision + 1 : 1;
+      const listCode = `${attendance.attendanceNumber}-LC-${String(revision).padStart(2, '0')}`;
+      const newList: ReformMaterialsList = {
+        id: `matlist-${Date.now()}`,
+        attendanceId: attendance.id,
+        attendanceNumber: attendance.attendanceNumber,
+        clientName: attendance.clientName,
+        furnitureType: attendance.furnitureType,
+        proposalTier: tier,
+        listCode,
+        revision,
+        status: 'Lista em preparação',
+        items: derivedItems,
+        preparedByName: actor,
+        preparedAt: now,
+        updatedAt: now,
+      };
+      attendance.materialsLists = [...existingLists, newList];
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor,
+        stage: 'Lista de materiais',
+        action: 'Lista de materiais preparada',
+        details: `Lista ${listCode} (rev. ${revision}) criada para a proposta ${tier} com ${derivedItems.length} item(ns).`,
+      });
+      attendance.updatedAt = now;
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+      res.json({ ok: true, created: true, materialsList: newList, attendance });
+    } catch (err) {
+      console.error('Erro ao preparar lista de materiais:', err);
+      res.status(500).json({ error: 'Erro ao preparar lista de materiais.' });
+    }
+  });
+
+  // Edição manual dos itens da lista (inclusão, exclusão, ajuste) usa a rota genérica
+  // PUT /api/attendances/:id já existente (mesmo caminho usado para os itens do orçamento),
+  // já que materialsLists é apenas mais um campo do registro do atendimento.
 
   // 1 & 6 & 7. Central AI Service (Claude): Analyze Defects by Area (sending actual image binaries)
   app.post('/api/ai/analyze-defects', async (req, res) => {

@@ -40,6 +40,10 @@ import {
   MaterialCatalogItem,
   WorkshopSettings,
   HiddenDamageAddendum,
+  ReformMaterialListItem,
+  ReformMaterialComponentStatus,
+  ReformMaterialQuantityStatus,
+  ReformMaterialPriceStatus,
 } from '../types';
 import {
   calculateBudgetSummary,
@@ -60,6 +64,7 @@ interface AttendanceWorkspaceProps {
   saveError: string | null;
   isAnalyzingDefects: boolean;
   isAnalyzingReuse: boolean;
+  isPreparingMaterialsList: boolean;
   aiError: string | null;
   onNewAttendance: (orderType?: 'Reforma' | 'Fabricação') => void;
   onUpdateDraft: (updated: AttendanceRecord, markStaleReason?: string) => void;
@@ -73,8 +78,10 @@ interface AttendanceWorkspaceProps {
   ) => Promise<void>;
   onRunDefectsAnalysis: () => Promise<void>;
   onRunReuseAnalysis: () => Promise<void>;
+  onPrepareMaterialsList: () => Promise<void>;
   onGenerateInternalPdf: () => Promise<void>;
   onGenerateClientPdf: () => Promise<void>;
+  onGenerateShoppingListPdf: () => Promise<void>;
 }
 
 const WORKFLOW_STEPS = [
@@ -131,6 +138,7 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
   saveError,
   isAnalyzingDefects,
   isAnalyzingReuse,
+  isPreparingMaterialsList,
   aiError,
   onNewAttendance,
   onUpdateDraft,
@@ -138,8 +146,10 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
   onUploadPhotoFile,
   onRunDefectsAnalysis,
   onRunReuseAnalysis,
+  onPrepareMaterialsList,
   onGenerateInternalPdf,
   onGenerateClientPdf,
+  onGenerateShoppingListPdf,
 }) => {
   const [showAllStepsMode, setShowAllStepsMode] = useState(false);
   const [selectedPhotoCategory, setSelectedPhotoCategory] = useState<PhotoCategory>('Frente');
@@ -483,6 +493,70 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
         ...attendance.budget,
         items: attendance.budget.items.filter((i) => i.id !== id),
       },
+    });
+  };
+
+  const currentMaterialsList = attendance.materialsLists?.[attendance.materialsLists.length - 1];
+
+  const handleUpdateMaterialsListItem = (
+    itemId: string,
+    updates: Partial<ReformMaterialListItem>
+  ) => {
+    if (!currentMaterialsList) return;
+    const updatedItems = currentMaterialsList.items.map((item) =>
+      item.id === itemId
+        ? { ...item, ...updates, updatedAt: new Date().toISOString() }
+        : item
+    );
+    onUpdateDraft({
+      ...attendance,
+      materialsLists: [
+        ...attendance.materialsLists!.slice(0, -1),
+        { ...currentMaterialsList, items: updatedItems, updatedAt: new Date().toISOString() },
+      ],
+    });
+  };
+
+  const handleRemoveMaterialsListItem = (itemId: string) => {
+    if (!currentMaterialsList) return;
+    onUpdateDraft({
+      ...attendance,
+      materialsLists: [
+        ...attendance.materialsLists!.slice(0, -1),
+        {
+          ...currentMaterialsList,
+          items: currentMaterialsList.items.filter((i) => i.id !== itemId),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    });
+  };
+
+  const handleAddManualMaterialsListItem = () => {
+    if (!currentMaterialsList) return;
+    const now = new Date().toISOString();
+    const newItem: ReformMaterialListItem = {
+      id: `matitem-manual-${Date.now()}`,
+      component: 'Incluído manualmente',
+      materialName: 'Novo item (preencher)',
+      justification: 'Adicionado manualmente pelo responsável.',
+      componentStatus: 'Pendente de inspeção',
+      unit: 'un',
+      consumptionQuantity: null,
+      purchaseQuantity: null,
+      quantitySource: 'informado_oficina',
+      quantityStatus: 'Pendente de medição',
+      unitCostCents: null,
+      priceStatus: 'A cotar',
+      createdAt: now,
+      updatedAt: now,
+    };
+    onUpdateDraft({
+      ...attendance,
+      materialsLists: [
+        ...attendance.materialsLists!.slice(0, -1),
+        { ...currentMaterialsList, items: [...currentMaterialsList.items, newItem], updatedAt: now },
+      ],
     });
   };
 
@@ -2668,6 +2742,253 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Lista de Materiais da Reforma (Catálogo de Tapeçaria) */}
+          <div className="space-y-4 pt-2 border-t border-[#EFECE6]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-[#1C1917]">
+                  Lista de Materiais da Reforma
+                </h3>
+                <p className="text-xs text-[#6B6257]">
+                  Derivada da avaliação de reaproveitamento e da proposta {attendance.selectedProposalTier}. Quantidade e preço desconhecidos ficam "Pendente de medição" / "A cotar" — nunca zero.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onPrepareMaterialsList}
+                disabled={isPreparingMaterialsList || !attendance.proposals.some((p) => p.tier === attendance.selectedProposalTier)}
+                className="px-4 py-2 rounded-lg bg-[#181512] hover:bg-[#2E2722] disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5"
+              >
+                {isPreparingMaterialsList ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="w-3.5 h-3.5" />
+                )}
+                {currentMaterialsList && currentMaterialsList.proposalTier === attendance.selectedProposalTier
+                  ? 'Atualizar Materiais da Reforma'
+                  : 'Preparar Materiais da Reforma'}
+              </button>
+            </div>
+
+            {!currentMaterialsList ? (
+              <p className="text-xs text-[#6B6257] bg-[#F3EFE6] rounded-lg p-3">
+                Nenhuma lista preparada ainda para este atendimento. Conclua a proposta e clique em "Preparar Materiais da Reforma".
+              </p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-mono text-[#57534E]">
+                    {currentMaterialsList.listCode} · rev. {currentMaterialsList.revision} · {currentMaterialsList.status}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleAddManualMaterialsListItem}
+                    className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] text-xs font-medium text-[#1C1917] flex items-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Incluir Item Manualmente
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto bg-white border border-[#E5DEC9] rounded-xl">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-[#181512] text-[#F9F6F0]">
+                        <th className="py-2.5 px-3">Componente</th>
+                        <th className="py-2.5 px-3">Material / Especificação</th>
+                        <th className="py-2.5 px-3">Situação</th>
+                        <th className="py-2.5 px-3 text-right">Consumo</th>
+                        <th className="py-2.5 px-3 text-right">Compra</th>
+                        <th className="py-2.5 px-3">Unid.</th>
+                        <th className="py-2.5 px-3">Qtd.</th>
+                        <th className="py-2.5 px-3 text-right">Preço Unit.</th>
+                        <th className="py-2.5 px-3 text-center">Ação</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#EFECE6]">
+                      {currentMaterialsList.items.map((item) => (
+                        <tr key={item.id} className="hover:bg-[#FAF7F2] align-top">
+                          <td className="py-2 px-3">
+                            <input
+                              type="text"
+                              value={item.component}
+                              onChange={(e) =>
+                                handleUpdateMaterialsListItem(item.id, { component: e.target.value })
+                              }
+                              className="w-32 rounded border border-[#E5DEC9] px-2 py-1 text-xs"
+                            />
+                          </td>
+                          <td className="py-2 px-3 space-y-1">
+                            <input
+                              type="text"
+                              value={item.materialName}
+                              onChange={(e) =>
+                                handleUpdateMaterialsListItem(item.id, { materialName: e.target.value })
+                              }
+                              className="w-48 rounded border border-[#E5DEC9] px-2 py-1 text-xs"
+                            />
+                            <p className="text-[10px] text-[#6B6257]">{item.justification}</p>
+                          </td>
+                          <td className="py-2 px-3">
+                            <select
+                              value={item.componentStatus}
+                              onChange={(e) =>
+                                handleUpdateMaterialsListItem(item.id, {
+                                  componentStatus: e.target.value as ReformMaterialComponentStatus,
+                                })
+                              }
+                              className="rounded border border-[#D6CFC5] bg-white px-2 py-1 text-xs"
+                            >
+                              <option value="Reaproveitado">Reaproveitado</option>
+                              <option value="Reparado">Reparado</option>
+                              <option value="Substituído">Substituído</option>
+                              <option value="Pendente de inspeção">Pendente de inspeção</option>
+                            </select>
+                          </td>
+                          <td className="py-2 px-3 text-right">
+                            {item.consumptionQuantity === null ? (
+                              <span className="text-amber-800 font-medium">pendente</span>
+                            ) : (
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={item.consumptionQuantity}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  handleUpdateMaterialsListItem(item.id, {
+                                    consumptionQuantity: Number.isNaN(val) ? null : val,
+                                  });
+                                }}
+                                className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-xs tabular-nums"
+                              />
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-right">
+                            {item.purchaseQuantity === null ? (
+                              <span className="text-amber-800 font-medium">pendente</span>
+                            ) : (
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={item.purchaseQuantity}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  handleUpdateMaterialsListItem(item.id, {
+                                    purchaseQuantity: Number.isNaN(val) ? null : val,
+                                  });
+                                }}
+                                className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-xs tabular-nums"
+                              />
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            <input
+                              type="text"
+                              value={item.unit}
+                              onChange={(e) =>
+                                handleUpdateMaterialsListItem(item.id, { unit: e.target.value })
+                              }
+                              className="w-14 rounded border border-[#E5DEC9] px-2 py-1 text-xs"
+                            />
+                          </td>
+                          <td className="py-2 px-3">
+                            <select
+                              value={item.quantityStatus}
+                              onChange={(e) =>
+                                handleUpdateMaterialsListItem(item.id, {
+                                  quantityStatus: e.target.value as ReformMaterialQuantityStatus,
+                                  ...(e.target.value === 'Pendente de medição'
+                                    ? { consumptionQuantity: null, purchaseQuantity: null }
+                                    : {}),
+                                })
+                              }
+                              className="rounded border border-[#D6CFC5] bg-white px-2 py-1 text-xs"
+                            >
+                              <option value="Estimada">Estimada</option>
+                              <option value="Medida">Medida</option>
+                              <option value="Confirmada">Confirmada</option>
+                              <option value="Pendente de medição">Pendente de medição</option>
+                            </select>
+                          </td>
+                          <td className="py-2 px-3 text-right">
+                            {item.unitCostCents === null ? (
+                              <span className="text-amber-800 font-medium">a cotar</span>
+                            ) : (
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={(item.unitCostCents / 100).toFixed(2)}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  handleUpdateMaterialsListItem(item.id, {
+                                    unitCostCents: Number.isNaN(val) ? null : Math.round(val * 100),
+                                    priceStatus: Number.isNaN(val) ? 'A cotar' : 'Confirmado',
+                                  });
+                                }}
+                                className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-xs tabular-nums"
+                              />
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveMaterialsListItem(item.id)}
+                              className="text-red-700 hover:text-red-900"
+                              title="Remover item"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {currentMaterialsList.items.length === 0 && (
+                        <tr>
+                          <td colSpan={9} className="py-4 px-3 text-center text-[#6B6257]">
+                            Nenhum item na lista. Inclua manualmente ou revise a avaliação de reaproveitamento.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                  <label className="flex items-center gap-2 text-xs font-medium text-[#1C1917]">
+                    <input
+                      type="checkbox"
+                      checked={currentMaterialsList.status === 'Lista aprovada'}
+                      onChange={(e) =>
+                        onUpdateDraft({
+                          ...attendance,
+                          materialsLists: [
+                            ...attendance.materialsLists!.slice(0, -1),
+                            {
+                              ...currentMaterialsList,
+                              status: e.target.checked ? 'Lista aprovada' : 'Lista em preparação',
+                              updatedAt: new Date().toISOString(),
+                            },
+                          ],
+                        })
+                      }
+                    />
+                    Lista Aprovada pelo Responsável
+                  </label>
+                  <button
+                    type="button"
+                    onClick={onGenerateShoppingListPdf}
+                    className="px-4 py-2 rounded-lg border border-[#D6CFC5] text-xs font-semibold text-[#1C1917] flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Imprimir Lista de Compras (PDF A4)
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-[#EFECE6]">

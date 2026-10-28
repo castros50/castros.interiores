@@ -320,6 +320,9 @@ export interface AttendanceRecord {
   // 10. Orçamento
   budget: BudgetData;
 
+  // 10b. Lista de Materiais da Reforma (Catálogo de Tapeçaria)
+  materialsLists?: ReformMaterialsList[]; // revisões acumuladas; a última é a vigente
+
   // 11. Parecer
   opinion: FeasibilityOpinion;
 
@@ -417,6 +420,94 @@ export interface MaterialCatalogItem {
   woodSpecies?: string; // Eucalipto tratado em estufa, Pinus, MDF, Compensado naval
   woodSection?: string; // Ex: 2,5 x 5,0 cm
   woodLengthCm?: number; // Ex: 300 cm
+}
+
+// ===================== Lista de Materiais da Reforma (Catálogo de Tapeçaria) =====================
+
+export type ReformMaterialComponentStatus =
+  | 'Reaproveitado'
+  | 'Reparado'
+  | 'Substituído'
+  | 'Pendente de inspeção';
+
+export type ReformMaterialQuantityStatus =
+  | 'Estimada'
+  | 'Medida'
+  | 'Confirmada'
+  | 'Pendente de medição';
+
+export type ReformMaterialPriceStatus = 'Confirmado' | 'A cotar';
+
+export interface ReformMaterialListItem {
+  id: string;
+  component: string; // Ex: Assento, Encosto, Braço esquerdo
+  reuseComponentType?: ReuseComponentType;
+  sourceReuseItemId?: string; // id do ReuseEvaluationItem que originou esta linha, quando houver
+  materialCatalogItemId?: string; // vínculo opcional ao catálogo de matérias-primas
+  materialName: string;
+  specification?: string;
+  justification: string; // por que este material é necessário (derivado da proposta/revisão do responsável)
+  componentStatus: ReformMaterialComponentStatus;
+
+  // Quantidade e unidade
+  unit: string; // unidade de consumo
+  consumptionQuantity: number | null; // null = pendente de medição
+  purchaseUnit?: string; // unidade comercial de compra, quando distinta da unidade de consumo
+  purchaseQuantity: number | null; // null = pendente de medição; já considera arredondamento comercial
+  lossMarginPercent?: number; // margem de perda configurável, aplicada uma única vez
+  expectedLeftoverQuantity?: number | null; // sobra prevista após arredondar para a unidade comercial
+  quantitySource: SpecificationSource;
+  quantityStatus: ReformMaterialQuantityStatus;
+
+  // Específico de tecido/revestimento
+  fabricUsableWidthMeters?: number;
+  fabricPiecesCount?: number;
+  fabricPatternDirection?: 'Sentido do rolo' | 'Largura / Atravessado' | 'Indiferente';
+  fabricPatternRepeatCm?: number;
+  cuttingPlanConfirmed?: boolean;
+
+  // Específico de espuma
+  foamThicknessMm?: number;
+  foamPieceDimensionsMm?: { length: number; width: number; thickness: number };
+  foamCommercialFormat?: 'Bloco' | 'Lâmina' | 'Flocos' | 'Modelada';
+
+  // Específico de madeira
+  woodDimensionsMm?: { length: number; width: number; thickness: number };
+  woodCuttingPlanConfirmed?: boolean;
+
+  // Estoque (somente quando há controle confiável e confirmado manualmente)
+  physicalStockAtCreation?: number;
+  reservedForThisOrder?: number;
+  stockConfirmedManually?: boolean;
+
+  // Preço (opcional; nunca fabricado)
+  unitCostCents: number | null; // null = a cotar
+  priceStatus: ReformMaterialPriceStatus;
+
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ReformMaterialsListStatus =
+  | 'Lista em preparação'
+  | 'Lista aprovada';
+
+export interface ReformMaterialsList {
+  id: string;
+  attendanceId: string; // vínculo imutável ao atendimento
+  attendanceNumber: string;
+  clientName: string;
+  furnitureType: string;
+  proposalTier: ProposalTier;
+  listCode: string; // código legível de identificação (ex: CI-2026-0001-LC-01)
+  revision: number; // revisão da lista, incrementada a cada nova preparação após mudança de proposta
+  status: ReformMaterialsListStatus;
+  items: ReformMaterialListItem[];
+  preparedByName?: string;
+  preparedAt: string;
+  updatedAt: string;
+  notes?: string;
 }
 
 export type DepartmentId =

@@ -49,7 +49,11 @@ import {
 import { AttendanceWorkspace } from './components/AttendanceWorkspace';
 import { ManufacturingWorkspace } from './components/ManufacturingWorkspace';
 import { calculateBudgetSummary, formatCurrencyBRL, formatMissingText } from './utils/calculations';
-import { generateInternalReportPdf, generateClientReportPdf } from './utils/pdfGenerator';
+import {
+  generateInternalReportPdf,
+  generateClientReportPdf,
+  generateShoppingListPdf,
+} from './utils/pdfGenerator';
 import { ResilientImage } from './components/ResilientImage';
 import { CorporateSyncModal, PWAInstallButton } from './components/CorporateSyncModal';
 import { AgentsControlPanel } from './components/AgentsControlPanel';
@@ -172,6 +176,7 @@ export default function App() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isAnalyzingDefects, setIsAnalyzingDefects] = useState(false);
   const [isAnalyzingReuse, setIsAnalyzingReuse] = useState(false);
+  const [isPreparingMaterialsList, setIsPreparingMaterialsList] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
   // Search & Filter states
@@ -856,6 +861,48 @@ export default function App() {
       );
     } finally {
       setIsAnalyzingReuse(false);
+    }
+  };
+
+  const handlePrepareMaterialsList = async () => {
+    if (!activeAttendance || isPreparingMaterialsList) return;
+    setIsPreparingMaterialsList(true);
+    setAiError(null);
+
+    try {
+      await handlePersistAttendance(activeAttendance);
+
+      const res = await fetch(
+        `/api/attendances/${activeAttendance.id}/materials-list/prepare`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            actorName: currentUser?.displayName || currentUser?.email || undefined,
+          }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.attendance) {
+        throw new Error(
+          data.error || 'Não foi possível preparar a lista de materiais da reforma.'
+        );
+      }
+      if (currentUser && currentUser.emailVerified) {
+        await syncAttendanceToFirestore(data.attendance, true);
+      }
+      setAttendances((prev) =>
+        prev.map((a) => (a.id === data.attendance.id ? data.attendance : a))
+      );
+      setLastSavedSuccessAt(new Date().toLocaleTimeString('pt-BR'));
+    } catch (err) {
+      setAiError(
+        err instanceof Error
+          ? err.message
+          : 'Erro ao preparar a lista de materiais da reforma.'
+      );
+    } finally {
+      setIsPreparingMaterialsList(false);
     }
   };
 
@@ -1573,6 +1620,7 @@ export default function App() {
                       saveError={saveError}
                       isAnalyzingDefects={isAnalyzingDefects}
                       isAnalyzingReuse={isAnalyzingReuse}
+                      isPreparingMaterialsList={isPreparingMaterialsList}
                       aiError={aiError}
                       onNewAttendance={() => handleCreateNewAttendance('Fabricação')}
                       onUpdateDraft={handleUpdateDraftLocal}
@@ -1580,12 +1628,31 @@ export default function App() {
                       onUploadPhotoFile={handleUploadPhotoFile}
                       onRunDefectsAnalysis={handleRunDefectsAnalysis}
                       onRunReuseAnalysis={handleRunReuseAnalysis}
+                      onPrepareMaterialsList={handlePrepareMaterialsList}
                       onGenerateInternalPdf={() =>
                         generateInternalReportPdf(activeAttendance, settings)
                       }
                       onGenerateClientPdf={() =>
                         generateClientReportPdf(activeAttendance, settings)
                       }
+                      onGenerateShoppingListPdf={async () => {
+                        const latestList =
+                          activeAttendance.materialsLists?.[
+                            activeAttendance.materialsLists.length - 1
+                          ];
+                        if (!latestList) {
+                          setAiError(
+                            'Nenhuma lista de materiais preparada ainda. Clique em "Preparar Materiais da Reforma" antes de imprimir.'
+                          );
+                          return;
+                        }
+                        await generateShoppingListPdf(
+                          activeAttendance,
+                          latestList,
+                          settings,
+                          currentUser?.displayName || currentUser?.email || undefined
+                        );
+                      }}
                     />
                   )
                 ) : (
@@ -1853,6 +1920,7 @@ export default function App() {
                         saveError={saveError}
                         isAnalyzingDefects={isAnalyzingDefects}
                         isAnalyzingReuse={isAnalyzingReuse}
+                        isPreparingMaterialsList={isPreparingMaterialsList}
                         aiError={aiError}
                         onNewAttendance={handleCreateNewAttendance}
                         onUpdateDraft={handleUpdateDraftLocal}
@@ -1860,12 +1928,31 @@ export default function App() {
                         onUploadPhotoFile={handleUploadPhotoFile}
                         onRunDefectsAnalysis={handleRunDefectsAnalysis}
                         onRunReuseAnalysis={handleRunReuseAnalysis}
+                        onPrepareMaterialsList={handlePrepareMaterialsList}
                         onGenerateInternalPdf={() =>
                           generateInternalReportPdf(activeAttendance, settings)
                         }
                         onGenerateClientPdf={() =>
                           generateClientReportPdf(activeAttendance, settings)
                         }
+                        onGenerateShoppingListPdf={async () => {
+                          const latestList =
+                            activeAttendance.materialsLists?.[
+                              activeAttendance.materialsLists.length - 1
+                            ];
+                          if (!latestList) {
+                            setAiError(
+                              'Nenhuma lista de materiais preparada ainda. Clique em "Preparar Materiais da Reforma" antes de imprimir.'
+                            );
+                            return;
+                          }
+                          await generateShoppingListPdf(
+                            activeAttendance,
+                            latestList,
+                            settings,
+                            currentUser?.displayName || currentUser?.email || undefined
+                          );
+                        }}
                       />
                     );
                   }
