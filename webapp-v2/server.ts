@@ -5814,7 +5814,9 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     });
   }
 
-  const PORT = 3000;
+  // O Cloud Run injeta a porta real via variável de ambiente PORT — sem isso, o
+  // servidor sempre escutaria em 3000 e o deploy falharia na checagem de saúde.
+  const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor Castros Interiores rodando na porta ${PORT}`);
   });
