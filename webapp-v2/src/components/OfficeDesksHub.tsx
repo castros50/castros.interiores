@@ -1,10 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Users,
   Layers,
-  DollarSign,
-  TrendingUp,
-  Headphones,
   Wrench,
   Package,
   Megaphone,
@@ -21,7 +17,6 @@ import {
   Calendar,
   Sparkles,
   ChevronRight,
-  ShieldCheck,
   FolderOpen,
 } from 'lucide-react';
 import {
@@ -41,6 +36,7 @@ import { MilaFinancialDesk } from './MilaFinancialDesk';
 import { CastroStrategyDesk } from './CastroStrategyDesk';
 import { SupervisorDesk } from './SupervisorDesk';
 import { AgentVoiceTextChat } from './AgentVoiceTextChat';
+import { AgentPortrait } from './AgentPortrait';
 
 interface OfficeDesksHubProps {
   attendances: AttendanceRecord[];
@@ -124,30 +120,6 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   // Contagem de pedidos por mesa
   const getOrdersCountByDesk = (deskId: DepartmentId) => {
     return attendances.filter((a) => a.currentDesk === deskId).length;
-  };
-
-  // Ícones por mesa
-  const getDeskIcon = (deskId: DepartmentId) => {
-    switch (deskId) {
-      case 'carla_atendimento':
-        return Headphones;
-      case 'pedro_avaliacao':
-        return Wrench;
-      case 'lucas_projetos':
-        return Layers;
-      case 'ana_compras':
-        return Package;
-      case 'mila_financeiro':
-        return DollarSign;
-      case 'castro_estrategia':
-        return TrendingUp;
-      case 'julia_marketing':
-        return Megaphone;
-      case 'supervisora_geral':
-        return ShieldCheck;
-      default:
-        return Users;
-    }
   };
 
   // Abrir Modal de Transferência
@@ -359,7 +331,6 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
             {OFFICE_DESKS.map((desk) => {
-              const IconComp = getDeskIcon(desk.id);
               const count = getOrdersCountByDesk(desk.id);
               const isSelected = selectedDeskId === desk.id;
 
@@ -378,15 +349,12 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                        isSelected
-                          ? 'bg-[#9A7138] text-white'
-                          : 'bg-[#EDE7DC] text-[#181512]'
-                      }`}
-                    >
-                      <IconComp className="w-5 h-5" />
-                    </div>
+                    <AgentPortrait
+                      deskId={desk.id}
+                      name={desk.name}
+                      portraitUpdatedAt={settings.agentPortraitUpdatedAt?.[desk.id]}
+                      size="sm"
+                    />
                     {count > 0 && (
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-bold font-mono ${
@@ -703,6 +671,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
             <LucasManufacturingDesk
               order={activeOrder}
               materialsCatalog={materialsCatalog}
+              settings={settings}
               onUpdateOrder={onUpdateAttendance}
               onRequestHandoff={(orderId, toDesk, reason) => {
                 const target = attendances.find((a) => a.id === orderId);
@@ -732,6 +701,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
             <CastroStrategyDesk
               officeData={officeData}
               attendances={attendances}
+              settings={settings}
               onUpdateOfficeData={setOfficeData}
               onRequestHandoff={(orderId, toDesk, reason) => {
                 const target = attendances.find((a) => a.id === orderId);
@@ -745,6 +715,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
               attendances={attendances}
               officeData={officeData}
               materialsCatalog={materialsCatalog}
+              settings={settings}
               onUpdateAttendance={onUpdateAttendance}
               onOpenOrder={onSelectAttendance}
               onNavigateTab={onNavigateTab}
@@ -758,13 +729,24 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
           ) && (
             <div className="p-6 rounded-xl bg-white border border-[#E5DEC9] shadow-sm space-y-5">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-4 border-b border-[#EFECE6]">
-                <div>
-                  <h3 className="font-bold text-base text-[#181512]">
-                    Mesa de {selectedDeskMeta.name} — {selectedDeskMeta.role}
-                  </h3>
-                  <p className="text-xs text-[#6B6257] mt-0.5">
-                    {selectedDeskMeta.summary}
-                  </p>
+                <div className="flex items-center gap-3">
+                  <AgentPortrait
+                    deskId={selectedDeskMeta.id}
+                    name={selectedDeskMeta.name}
+                    portraitUpdatedAt={settings.agentPortraitUpdatedAt?.[selectedDeskMeta.id]}
+                    size="lg"
+                  />
+                  <div>
+                    <h3 className="font-bold text-base text-[#181512]">
+                      Mesa de {selectedDeskMeta.name} — {selectedDeskMeta.role}
+                    </h3>
+                    <p className="text-[10px] uppercase tracking-wide text-[#9A7138] font-semibold mt-0.5">
+                      Assistente virtual
+                    </p>
+                    <p className="text-xs text-[#6B6257] mt-0.5">
+                      {selectedDeskMeta.summary}
+                    </p>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -871,6 +853,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                 deskId={selectedDeskId}
                 agentName={selectedDeskMeta.name}
                 agentRole={selectedDeskMeta.role}
+                portraitUpdatedAt={settings.agentPortraitUpdatedAt?.[selectedDeskId]}
                 attendanceId={activeOrder?.id}
                 onActionExecuted={() => {
                   loadOfficeState();

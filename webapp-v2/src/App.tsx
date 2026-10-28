@@ -20,6 +20,7 @@ import {
   Send,
   Camera,
   FileText,
+  Image as ImageIcon,
 } from 'lucide-react';
 import {
   AttendanceRecord,
@@ -32,6 +33,7 @@ import {
   DeviceFormFactor,
   RealtimeSyncEvent,
   JuliaDepartmentData,
+  DepartmentId,
 } from './types';
 import {
   auth,
@@ -61,6 +63,8 @@ import { DepartmentsHub } from './components/DepartmentsHub';
 import { OfficeDesksHub } from './components/OfficeDesksHub';
 import { RawMaterialsAndPricing } from './components/RawMaterialsAndPricing';
 import { getOrCreateDeviceIdentity, usePWAInstall } from './hooks/usePWAInstall';
+import { AgentPortrait, PortraitUploadModal } from './components/AgentPortrait';
+import { OFFICE_DESKS } from './utils/officeDefaults';
 
 type MenuTab =
   | 'painel'
@@ -178,6 +182,8 @@ export default function App() {
   const [isAnalyzingReuse, setIsAnalyzingReuse] = useState(false);
   const [isPreparingMaterialsList, setIsPreparingMaterialsList] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [portraitUploadTarget, setPortraitUploadTarget] = useState<DepartmentId | 'office-cover' | null>(null);
+  const [isUploadingPortrait, setIsUploadingPortrait] = useState(false);
 
   // Search & Filter states
   const [attendanceSearch, setAttendanceSearch] = useState('');
@@ -1073,6 +1079,54 @@ export default function App() {
     }
   };
 
+  const handleUploadAgentPortrait = async (deskId: DepartmentId, dataUrl: string) => {
+    setIsUploadingPortrait(true);
+    try {
+      const res = await fetch(`/api/agent-portraits/${deskId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl, mimeType: 'image/jpeg' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.settings) {
+        throw new Error(data.error || 'Não foi possível salvar o retrato do agente.');
+      }
+      setSettings(data.settings);
+      setPortraitUploadTarget(null);
+      setLastSavedSuccessAt(new Date().toLocaleTimeString('pt-BR'));
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : 'Erro ao salvar o retrato do agente.'
+      );
+    } finally {
+      setIsUploadingPortrait(false);
+    }
+  };
+
+  const handleUploadOfficeCover = async (dataUrl: string) => {
+    setIsUploadingPortrait(true);
+    try {
+      const res = await fetch('/api/office-cover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl, mimeType: 'image/jpeg' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.settings) {
+        throw new Error(data.error || 'Não foi possível salvar a imagem de capa.');
+      }
+      setSettings(data.settings);
+      setPortraitUploadTarget(null);
+      setLastSavedSuccessAt(new Date().toLocaleTimeString('pt-BR'));
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : 'Erro ao salvar a imagem de capa.'
+      );
+    } finally {
+      setIsUploadingPortrait(false);
+    }
+  };
+
   const handlePersistSettings = async (nextSettings: WorkshopSettings) => {
     setIsSaving(true);
     try {
@@ -1460,6 +1514,38 @@ export default function App() {
             {/* ABA 1: PAINEL (Visão Geral + 5 Departamentos Principais + Atendimento Ativo) */}
             {activeTab === 'painel' && (
               <div className="space-y-6">
+                {/* Seção de Boas-Vindas do Escritório de Agentes */}
+                <div
+                  className="relative overflow-hidden rounded-2xl border border-[#E5DEC9] shadow-sm bg-[#181512]"
+                  style={
+                    settings.officeCoverImageUpdatedAt
+                      ? {
+                          backgroundImage: `linear-gradient(to right, rgba(24,21,18,0.90), rgba(24,21,18,0.60)), url(/api/photos/office-cover-image.jpg?v=${encodeURIComponent(
+                            settings.officeCoverImageUpdatedAt
+                          )})`,
+                          backgroundSize: 'cover',
+                          backgroundPosition: 'center',
+                        }
+                      : undefined
+                  }
+                >
+                  <div className="px-6 py-8 sm:px-10 sm:py-10">
+                    <h1 className="text-2xl sm:text-3xl font-serif-display font-bold text-white">
+                      Castros Interiores — Escritório de Agentes
+                    </h1>
+                    <p className="text-sm text-[#E5DEC9] mt-2 max-w-xl">
+                      Oito assistentes virtuais cuidam do atendimento, da avaliação técnica, das compras, do financeiro, da fabricação, do marketing, da estratégia e da supervisão — cada um na sua mesa.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('escritorio')}
+                      className="mt-5 px-5 py-2.5 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] text-white text-sm font-semibold shadow"
+                    >
+                      Entrar no escritório
+                    </button>
+                  </div>
+                </div>
+
                 {/* Cinco Departamentos Principais na Página Inicial */}
                 <DepartmentsHub
                   attendances={attendances}
@@ -2312,11 +2398,121 @@ export default function App() {
                     </button>
                   </div>
                 </form>
+
+                <div className="pt-6 border-t border-[#EFECE6] space-y-4">
+                  <div>
+                    <h2 className="text-lg font-serif-display font-bold text-[#181512]">
+                      Identidade Visual dos Agentes
+                    </h2>
+                    <p className="text-xs text-[#6B6257]">
+                      Envie o retrato de cada assistente virtual e a imagem de capa do escritório. Os arquivos ficam salvos no servidor e aparecem nos três aparelhos. Nenhuma foto é gerada automaticamente — enquanto não houver envio, o agente aparece com as iniciais do nome.
+                    </p>
+                  </div>
+
+                  {(() => {
+                    const missingCount = OFFICE_DESKS.filter(
+                      (d) => !settings.agentPortraitUpdatedAt?.[d.id]
+                    ).length;
+                    return missingCount > 0 ? (
+                      <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                        {missingCount} de {OFFICE_DESKS.length} agente(s) ainda sem retrato próprio enviado.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                        Todos os {OFFICE_DESKS.length} agentes já têm retrato enviado.
+                      </p>
+                    );
+                  })()}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    {OFFICE_DESKS.map((desk) => (
+                      <div
+                        key={desk.id}
+                        className="flex items-center gap-3 p-3 rounded-xl border border-[#E5DEC9] bg-[#FAF8F5]"
+                      >
+                        <AgentPortrait
+                          deskId={desk.id}
+                          name={desk.name}
+                          portraitUpdatedAt={settings.agentPortraitUpdatedAt?.[desk.id]}
+                          size="lg"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-bold text-[#181512] truncate">{desk.name}</p>
+                          <p className="text-[10px] text-[#6B6257] truncate">{desk.role}</p>
+                          <button
+                            type="button"
+                            onClick={() => setPortraitUploadTarget(desk.id)}
+                            className="mt-1 text-[11px] font-medium text-[#845E2B] hover:underline"
+                          >
+                            {settings.agentPortraitUpdatedAt?.[desk.id]
+                              ? 'Substituir foto'
+                              : 'Enviar foto'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-3 p-3 rounded-xl border border-[#E5DEC9] bg-[#FAF8F5] max-w-md">
+                    <div className="w-20 h-14 rounded-lg overflow-hidden border border-[#D6CFC5] bg-[#181512] flex items-center justify-center shrink-0">
+                      {settings.officeCoverImageUpdatedAt ? (
+                        <img
+                          src={`/api/photos/office-cover-image.jpg?v=${encodeURIComponent(settings.officeCoverImageUpdatedAt)}`}
+                          alt="Imagem de capa do escritório"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <ImageIcon className="w-5 h-5 text-[#6B6257]" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-[#181512]">Imagem de Capa do Escritório</p>
+                      <p className="text-[10px] text-[#6B6257]">
+                        Usada na tela de entrada. Prefira um estofado ou ambiente da própria Castros Interiores.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setPortraitUploadTarget('office-cover')}
+                        className="mt-1 text-[11px] font-medium text-[#845E2B] hover:underline"
+                      >
+                        {settings.officeCoverImageUpdatedAt ? 'Substituir imagem' : 'Enviar imagem'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </section>
             )}
           </>
         )}
       </main>
+
+      {portraitUploadTarget && (
+        <PortraitUploadModal
+          title={
+            portraitUploadTarget === 'office-cover'
+              ? 'Imagem de Capa do Escritório'
+              : `Retrato de ${OFFICE_DESKS.find((d) => d.id === portraitUploadTarget)?.name || ''}`
+          }
+          description={
+            portraitUploadTarget === 'office-cover'
+              ? 'Escolha uma foto de estofado ou ambiente da oficina. Formato largo (banner).'
+              : 'Escolha uma foto com o rosto bem enquadrado. Será usada no cartão, na mesa e na conversa deste agente.'
+          }
+          aspectRatio={portraitUploadTarget === 'office-cover' ? 2.4 : 1}
+          outputSize={
+            portraitUploadTarget === 'office-cover'
+              ? { width: 1200, height: 500 }
+              : { width: 480, height: 480 }
+          }
+          isSaving={isUploadingPortrait}
+          onCancel={() => setPortraitUploadTarget(null)}
+          onSave={(dataUrl) =>
+            portraitUploadTarget === 'office-cover'
+              ? handleUploadOfficeCover(dataUrl)
+              : handleUploadAgentPortrait(portraitUploadTarget, dataUrl)
+          }
+        />
+      )}
 
       {/* Corporate Multi-Device Sync & PWA Install Modal */}
       <CorporateSyncModal

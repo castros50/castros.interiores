@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  DollarSign,
   TrendingUp,
   FileText,
   CreditCard,
@@ -25,6 +24,7 @@ import {
   WorkshopSettings,
 } from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
+import { AgentPortrait } from './AgentPortrait';
 import { generateClientReportPdf, generateInternalReportPdf } from '../utils/pdfGenerator';
 
 interface MilaFinancialDeskProps {
@@ -163,9 +163,12 @@ export const MilaFinancialDesk: React.FC<MilaFinancialDeskProps> = ({
       <div className="bg-[#181512] text-[#F9F6F0] p-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-xl bg-[#1F5E3B] flex items-center justify-center text-white shrink-0 shadow">
-              <DollarSign className="w-6 h-6" />
-            </div>
+            <AgentPortrait
+              deskId="mila_financeiro"
+              name="Mila"
+              portraitUpdatedAt={settings.agentPortraitUpdatedAt?.mila_financeiro}
+              size="lg"
+            />
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-[#2E2722] text-[#E5DEC9] border border-[#57534E]">

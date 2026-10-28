@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  TrendingUp,
   Target,
   Clock,
   AlertTriangle,
@@ -21,12 +20,15 @@ import {
   SharedOfficeData,
   WeeklyActionPlanItem,
   WeeklyStrategyPlan,
+  WorkshopSettings,
 } from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
+import { AgentPortrait } from './AgentPortrait';
 
 interface CastroStrategyDeskProps {
   officeData: SharedOfficeData;
   attendances: AttendanceRecord[];
+  settings: WorkshopSettings;
   onUpdateOfficeData: (updated: SharedOfficeData) => void;
   onRequestHandoff: (orderId: string, toDesk: string, reason: string) => void;
 }
@@ -34,6 +36,7 @@ interface CastroStrategyDeskProps {
 export const CastroStrategyDesk: React.FC<CastroStrategyDeskProps> = ({
   officeData,
   attendances,
+  settings,
   onUpdateOfficeData,
   onRequestHandoff,
 }) => {
@@ -130,9 +133,12 @@ export const CastroStrategyDesk: React.FC<CastroStrategyDeskProps> = ({
       <div className="bg-[#181512] text-[#F9F6F0] p-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-xl bg-[#9A7138] flex items-center justify-center text-white shrink-0 shadow">
-              <TrendingUp className="w-6 h-6" />
-            </div>
+            <AgentPortrait
+              deskId="castro_estrategia"
+              name="Castro (Roberto)"
+              portraitUpdatedAt={settings.agentPortraitUpdatedAt?.castro_estrategia}
+              size="lg"
+            />
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-[#2E2722] text-[#E5DEC9] border border-[#57534E]">

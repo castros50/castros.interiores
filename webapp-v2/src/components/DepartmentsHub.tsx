@@ -33,6 +33,16 @@ import {
   formatMissingText,
 } from '../utils/calculations';
 import { JuliaMarketingDepartment } from './JuliaMarketingDepartment';
+import { AgentPortrait } from './AgentPortrait';
+
+// Mesas com conversa por voz/texto já implementada (ver AgentVoiceTextChat em OfficeDesksHub.tsx)
+const DEPTS_WITH_CHAT = new Set<DepartmentId>([
+  'carla_atendimento',
+  'pedro_avaliacao',
+  'ana_compras',
+  'julia_marketing',
+  'supervisora_geral',
+]);
 
 interface DepartmentsHubProps {
   attendances: AttendanceRecord[];
@@ -57,6 +67,7 @@ interface DepartmentsHubProps {
       | 'materiais'
       | 'relatorios'
       | 'configuracoes'
+      | 'escritorio'
   ) => void;
   onRunDefectsAnalysis: () => Promise<void>;
   onRunReuseAnalysis: () => Promise<void>;
@@ -419,7 +430,6 @@ export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
       {/* OS CINCO BOTÕES PRINCIPAIS DOS DEPARTAMENTOS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
         {DEPARTMENTS_LIST.map((dept) => {
-          const IconComponent = dept.icon;
           const isSelected = selectedDept === dept.id;
 
           let metricLine = '';
@@ -439,31 +449,32 @@ export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
               : 'Orçamentos & PDF A4';
           }
 
+          const hasChat = DEPTS_WITH_CHAT.has(dept.id);
+
           return (
-            <button
+            <div
               key={dept.id}
-              type="button"
-              onClick={() => {
-                setSelectedDept(dept.id);
-                setConsultError(null);
-              }}
-              className={`p-4 rounded-xl border text-left transition-all flex flex-col justify-between gap-3 ${
+              className={`p-4 rounded-xl border transition-all flex flex-col justify-between gap-3 ${
                 isSelected
                   ? 'bg-[#181512] text-[#F9F6F0] border-[#181512] shadow-sm'
                   : 'bg-[#FAF8F5] text-[#181512] border-[#E5DEC9] hover:bg-[#F3EFE6]'
               }`}
             >
-              <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedDept(dept.id);
+                  setConsultError(null);
+                }}
+                className="text-left space-y-2"
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <div
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                      isSelected
-                        ? 'bg-[#9A7138] text-white'
-                        : 'bg-[#EDE7DC] text-[#9A7138]'
-                    }`}
-                  >
-                    <IconComponent className="w-4 h-4" />
-                  </div>
+                  <AgentPortrait
+                    deskId={dept.id}
+                    name={dept.personName}
+                    portraitUpdatedAt={settings.agentPortraitUpdatedAt?.[dept.id]}
+                    size="sm"
+                  />
                   <span
                     className={`text-[11px] font-mono tabular-nums ${
                       isSelected ? 'text-[#D8C5A3]' : 'text-[#6B6257]'
@@ -476,6 +487,13 @@ export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
                 <div className="font-bold text-sm leading-snug">
                   {dept.buttonLabel}
                 </div>
+                <p
+                  className={`text-[10px] uppercase tracking-wide font-semibold ${
+                    isSelected ? 'text-[#9A7138]' : 'text-[#9A7138]'
+                  }`}
+                >
+                  Assistente virtual
+                </p>
 
                 <p
                   className={`text-xs leading-relaxed ${
@@ -484,21 +502,39 @@ export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
                 >
                   {dept.summary}
                 </p>
-              </div>
+              </button>
 
               <div
-                className={`pt-2 border-t text-[11px] font-semibold flex items-center justify-between ${
-                  isSelected
-                    ? 'border-[#2E2722] text-[#D8C5A3]'
-                    : 'border-[#E5DEC9] text-[#9A7138]'
+                className={`pt-2 border-t flex items-center gap-2 ${
+                  isSelected ? 'border-[#2E2722]' : 'border-[#E5DEC9]'
                 }`}
               >
-                <span>
-                  {isSelected ? 'Departamento aberto' : 'Acessar departamento'}
-                </span>
-                <span aria-hidden="true">→</span>
+                <button
+                  type="button"
+                  onClick={() => onNavigateTab('escritorio')}
+                  className={`flex-1 text-[11px] font-semibold rounded-lg px-2.5 py-1.5 text-center ${
+                    isSelected
+                      ? 'bg-[#9A7138] text-white'
+                      : 'bg-[#EDE7DC] text-[#181512] hover:bg-[#E5DEC9]'
+                  }`}
+                >
+                  Abrir mesa
+                </button>
+                {hasChat && (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateTab('escritorio')}
+                    className={`flex-1 text-[11px] font-semibold rounded-lg px-2.5 py-1.5 text-center border ${
+                      isSelected
+                        ? 'border-[#9A7138] text-[#D8C5A3]'
+                        : 'border-[#9A7138] text-[#845E2B] hover:bg-[#F3EFE6]'
+                    }`}
+                  >
+                    Conversar
+                  </button>
+                )}
               </div>
-            </button>
+            </div>
           );
         })}
       </div>

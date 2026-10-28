@@ -18,11 +18,13 @@ import {
   Bot,
 } from 'lucide-react';
 import { DepartmentId, AgentChatMessage, AgentActionProposal } from '../types';
+import { AgentPortrait } from './AgentPortrait';
 
 interface AgentVoiceTextChatProps {
   deskId: DepartmentId;
   agentName: string;
   agentRole: string;
+  portraitUpdatedAt?: string;
   attendanceId?: string;
   attendanceNumber?: string;
   campaignId?: string;
@@ -36,6 +38,7 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
   deskId,
   agentName,
   agentRole,
+  portraitUpdatedAt,
   attendanceId,
   attendanceNumber,
   campaignId,
@@ -460,14 +463,15 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
       {/* Cabeçalho do Chat */}
       <div className="bg-[#181512] text-[#F9F6F0] p-4 flex flex-wrap items-center justify-between gap-3 border-b border-[#2E2722]">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-[#9A7138] flex items-center justify-center text-white font-bold text-sm shadow">
-            {agentName.charAt(0)}
-          </div>
+          <AgentPortrait deskId={deskId} name={agentName} portraitUpdatedAt={portraitUpdatedAt} size="sm" />
           <div>
             <div className="flex items-center gap-2">
               <h3 className="font-serif-display font-bold text-sm text-white">{agentName}</h3>
               <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#2E2722] text-[#E5DEC9] border border-[#57534E]">
                 {agentRole}
+              </span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-[#9A7138]/20 text-[#D8C5A3] border border-[#9A7138]/40">
+                Assistente virtual
               </span>
             </div>
             <p className="text-[11px] text-[#A8A29E] mt-0.5">

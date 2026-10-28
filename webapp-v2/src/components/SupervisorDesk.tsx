@@ -1,6 +1,5 @@
 import React, { useState, useMemo } from 'react';
 import {
-  ShieldCheck,
   FolderOpen,
   Calendar,
   Package,
@@ -34,13 +33,16 @@ import {
   JuliaDepartmentData,
   DepartmentId,
   OrderHandoffEntry,
+  WorkshopSettings,
 } from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
 import { AgentVoiceTextChat } from './AgentVoiceTextChat';
+import { AgentPortrait } from './AgentPortrait';
 
 interface SupervisorDeskProps {
   attendances: AttendanceRecord[];
   materialsCatalog: MaterialCatalogItem[];
+  settings: WorkshopSettings;
   officeData?: SharedOfficeData | null;
   juliaData?: JuliaDepartmentData | null;
   onUpdateAttendance: (updated: AttendanceRecord) => void;
@@ -55,6 +57,7 @@ interface SupervisorDeskProps {
 export const SupervisorDesk: React.FC<SupervisorDeskProps> = ({
   attendances,
   materialsCatalog,
+  settings,
   officeData,
   juliaData,
   onUpdateAttendance,
@@ -243,9 +246,12 @@ export const SupervisorDesk: React.FC<SupervisorDeskProps> = ({
       <div className="bg-[#181512] text-[#F9F6F0] rounded-xl border border-[#2E2722] p-6 shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-xl bg-[#9A7138] flex items-center justify-center text-white shrink-0 shadow">
-              <ShieldCheck className="w-6 h-6" />
-            </div>
+            <AgentPortrait
+              deskId="supervisora_geral"
+              name="Helena (Supervisora)"
+              portraitUpdatedAt={settings.agentPortraitUpdatedAt?.supervisora_geral}
+              size="lg"
+            />
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-[#2E2722] text-[#D8C5A3] border border-[#57534E]">
@@ -664,6 +670,7 @@ export const SupervisorDesk: React.FC<SupervisorDeskProps> = ({
               deskId="supervisora_geral"
               agentName="Helena (Supervisora)"
               agentRole="Supervisão Geral de Pedidos, Campanhas e Compras"
+              portraitUpdatedAt={settings.agentPortraitUpdatedAt?.supervisora_geral}
               suggestedQuestions={[
                 'Qual é a situação geral dos pedidos da oficina?',
                 'Existem aprovações técnicas ou financeiras pendentes?',
