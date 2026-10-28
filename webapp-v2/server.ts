@@ -100,6 +100,17 @@ import {
 
 dotenv.config();
 
+// Rede de segurança: a sincronização com o Firestore é "fire-and-forget" (não bloqueia
+// a resposta HTTP) e tem seu próprio .catch(), mas bibliotecas internas do SDK do
+// Firestore/Google Auth podem rejeitar promises por fora desse .catch() quando as
+// credenciais do ambiente estão erradas ou ausentes — sem essa rede, isso derrubaria
+// o processo inteiro do servidor. Os dados continuam seguros no arquivo local de
+// qualquer forma; aqui só evitamos que uma falha de sincronização em segundo plano
+// tire o site do ar.
+process.on('unhandledRejection', (reason) => {
+  console.error('[Servidor] Rejeição de Promise não tratada (processo mantido no ar):', reason);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -1349,6 +1360,9 @@ function saveStore(store: PersistentStore): void {
       // ignore backup write error
     }
   }
+  // Sincroniza com o Firestore em segundo plano — não bloqueia a resposta da rota
+  // que chamou saveStore(), mas garante que o dado sobreviva a um redeploy sem disco.
+  persistStoreToFirestore(store);
 }
 
 function getAnthropicApiKey(): string {
@@ -1364,15 +1378,56 @@ function getAnthropicApiKey(): string {
 // Mutex de concorrência para evitar disparos simultâneos na interface
 const inFlightGeminiRequests = new Set<string>();
 
-// Firestore Helpers
-async function getAttendancesFromFirestore(): Promise<AttendanceRecord[]> {
-  const snapshot = await db.collection('attendances').get();
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AttendanceRecord));
+// Firestore Helpers — o estado inteiro (equivalente a data/store.json) é espelhado
+// em um único documento do Firestore a cada gravação, para que os dados sobrevivam
+// mesmo sem disco permanente no ambiente de hospedagem (ex.: Cloud Run sem volume
+// montado). O arquivo local continua sendo a cópia rápida usada por todas as rotas
+// (leitura/gravação síncrona, sem mudar a arquitetura existente) — o Firestore é o
+// backup que entra em ação na inicialização do servidor.
+const FIRESTORE_STORE_COLLECTION = 'appState';
+const FIRESTORE_STORE_DOC = 'main';
+
+function persistStoreToFirestore(store: PersistentStore): void {
+  const payload = { ...store, savedAt: new Date().toISOString() };
+  const json = JSON.stringify(payload);
+  if (json.length > 900_000) {
+    console.warn(
+      `[Firestore Sync] O estado está com ${json.length} bytes, perto do limite de 1MB por documento do Firestore. Se continuar crescendo, será necessário migrar para coleções separadas.`
+    );
+  }
+  db.collection(FIRESTORE_STORE_COLLECTION)
+    .doc(FIRESTORE_STORE_DOC)
+    .set(payload)
+    .catch((err) => {
+      console.error(
+        '[Firestore Sync] Falha ao sincronizar o estado com o Firestore:',
+        err instanceof Error ? err.message : err
+      );
+    });
 }
 
-async function saveAttendanceToFirestore(attendance: AttendanceRecord) {
-  const { id, ...data } = attendance;
-  await db.collection('attendances').doc(id).set(data, { merge: true });
+async function restoreStoreFromFirestoreIfNeeded(): Promise<void> {
+  try {
+    if (fs.existsSync(STORE_PATH)) {
+      return; // já existe um arquivo local — não sobrescreve com o backup
+    }
+    const doc = await db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC).get();
+    if (!doc.exists) {
+      console.log('[Firestore Sync] Nenhum backup encontrado no Firestore — iniciando com dados padrão.');
+      return;
+    }
+    const data = doc.data();
+    if (!data) return;
+    const { savedAt, ...storeData } = data as Record<string, unknown> & { savedAt?: string };
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(STORE_PATH, JSON.stringify(storeData, null, 2), 'utf-8');
+    console.log(`[Firestore Sync] Estado restaurado do Firestore (backup de ${savedAt || 'data desconhecida'}).`);
+  } catch (err) {
+    console.error(
+      '[Firestore Sync] Falha ao restaurar o estado do Firestore na inicialização:',
+      err instanceof Error ? err.message : err
+    );
+  }
 }
 
 function formatGeminiErrorMessage(err: unknown): string {
@@ -1581,6 +1636,12 @@ REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS:
    - "Forro inferior e acabamentos"`;
 
 async function startServer() {
+  // Antes de qualquer rota aceitar requisições: se o disco local estiver vazio
+  // (ex.: container recém-criado, sem volume persistente), recupera o último
+  // estado salvo no Firestore. Sem isso, qualquer redeploy sem disco permanente
+  // perderia os dados do mesmo jeito que o sistema anterior perdia na VPS.
+  await restoreStoreFromFirestoreIfNeeded();
+
   const app = express();
   app.use(express.json({ limit: '50mb' }));
 
@@ -1815,12 +1876,10 @@ async function startServer() {
   });
 
   // Get full store data
-  app.get('/api/store', async (_req, res) => {
+  app.get('/api/store', (_req, res) => {
     const store = loadStore();
-    const firestoreAttendances = await getAttendancesFromFirestore();
     res.json({
       ...store,
-      attendances: firestoreAttendances,
       devices: getActiveDevicesList(),
     });
   });
@@ -1945,8 +2004,7 @@ async function startServer() {
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
       };
-      await saveAttendanceToFirestore(newRecord);
-      // Update store
+      // Update store (saveStore já sincroniza o estado inteiro com o Firestore)
       store.attendances.push(newRecord);
       saveStore(store);
       res.json({ ok: true, attendance: newRecord });
