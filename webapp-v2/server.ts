@@ -6,7 +6,42 @@ import dotenv from 'dotenv';
 import { getApps, initializeApp, applicationDefault } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { GoogleGenAI, Type, GenerateContentResponse, ThinkingLevel } from '@google/genai';
+// Migrado de @google/genai (Gemini) para a API da Anthropic (Claude) — ver getAnthropicApiKey()
+// e generateContentWithRetryAndFallback() abaixo. O objeto Type abaixo reproduz os mesmos nomes
+// de constante que o SDK do Gemini usava, para não precisar reescrever os ~80 schemas de resposta
+// espalhados pelo arquivo — eles continuam descrevendo o formato esperado, só que agora viram uma
+// ferramenta (tool) da Claude em vez de um responseSchema do Gemini.
+const Type = {
+  OBJECT: 'OBJECT',
+  STRING: 'STRING',
+  ARRAY: 'ARRAY',
+  BOOLEAN: 'BOOLEAN',
+  INTEGER: 'INTEGER',
+  NUMBER: 'NUMBER',
+} as const;
+
+type AiTextResponse = { text: string };
+
+type AiSchema = {
+  type: string;
+  description?: string;
+  properties?: Record<string, AiSchema>;
+  items?: AiSchema;
+  required?: string[];
+};
+
+function convertSchemaToJsonSchema(schema: AiSchema): Record<string, unknown> {
+  const result: Record<string, unknown> = { type: schema.type.toLowerCase() };
+  if (schema.description) result.description = schema.description;
+  if (schema.properties) {
+    result.properties = Object.fromEntries(
+      Object.entries(schema.properties).map(([key, value]) => [key, convertSchemaToJsonSchema(value)])
+    );
+  }
+  if (schema.items) result.items = convertSchemaToJsonSchema(schema.items);
+  if (schema.required) result.required = schema.required;
+  return result;
+}
 
 const firebaseConfig = JSON.parse(fs.readFileSync('./firebase-applet-config.json', 'utf-8'));
 
@@ -1316,54 +1351,18 @@ function saveStore(store: PersistentStore): void {
   }
 }
 
-function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey.trim() === '') {
+function getAnthropicApiKey(): string {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || apiKey.trim() === '') {
     throw new Error(
-      'Configuração pendente: A variável de ambiente GEMINI_API_KEY não está configurada no servidor. Configure a chave nos Segredos (Secrets) do ambiente para executar a análise real por IA.'
+      'Configuração pendente: A variável de ambiente ANTHROPIC_API_KEY não está configurada no servidor. Configure a chave nos Segredos (Secrets) do ambiente para executar a análise real por IA.'
     );
   }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
+  return apiKey;
 }
 
 // Mutex de concorrência para evitar disparos simultâneos na interface
 const inFlightGeminiRequests = new Set<string>();
-
-function parseRetryDelayMs(err: unknown): number | null {
-  if (!err) return null;
-  const raw = err instanceof Error ? err.message : String(err);
-
-  const anyErr = err as any;
-  if (anyErr?.status === 429 || anyErr?.statusCode === 429) {
-    if (anyErr?.response?.headers) {
-      const retryAfter =
-        anyErr.response.headers.get?.('retry-after') || anyErr.response.headers['retry-after'];
-      if (retryAfter) {
-        const sec = parseFloat(retryAfter);
-        if (!isNaN(sec) && sec > 0) return Math.min(Math.ceil(sec * 1000), 30000);
-      }
-    }
-  }
-
-  const matchSec =
-    raw.match(/retry\s+(?:in|after)\s+([\d.]+)\s*(?:s|seconds?)/i) ||
-    raw.match(/retryDelay["']?\s*:\s*["']?([\d.]+)s/i);
-  if (matchSec) {
-    const sec = parseFloat(matchSec[1]);
-    if (!isNaN(sec) && sec > 0) {
-      return Math.min(Math.ceil(sec * 1000), 30000);
-    }
-  }
-
-  return null;
-}
 
 // Firestore Helpers
 async function getAttendancesFromFirestore(): Promise<AttendanceRecord[]> {
@@ -1379,29 +1378,16 @@ async function saveAttendanceToFirestore(attendance: AttendanceRecord) {
 function formatGeminiErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
 
-  if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED') || raw.includes('quota')) {
-    const retryDelay = parseRetryDelayMs(err);
-    const delayInfo = retryDelay
-      ? ` Tempo de recomposição informado pelo serviço: ~${Math.ceil(retryDelay / 1000)}s.`
-      : '';
-
-    if (
-      raw.includes('quota exceeded') ||
-      raw.includes('Quota exceeded') ||
-      raw.includes('Daily limit')
-    ) {
-      return `Limite de cota da API Gemini atingido (código 429 - Quota Exceeded). A cota do plano gratuito do projeto atingiu o limite de requisições.${delayInfo} Se a cota diária tiver se esgotado, aguarde a renovação ou utilize as informações preenchidas pela oficina. Todos os dados, fotos e rascunhos foram preservados integralmente sem perdas.`;
-    }
-    return `Limite temporário de requisições por minuto atingido na API Gemini (código 429).${delayInfo} Aguarde alguns instantes antes de enviar nova análise. Os formulários e fotos foram mantidos com segurança.`;
+  if (raw.includes('429') || raw.includes('rate_limit')) {
+    return `Limite temporário de requisições atingido na API da Anthropic (código 429). Aguarde alguns instantes antes de enviar nova análise. Os formulários e fotos foram mantidos com segurança.`;
   }
 
-  if (
-    raw.includes('503') ||
-    raw.includes('UNAVAILABLE') ||
-    raw.includes('high demand') ||
-    raw.includes('overloaded')
-  ) {
-    return 'O servidor do modelo Gemini está com alta demanda temporária (código 503). Os dados do atendimento estão preservados. Tente novamente em instantes.';
+  if (raw.includes('529') || raw.includes('overloaded')) {
+    return 'O servidor do modelo Claude está com alta demanda temporária (código 529). Os dados do atendimento estão preservados. Tente novamente em instantes.';
+  }
+
+  if (raw.includes('503') || raw.includes('UNAVAILABLE')) {
+    return 'O servidor do modelo Claude está indisponível temporariamente (código 503). Os dados do atendimento estão preservados. Tente novamente em instantes.';
   }
 
   return raw;
@@ -1413,7 +1399,7 @@ async function generateContentWithRetryAndFallback(params: {
   systemInstruction: string;
   responseSchema: Record<string, unknown>;
   lockKey?: string;
-}): Promise<{ response: GenerateContentResponse; usedModel: string }> {
+}): Promise<{ response: AiTextResponse; usedModel: string }> {
   if (params.lockKey) {
     if (inFlightGeminiRequests.has(params.lockKey)) {
       throw new Error(
@@ -1424,51 +1410,78 @@ async function generateContentWithRetryAndFallback(params: {
   }
 
   try {
-    const ai = getGeminiClient();
-    const model = params.preferredModel || 'gemini-3.8-flash';
+    const apiKey = getAnthropicApiKey();
+    const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
     const maxAttempts = 3;
     let lastError: unknown = null;
 
+    const content = params.parts.map((part) =>
+      'text' in part
+        ? { type: 'text', text: part.text }
+        : {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: part.inlineData.mimeType,
+              data: part.inlineData.data,
+            },
+          }
+    );
+    const toolSchema = convertSchemaToJsonSchema(params.responseSchema as AiSchema);
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const supportsThinkingLevel =
-          model.startsWith('gemini-3.') || model.startsWith('gemini-4');
-
-        const response = await ai.models.generateContent({
-          model,
-          contents: { parts: params.parts },
-          config: {
-            systemInstruction: params.systemInstruction,
-            temperature: 0.2,
-            responseMimeType: 'application/json',
-            responseSchema: params.responseSchema,
-            ...(supportsThinkingLevel
-              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-              : {}),
+        const apiResponse = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
           },
+          body: JSON.stringify({
+            model,
+            max_tokens: 4096,
+            system: params.systemInstruction,
+            messages: [{ role: 'user', content }],
+            tools: [
+              {
+                name: 'responder_estruturado',
+                description: 'Responde no formato estruturado exigido pela tarefa.',
+                input_schema: toolSchema,
+              },
+            ],
+            tool_choice: { type: 'tool', name: 'responder_estruturado' },
+          }),
         });
 
-        if (response && response.text) {
-          return { response, usedModel: model };
+        if (!apiResponse.ok) {
+          const errBody = await apiResponse.text();
+          const err: any = new Error(`Anthropic API error ${apiResponse.status}: ${errBody.slice(0, 300)}`);
+          err.status = apiResponse.status;
+          throw err;
+        }
+
+        const data = await apiResponse.json();
+        const toolUse = (data.content || []).find((b: any) => b.type === 'tool_use');
+        if (toolUse && toolUse.input) {
+          return { response: { text: JSON.stringify(toolUse.input) }, usedModel: model };
         }
         throw new Error(`Resposta vazia recebida do modelo ${model}`);
       } catch (err) {
         lastError = err;
         const msg = err instanceof Error ? err.message : String(err);
-        // No immediate throw for 429/RESOURCE_EXHAUSTED here;
-        // let the isTransientServer logic and backoff handle it.
         const isTransientServer =
           msg.includes('503') ||
-          msg.includes('UNAVAILABLE') ||
-          msg.includes('high demand') ||
+          msg.includes('529') ||
+          msg.includes('overloaded') ||
           msg.includes('500') ||
           msg.includes('504') ||
           msg.includes('fetch failed') ||
           msg.includes('429') ||
-          msg.includes('RESOURCE_EXHAUSTED');
+          msg.includes('rate_limit');
 
         console.warn(
-          `[Gemini Service] Tentativa ${attempt}/${maxAttempts} falhou para o modelo ${model}: ${msg.slice(0, 160)}`
+          `[Anthropic Service] Tentativa ${attempt}/${maxAttempts} falhou para o modelo ${model}: ${msg.slice(0, 160)}`
         );
 
         if (attempt >= maxAttempts || !isTransientServer) {
@@ -1477,14 +1490,10 @@ async function generateContentWithRetryAndFallback(params: {
 
         // Exponential backoff progressivo com jitter:
         // tentativa 1 -> ~1500ms, tentativa 2 -> ~3500ms + jitter
-        let waitMs = 1500 * Math.pow(2, attempt - 1) + Math.round(Math.random() * 600);
-        const parsedDelay = parseRetryDelayMs(err);
-        if (parsedDelay && parsedDelay > 0) {
-          waitMs = Math.max(waitMs, parsedDelay);
-        }
+        const waitMs = 1500 * Math.pow(2, attempt - 1) + Math.round(Math.random() * 600);
 
         console.log(
-          `[Gemini Service] Aplicando exponential backoff de ${waitMs}ms antes da tentativa ${attempt + 1}...`
+          `[Anthropic Service] Aplicando exponential backoff de ${waitMs}ms antes da tentativa ${attempt + 1}...`
         );
         await new Promise((resolve) => setTimeout(resolve, waitMs));
       }
@@ -1530,7 +1539,7 @@ function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string 
       }
     }
   } catch (err) {
-    console.error('Erro ao ler bytes da imagem para análise Gemini:', err);
+    console.error('Erro ao ler bytes da imagem para análise com IA:', err);
   }
   return null;
 }
@@ -1783,13 +1792,11 @@ async function startServer() {
     res.sendFile(swPath);
   });
 
-  // Status endpoint (checks if GEMINI_API_KEY is present without exposing it)
+  // Status endpoint (checks if ANTHROPIC_API_KEY is present without exposing it)
   app.get('/api/status', (_req, res) => {
     const store = loadStore();
-    const hasGeminiKey = Boolean(
-      process.env.GEMINI_API_KEY &&
-        process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY' &&
-        process.env.GEMINI_API_KEY.trim().length > 5
+    const hasAnthropicKey = Boolean(
+      process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim().length > 5
     );
     const activeAppUrl =
       process.env.APP_URL ||
@@ -1797,9 +1804,10 @@ async function startServer() {
     const sharedPreUrl = activeAppUrl.replace('://ais-dev-', '://ais-pre-');
     res.json({
       ok: true,
-      geminiConfigured: hasGeminiKey,
+      geminiConfigured: hasAnthropicKey,
+      aiConfigured: hasAnthropicKey,
       storageConfigured: true,
-      configuredModel: store.settings.geminiModel || 'gemini-3.8-flash',
+      configuredModel: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
       appUrl: activeAppUrl,
       sharedPreUrl,
       devices: getActiveDevicesList(),
@@ -2238,7 +2246,7 @@ async function startServer() {
     }
   });
 
-  // 1 & 6 & 7. Central Gemini Service: Analyze Defects by Area (sending actual image binaries)
+  // 1 & 6 & 7. Central AI Service (Claude): Analyze Defects by Area (sending actual image binaries)
   app.post('/api/ai/analyze-defects', async (req, res) => {
     try {
       const store = loadStore();
@@ -2428,7 +2436,7 @@ Para cada área:
 
       const rawText = response.text;
       if (!rawText) {
-        throw new Error('O modelo Gemini retornou uma resposta vazia.');
+        throw new Error('O modelo de IA retornou uma resposta vazia.');
       }
 
       const parsed = JSON.parse(rawText) as {
@@ -2533,56 +2541,37 @@ Para cada área:
       broadcastRealtimeEvent({
         type: 'attendance:updated',
         timestamp: now,
-        sourceStationName: `IA Gemini (${modelName})`,
+        sourceStationName: `IA Claude (${modelName})`,
         attendance,
       });
       res.json({ ok: true, attendance });
     } catch (error) {
-      console.error('Erro na análise de defeitos Gemini:', error);
+      console.error('Erro na análise de defeitos:', error);
       res.status(500).json({
         error:
           error instanceof Error
             ? error.message
-            : 'Erro ao processar análise de imagens com Gemini.',
+            : 'Erro ao processar análise de imagens com IA.',
       });
     }
   });
 
   app.post('/api/ai/diagnose-gemini', async (req, res) => {
     try {
-      const store = loadStore();
-      const { attendanceId } = req.body as { attendanceId: string };
-      const attendance = store.attendances.find((a) => a.id === attendanceId);
-      if (!attendance) return res.status(404).json({ error: 'Atendimento não encontrado.' });
-
-      const ai = getGeminiClient();
-      const model = 'gemini-3.8-flash'; // Effective model used
-
-      // Simulate the parts construction without actually using retry wrapper
-      const savedPhotos = attendance.photos.filter((p) => p.uploadStatus === 'saved');
-      const parts: any[] = [];
-      for (const photo of savedPhotos) {
-        const resolved = resolvePhotoBase64(photo.imageUrl);
-        if (resolved) {
-          parts.push({ text: 'Diagnostic photo' });
-          parts.push({ inlineData: { mimeType: resolved.mimeType, data: resolved.data } });
-        }
-      }
-
-      const response = await ai.models.generateContent({
-        model,
-        contents: { parts: parts },
-        config: { systemInstruction: 'Diagnostic test' }
+      const { response, usedModel } = await generateContentWithRetryAndFallback({
+        preferredModel: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
+        parts: [{ text: 'Teste de diagnóstico — responda apenas com {"ok": true}.' }],
+        systemInstruction: 'Diagnostic test',
+        responseSchema: { type: Type.OBJECT, properties: { ok: { type: Type.BOOLEAN } } },
       });
-      res.json({ ok: true, model, keySuffix: process.env.GEMINI_API_KEY?.slice(-4) });
+      res.json({ ok: true, model: usedModel, response: JSON.parse(response.text), keySuffix: process.env.ANTHROPIC_API_KEY?.slice(-4) });
     } catch (err: any) {
       console.error('DIAGNOSTIC ERROR:', err);
       res.status(err.status || 500).json({
         message: err.message,
         status: err.status,
-        errorDetails: err.errorDetails || err.response?.errorDetails || 'No details',
-        keySuffix: process.env.GEMINI_API_KEY?.slice(-4),
-        requestDetails: { model: 'gemini-3.8-flash' }
+        keySuffix: process.env.ANTHROPIC_API_KEY?.slice(-4),
+        requestDetails: { model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5' },
       });
     }
   });
@@ -2817,7 +2806,7 @@ TAREFA (SEGUNDA AVALIAÇÃO — REAPROVEITAMENTO, PROPOSTAS E PARECER PRELIMINAR
 
       const rawText = response.text;
       if (!rawText) {
-        throw new Error('O modelo Gemini retornou uma resposta vazia na avaliação de reaproveitamento.');
+        throw new Error('O modelo de IA retornou uma resposta vazia na avaliação de reaproveitamento.');
       }
 
       const parsed = JSON.parse(rawText) as {
@@ -2950,17 +2939,17 @@ TAREFA (SEGUNDA AVALIAÇÃO — REAPROVEITAMENTO, PROPOSTAS E PARECER PRELIMINAR
       broadcastRealtimeEvent({
         type: 'attendance:updated',
         timestamp: now,
-        sourceStationName: `IA Gemini (${modelName})`,
+        sourceStationName: `IA Claude (${modelName})`,
         attendance,
       });
       res.json({ ok: true, attendance });
     } catch (error) {
-      console.error('Erro na avaliação de reaproveitamento Gemini:', error);
+      console.error('Erro na avaliação de reaproveitamento:', error);
       res.status(500).json({
         error:
           error instanceof Error
             ? error.message
-            : 'Erro ao processar avaliação de reaproveitamento com Gemini.',
+            : 'Erro ao processar avaliação de reaproveitamento com IA.',
       });
     }
   });
@@ -3523,7 +3512,7 @@ CONTEXTO DO ATENDIMENTO SELECIONADO (${attendance.attendanceNumber}):
         error:
           error instanceof Error
             ? error.message
-            : 'Erro ao consultar o Agente Especialista com Gemini.',
+            : 'Erro ao consultar o Agente Especialista com IA.',
       });
     }
   });
@@ -3730,7 +3719,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     res.json({ ok: true, juliaData: store.juliaData });
   });
 
-  // Generate or Correct (Corrigir) any of the 12 steps of Anúncio Inteligente with Gemini
+  // Generate or Correct (Corrigir) any of the 12 steps of Anúncio Inteligente with Claude
   app.post('/api/julia/ai-step', async (req, res) => {
     try {
       const store = loadStore();
