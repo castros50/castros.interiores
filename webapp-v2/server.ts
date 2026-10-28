@@ -1577,6 +1577,51 @@ async function generateContentWithRetryAndFallback(params: {
   }
 }
 
+// Fotos: o disco local é a cópia rápida usada para servir as imagens, mas sozinho
+// tem o mesmo problema do store.json — sem disco permanente no deploy, as fotos
+// somem a cada reinício. savePhotoFile() grava local (como já fazia) e também
+// envia para o Firebase Storage em segundo plano; a rota de servir foto busca no
+// Storage como última tentativa se o arquivo não existir mais localmente.
+function savePhotoFile(fileName: string, buffer: Buffer, mimeType: string): void {
+  fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(PHOTOS_DIR, fileName), buffer);
+  try {
+    storageBucket
+      .file(`photos/${fileName}`)
+      .save(buffer, { contentType: mimeType, resumable: false })
+      .catch((err) => {
+        console.error(
+          `[Storage Sync] Falha ao enviar a foto ${fileName} para o Firebase Storage:`,
+          err instanceof Error ? err.message : err
+        );
+      });
+  } catch (err) {
+    console.error(
+      `[Storage Sync] Falha síncrona ao preparar o envio da foto ${fileName}:`,
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+async function ensurePhotoFileAvailable(fileName: string): Promise<boolean> {
+  const filePath = path.join(PHOTOS_DIR, fileName);
+  if (fs.existsSync(filePath)) return true;
+  try {
+    const remoteFile = storageBucket.file(`photos/${fileName}`);
+    const [exists] = await remoteFile.exists();
+    if (!exists) return false;
+    fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+    await remoteFile.download({ destination: filePath });
+    return true;
+  } catch (err) {
+    console.error(
+      `[Storage Sync] Falha ao recuperar a foto ${fileName} do Firebase Storage:`,
+      err instanceof Error ? err.message : err
+    );
+    return false;
+  }
+}
+
 function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string } | null {
   try {
     if (imageUrl.startsWith('data:')) {
@@ -2137,8 +2182,7 @@ async function startServer() {
         /[^a-zA-Z0-9_-]/g,
         ''
       )}${ext}`;
-      const filePath = path.join(PHOTOS_DIR, safeFileName);
-      fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+      savePhotoFile(safeFileName, Buffer.from(base64Data, 'base64'), detectedMime);
 
       res.json({
         ok: true,
@@ -2157,10 +2201,13 @@ async function startServer() {
   });
 
   // Serve Private Photo
-  app.get('/api/photos/:fileName', (req, res) => {
+  app.get('/api/photos/:fileName', async (req, res) => {
     const safeFileName = req.params.fileName.replace(/[^a-zA-Z0-9._-]/g, '');
     const filePath = path.join(PHOTOS_DIR, safeFileName);
-    if (!fs.existsSync(filePath)) {
+    // Se o arquivo não está mais no disco local (ex.: redeploy sem disco permanente),
+    // tenta recuperar do Firebase Storage antes de desistir.
+    const available = fs.existsSync(filePath) || (await ensurePhotoFileAvailable(safeFileName));
+    if (!available) {
       res.status(404).json({ error: 'Foto não encontrada.' });
       return;
     }
@@ -3719,8 +3766,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
 
       const photoId = `jphoto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const safeFileName = `julia_${photoId}${ext}`;
-      const filePath = path.join(PHOTOS_DIR, safeFileName);
-      fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+      savePhotoFile(safeFileName, Buffer.from(base64Data, 'base64'), detectedMime);
 
       const newPhoto: JuliaMarketingPhoto = {
         id: photoId,
