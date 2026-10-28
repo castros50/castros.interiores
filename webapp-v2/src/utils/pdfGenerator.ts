@@ -1,6 +1,11 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { AttendanceRecord, WorkshopSettings, ManufacturingProjectData } from '../types';
+import {
+  AttendanceRecord,
+  WorkshopSettings,
+  ManufacturingProjectData,
+  ReformMaterialsList,
+} from '../types';
 import {
   calculateBudgetSummary,
   calculateLineItemTotal,
@@ -945,6 +950,210 @@ export async function generateClientReportPdf(
 
   addPageNumbersAndFooter(doc, isConfirmed, attendance.attendanceNumber);
   doc.save(`Relatorio_Cliente_${attendance.attendanceNumber}.pdf`);
+}
+
+export async function generateShoppingListPdf(
+  attendance: AttendanceRecord,
+  materialsList: ReformMaterialsList,
+  settings: WorkshopSettings,
+  buyerName?: string
+): Promise<void> {
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  // Header Banner
+  doc.setFillColor(24, 21, 18);
+  doc.rect(15, 14, 180, 24, 'F');
+  doc.setTextColor(249, 246, 240);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.text(
+    `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — LISTA DE COMPRAS`,
+    20,
+    23
+  );
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(212, 185, 140);
+  doc.text(
+    `Atendimento: ${attendance.attendanceNumber}   |   Lista: ${materialsList.listCode} (rev. ${materialsList.revision})   |   Emissão: ${new Date().toLocaleDateString('pt-BR')}`,
+    20,
+    30
+  );
+  doc.text(
+    `Comprador responsável: ${formatMissingText(buyerName || materialsList.preparedByName)}`,
+    20,
+    35
+  );
+
+  let cursorY = 46;
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: {
+      fontSize: 8.5,
+      cellPadding: 2.5,
+      textColor: [28, 25, 23],
+      lineColor: [220, 214, 205],
+    },
+    headStyles: {
+      fillColor: [45, 40, 35],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+    },
+    body: [
+      ['Cliente', formatMissingText(attendance.clientName), 'Móvel', formatMissingText(attendance.furnitureType)],
+      ['Proposta Selecionada', materialsList.proposalTier, 'Revisão da Lista', `${materialsList.revision}`],
+    ],
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
+
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.5);
+  doc.setTextColor(87, 83, 78);
+  doc.text(
+    'Quantidade e preço previstos pelo aplicativo são estimativas internas, nunca o gasto real. Preencha "Qtd. Comprada", "Preço Unit. Real" e "Total Real" à mão na loja.',
+    15,
+    cursorY
+  );
+  cursorY += 5;
+
+  const purchasableItems = materialsList.items.filter(
+    (item) => item.componentStatus !== 'Reaproveitado'
+  );
+  const reusedCount = materialsList.items.length - purchasableItems.length;
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: {
+      fontSize: 8,
+      cellPadding: 2.5,
+      textColor: [28, 25, 23],
+      lineColor: [220, 214, 205],
+      overflow: 'linebreak',
+    },
+    headStyles: {
+      fillColor: [45, 40, 35],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      fontSize: 7.5,
+    },
+    head: [
+      [
+        'Item / Material e Especificação',
+        'Qtd. Prevista (Compra)',
+        'Unid.',
+        'Qtd. Comprada (preencher)',
+        'Preço Unit. Real (preencher)',
+        'Total Real (preencher)',
+      ],
+    ],
+    body: purchasableItems.map((item) => [
+      {
+        content: `${item.component} — ${item.materialName}${item.specification ? `\n${item.specification}` : ''}${
+          item.unitCostCents !== null
+            ? `\n(estimado no app: ${formatCurrencyBRL(item.unitCostCents)}/${item.unit})`
+            : ''
+        }`,
+      },
+      item.purchaseQuantity === null ? 'Pendente de medição' : `${item.purchaseQuantity}`,
+      item.purchaseUnit || item.unit,
+      '',
+      '',
+      '',
+    ]),
+    columnStyles: {
+      0: { cellWidth: 70 },
+      1: { cellWidth: 26, halign: 'right' },
+      2: { cellWidth: 16 },
+      3: { cellWidth: 26, minCellHeight: 10 },
+      4: { cellWidth: 26, minCellHeight: 10 },
+      5: { cellWidth: 26, minCellHeight: 10 },
+    },
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 4;
+
+  if (purchasableItems.length === 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.text('Nenhum item de compra: todos os componentes avaliados foram marcados para reaproveitamento.', 15, cursorY);
+    cursorY += 6;
+  }
+  if (reusedCount > 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(87, 83, 78);
+    doc.text(
+      `${reusedCount} peça(s) marcada(s) como reaproveitada(s) não entraram nesta lista de compras.`,
+      15,
+      cursorY
+    );
+    cursorY += 6;
+  }
+
+  if (cursorY > 230) {
+    doc.addPage();
+    cursorY = 20;
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('CONFERÊNCIA DA COMPRA (preencher na loja ou ao retornar)', 15, cursorY);
+  cursorY += 3;
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 3, textColor: [28, 25, 23], minCellHeight: 8 },
+    body: [
+      ['Loja / Fornecedor', '', 'Data da Compra', ''],
+      ['Nº da Nota ou Recibo', '', 'Forma de Pagamento', ''],
+      ['Frete (R$)', '', 'Desconto (R$)', ''],
+      ['Outros Valores Identificados (R$)', '', 'Total Pago (R$)', ''],
+      ['Valor Pago (R$)', '', 'Saldo Pendente (R$)', ''],
+    ],
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 5;
+
+  if (cursorY > 255) {
+    doc.addPage();
+    cursorY = 20;
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.text('Observações', 15, cursorY);
+  cursorY += 2;
+  doc.setDrawColor(215, 208, 198);
+  doc.rect(15, cursorY, 180, 20, 'S');
+  cursorY += 26;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.text('Assinatura do Comprador: _______________________________________', 15, cursorY);
+  doc.text('Data: ____/____/______', 150, cursorY);
+  cursorY += 8;
+
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7);
+  doc.setTextColor(120, 113, 108);
+  doc.text(
+    `Código de identificação desta lista para conferência: ${materialsList.listCode} — revisão ${materialsList.revision}.`,
+    15,
+    cursorY
+  );
+
+  addPageNumbersAndFooter(doc, true, attendance.attendanceNumber);
+  doc.save(`Lista_Compras_${attendance.attendanceNumber}_rev${materialsList.revision}.pdf`);
 }
 
 export async function generateManufacturingInternalPdf(
