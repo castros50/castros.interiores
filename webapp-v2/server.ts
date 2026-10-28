@@ -54,6 +54,11 @@ const app = existingApps.length > 0
       projectId: firebaseConfig.projectId,
     });
 const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// O estado da aplicação (store.json) tem muitos campos opcionais que ficam `undefined`
+// em JS — JSON.stringify já os descarta normalmente, mas o Firestore rejeita `undefined`
+// por padrão e lançaria erro em quase toda gravação. Isso faz o Firestore se comportar
+// como o arquivo local: campos ausentes somem, em vez de quebrar a gravação.
+db.settings({ ignoreUndefinedProperties: true });
 const storageBucket = getStorage(app).bucket(firebaseConfig.storageBucket);
 
 
@@ -1395,15 +1400,25 @@ function persistStoreToFirestore(store: PersistentStore): void {
       `[Firestore Sync] O estado está com ${json.length} bytes, perto do limite de 1MB por documento do Firestore. Se continuar crescendo, será necessário migrar para coleções separadas.`
     );
   }
-  db.collection(FIRESTORE_STORE_COLLECTION)
-    .doc(FIRESTORE_STORE_DOC)
-    .set(payload)
-    .catch((err) => {
-      console.error(
-        '[Firestore Sync] Falha ao sincronizar o estado com o Firestore:',
-        err instanceof Error ? err.message : err
-      );
-    });
+  try {
+    db.collection(FIRESTORE_STORE_COLLECTION)
+      .doc(FIRESTORE_STORE_DOC)
+      .set(payload)
+      .catch((err) => {
+        console.error(
+          '[Firestore Sync] Falha ao sincronizar o estado com o Firestore:',
+          err instanceof Error ? err.message : err
+        );
+      });
+  } catch (err) {
+    // .set() pode lançar de forma síncrona (ex.: dado inválido) antes mesmo de
+    // devolver uma promise — sem este try/catch, isso derrubaria a rota que
+    // chamou saveStore(), mesmo com os dados já salvos com segurança no disco.
+    console.error(
+      '[Firestore Sync] Falha síncrona ao preparar a sincronização com o Firestore:',
+      err instanceof Error ? err.message : err
+    );
+  }
 }
 
 async function restoreStoreFromFirestoreIfNeeded(): Promise<void> {
