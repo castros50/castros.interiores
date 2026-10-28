@@ -481,7 +481,7 @@ export interface WorkshopSettings {
   responsibleDefaultName: string;
   phoneWhatsapp: string;
   cityState: string;
-  geminiModel: 'gemini-3.8-flash' | 'gemini-flash-latest' | 'gemini-3.1-flash-lite';
+  aiModel: 'claude-sonnet-5' | 'claude-opus-5-5' | 'claude-haiku-5-5';
   defectAgentCustomInstructions?: string;
   reuseAgentCustomInstructions?: string;
   proposalAgentCustomInstructions?: string;

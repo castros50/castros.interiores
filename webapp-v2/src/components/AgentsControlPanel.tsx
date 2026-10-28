@@ -327,7 +327,7 @@ export const AgentsControlPanel: React.FC<AgentsControlPanelProps> = ({
         </div>
       </section>
 
-      {/* PART 2: The 3 Autonomous Gemini Specialist Agents */}
+      {/* PART 2: The 3 Autonomous Claude Specialist Agents */}
       <section className="rounded-xl bg-white border border-[#E5DEC9] p-6 space-y-5">
         <div className="pb-3 border-b border-[#EFECE6]">
           <h2 className="text-lg font-serif-display font-bold text-[#181512]">

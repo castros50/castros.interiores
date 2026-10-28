@@ -1327,7 +1327,7 @@ function loadStore(): PersistentStore {
       responsibleDefaultName: '',
       phoneWhatsapp: '(91) 98556-9841',
       cityState: '',
-      geminiModel: 'gemini-3.8-flash',
+      aiModel: 'claude-sonnet-5',
     },
     juliaData: defaultJulia,
     officeData: createDefaultOfficeData(),
@@ -1411,7 +1411,7 @@ async function generateContentWithRetryAndFallback(params: {
 
   try {
     const apiKey = getAnthropicApiKey();
-    const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
+    const model = params.preferredModel || process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
     const maxAttempts = 3;
     let lastError: unknown = null;
 
@@ -2274,7 +2274,7 @@ async function startServer() {
         return;
       }
 
-      const preferredModel = store.settings.geminiModel || 'gemini-3.8-flash';
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
 
       const parts: Array<
         | { text: string }
@@ -2604,7 +2604,7 @@ Para cada área:
         return;
       }
 
-      const preferredModel = store.settings.geminiModel || 'gemini-3.8-flash';
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
 
       const parts: Array<
         | { text: string }
@@ -2974,7 +2974,7 @@ TAREFA (SEGUNDA AVALIAÇÃO — REAPROVEITAMENTO, PROPOSTAS E PARECER PRELIMINAR
         return;
       }
 
-      const preferredModel = store.settings.geminiModel || 'gemini-3.8-flash';
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const parts: Array<
         | { text: string }
         | { inlineData: { mimeType: string; data: string } }
@@ -3336,7 +3336,7 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
         return;
       }
 
-      const preferredModel = store.settings.geminiModel || 'gemini-3.8-flash';
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const attendance = attendanceId
         ? store.attendances.find((a) => a.id === attendanceId)
         : store.attendances[0];
@@ -3741,7 +3741,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         return;
       }
 
-      const preferredModel = store.settings.geminiModel || 'gemini-3.8-flash';
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const parts: Array<
         | { text: string }
         | { inlineData: { mimeType: string; data: string } }
@@ -4601,7 +4601,7 @@ DIRETRIZES DE RESPOSTA:
 
       parts.push({ text: promptDirective });
 
-      const preferredModel = store.settings.geminiModel || 'gemini-3.8-flash';
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const { response } = await generateContentWithRetryAndFallback({
         preferredModel,
         parts,
@@ -4722,7 +4722,7 @@ DIRETRIZES DE RESPOSTA:
       };
       store.juliaData.chatHistory.push(userMsg);
 
-      const preferredModel = store.settings.geminiModel || 'gemini-3.8-flash';
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const recentHistory = store.juliaData.chatHistory
         .slice(-10)
         .map((m) => `${m.sender === 'operador' ? 'Operador' : 'Júlia'} (${m.modality}): ${m.text}`)
@@ -4849,7 +4849,7 @@ INSTRUÇÕES ESPECIAIS:
       if (!store.juliaData) {
         store.juliaData = getDefaultJuliaData();
       }
-      const preferredModel = store.settings.geminiModel || 'gemini-3.8-flash';
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const today = new Date().toISOString().slice(0, 10);
 
       const metricsSnapshot = {
