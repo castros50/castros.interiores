@@ -50,6 +50,10 @@ interface OfficeDesksHubProps {
   onUpdateAttendance: (updated: AttendanceRecord) => void;
   onNavigateTab: (tab: any) => void;
   onJumpToStep?: (step: number) => void;
+  // Mesa a abrir ao chegar vinda de fora (ex.: cartão específico no Painel).
+  // Consumida uma única vez e depois limpa via onDeskIdConsumed.
+  initialDeskId?: DepartmentId | null;
+  onDeskIdConsumed?: () => void;
 }
 
 export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
@@ -61,6 +65,8 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   onUpdateAttendance,
   onNavigateTab,
   onJumpToStep,
+  initialDeskId,
+  onDeskIdConsumed,
 }) => {
   const [selectedDeskId, setSelectedDeskId] = useState<DepartmentId>('lucas_projetos');
   const [deskFilter, setDeskFilter] = useState<'all' | DepartmentId>('all');
@@ -114,6 +120,17 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   useEffect(() => {
     loadOfficeState();
   }, []);
+
+  // Ao chegar com uma mesa específica pedida de fora (ex.: "Abrir mesa"/"Conversar"
+  // no cartão de um departamento no Painel), seleciona essa mesa e consome o pedido.
+  useEffect(() => {
+    if (initialDeskId) {
+      setSelectedDeskId(initialDeskId);
+      setDeskFilter(initialDeskId);
+      onDeskIdConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDeskId]);
 
   const activeOrder =
     attendances.find((a) => a.id === activeAttendanceId) ||

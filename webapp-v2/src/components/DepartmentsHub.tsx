@@ -42,6 +42,9 @@ const DEPTS_WITH_CHAT = new Set<DepartmentId>([
   'ana_compras',
   'julia_marketing',
   'supervisora_geral',
+  'mila_financeiro',
+  'lucas_projetos',
+  'castro_estrategia',
 ]);
 
 interface DepartmentsHubProps {
@@ -69,6 +72,9 @@ interface DepartmentsHubProps {
       | 'configuracoes'
       | 'escritorio'
   ) => void;
+  // Abre o Escritório de Mesas já na mesa deste departamento específico, em vez de
+  // deixar o Escritório na última mesa vista.
+  onOpenDeskInOffice?: (deptId: DepartmentId) => void;
   onRunDefectsAnalysis: () => Promise<void>;
   onRunReuseAnalysis: () => Promise<void>;
   onGenerateInternalPdf: (att?: AttendanceRecord) => void;
@@ -277,6 +283,32 @@ export const DEPARTMENTS_LIST: DepartmentMeta[] = [
       },
     ],
   },
+  {
+    id: 'supervisora_geral',
+    buttonLabel: 'Helena (Supervisora)',
+    personName: 'Helena',
+    departmentRole: 'Supervisão Geral de Pedidos, Campanhas e Compras',
+    summary:
+      'Monitoramento integrado de prazos, cobrança de retornos, aprovação formal de decisões e mediação entre mesas.',
+    icon: CheckCircle2,
+    quickPrompts: [
+      {
+        label: 'Panorama de pedidos e prazos em risco',
+        prompt:
+          'Liste os pedidos de reforma e fabricação com prazo mais próximo de vencer e aponte quais estão sem retorno recente de alguma mesa responsável.',
+      },
+      {
+        label: 'Cobrança formal de retorno pendente',
+        prompt:
+          'Redija uma cobrança objetiva e registrável para a mesa responsável por um pedido parado, explicando o que falta e o prazo esperado de resposta.',
+      },
+      {
+        label: 'Mediação entre mesas em um pedido',
+        prompt:
+          'Resuma o que cada mesa (avaliação, compras, fabricação, financeiro) já entregou e o que ainda falta neste pedido, para decidir o próximo passo.',
+      },
+    ],
+  },
 ];
 
 export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
@@ -294,6 +326,7 @@ export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
   onNewAttendance,
   onJumpToStep,
   onNavigateTab,
+  onOpenDeskInOffice,
   onRunDefectsAnalysis,
   onRunReuseAnalysis,
   onGenerateInternalPdf,
@@ -512,7 +545,9 @@ export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
               >
                 <button
                   type="button"
-                  onClick={() => onNavigateTab('escritorio')}
+                  onClick={() =>
+                    onOpenDeskInOffice ? onOpenDeskInOffice(dept.id) : onNavigateTab('escritorio')
+                  }
                   className={`flex-1 text-[11px] font-semibold rounded-lg px-2.5 py-1.5 text-center ${
                     isSelected
                       ? 'bg-[#9A7138] text-white'
@@ -524,7 +559,9 @@ export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
                 {hasChat && (
                   <button
                     type="button"
-                    onClick={() => onNavigateTab('escritorio')}
+                    onClick={() =>
+                      onOpenDeskInOffice ? onOpenDeskInOffice(dept.id) : onNavigateTab('escritorio')
+                    }
                     className={`flex-1 text-[11px] font-semibold rounded-lg px-2.5 py-1.5 text-center border ${
                       isSelected
                         ? 'border-[#9A7138] text-[#D8C5A3]'
