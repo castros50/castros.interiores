@@ -588,12 +588,8 @@ function drawCoverImageOnCanvas(
   const srcW = targetW / scale;
   const srcH = targetH / scale;
   const srcX = Math.max(0, (imgW - srcW) / 2);
-  const srcY = Math.max(0, (imgH - srcY_offset(imgH, srcH)));
+  const srcY = Math.max(0, (imgH - srcH) / 2);
   ctx.drawImage(img, srcX, srcY, srcW, srcH, targetX, targetY, targetW, targetH);
-}
-
-function srcY_offset(imgH: number, srcH: number): number {
-  return (imgH - srcH) / 2;
 }
 
 async function loadPhotoAsImageElement(
