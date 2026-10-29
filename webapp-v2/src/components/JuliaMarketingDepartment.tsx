@@ -485,6 +485,14 @@ async function compressPhotoForUpload(fileOrDataUrl: File | string): Promise<{
           reader.readAsDataURL(fileOrDataUrl);
         });
 
+  // O mimeType real é o da imagem de origem (fullDataUrl), não o da miniatura —
+  // a miniatura é sempre reconvertida para JPEG aqui, mas o arquivo original
+  // enviado ao servidor (fullDataUrl) mantém sua codificação real (ex.: PNG de
+  // uma captura de tela ou de certas câmeras). Declarar "jpeg" quando os bytes
+  // são PNG derruba a análise por IA (a Anthropic API rejeita a inconsistência).
+  const originalMimeMatch = fullDataUrl.match(/^data:([^;]+);base64,/);
+  const realMimeType = originalMimeMatch ? originalMimeMatch[1] : 'image/jpeg';
+
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -510,7 +518,7 @@ async function compressPhotoForUpload(fileOrDataUrl: File | string): Promise<{
           resolve({
             fullDataUrl,
             thumbnailDataUrl: canvas.toDataURL('image/jpeg', 0.78),
-            mimeType: 'image/jpeg',
+            mimeType: realMimeType,
           });
           return;
         }
@@ -520,14 +528,14 @@ async function compressPhotoForUpload(fileOrDataUrl: File | string): Promise<{
       resolve({
         fullDataUrl,
         thumbnailDataUrl: '',
-        mimeType: 'image/jpeg',
+        mimeType: realMimeType,
       });
     };
     img.onerror = () =>
       resolve({
         fullDataUrl,
         thumbnailDataUrl: '',
-        mimeType: 'image/jpeg',
+        mimeType: realMimeType,
       });
     img.src = fullDataUrl;
   });

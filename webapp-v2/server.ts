@@ -2413,7 +2413,11 @@ async function startServer() {
         res.status(400).json({ error: 'Formato de imagem inválido (esperado base64 dataURL).' });
         return;
       }
-      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      // O prefixo da própria data URL (match[1]) descreve os bytes reais que seguem;
+      // um "mimeType" enviado à parte é só uma alegação do cliente e pode estar errado
+      // (ex.: miniatura sempre marcada como jpeg mesmo quando a imagem original é PNG).
+      // Por isso o prefixo tem prioridade — nunca declarar um tipo que não bate com o conteúdo.
+      const detectedMime = match[1] || mimeType || 'image/jpeg';
       const base64Data = match[2];
       const fileName = `agent-portrait-${deskId}.jpg`;
       savePhotoFile(fileName, Buffer.from(base64Data, 'base64'), detectedMime);
@@ -2459,7 +2463,11 @@ async function startServer() {
         res.status(400).json({ error: 'Formato de imagem inválido (esperado base64 dataURL).' });
         return;
       }
-      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      // O prefixo da própria data URL (match[1]) descreve os bytes reais que seguem;
+      // um "mimeType" enviado à parte é só uma alegação do cliente e pode estar errado
+      // (ex.: miniatura sempre marcada como jpeg mesmo quando a imagem original é PNG).
+      // Por isso o prefixo tem prioridade — nunca declarar um tipo que não bate com o conteúdo.
+      const detectedMime = match[1] || mimeType || 'image/jpeg';
       const base64Data = match[2];
       const fileName = 'office-cover-image.jpg';
       savePhotoFile(fileName, Buffer.from(base64Data, 'base64'), detectedMime);
@@ -2699,7 +2707,11 @@ async function startServer() {
         res.status(400).json({ error: 'Formato de imagem inválido (esperado base64 dataURL).' });
         return;
       }
-      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      // O prefixo da própria data URL (match[1]) descreve os bytes reais que seguem;
+      // um "mimeType" enviado à parte é só uma alegação do cliente e pode estar errado
+      // (ex.: miniatura sempre marcada como jpeg mesmo quando a imagem original é PNG).
+      // Por isso o prefixo tem prioridade — nunca declarar um tipo que não bate com o conteúdo.
+      const detectedMime = match[1] || mimeType || 'image/jpeg';
       const base64Data = match[2];
       const ext = detectedMime.includes('png')
         ? '.png'
@@ -4652,7 +4664,11 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         return;
       }
 
-      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      // O prefixo da própria data URL (match[1]) descreve os bytes reais que seguem;
+      // um "mimeType" enviado à parte é só uma alegação do cliente e pode estar errado
+      // (ex.: miniatura sempre marcada como jpeg mesmo quando a imagem original é PNG).
+      // Por isso o prefixo tem prioridade — nunca declarar um tipo que não bate com o conteúdo.
+      const detectedMime = match[1] || mimeType || 'image/jpeg';
       const base64Data = match[2];
       const ext = detectedMime.includes('png')
         ? '.png'
