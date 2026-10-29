@@ -1766,6 +1766,17 @@ function deriveMaterialsListItems(
   return items;
 }
 
+const VALID_DESK_IDS: DepartmentId[] = [
+  'carla_atendimento',
+  'pedro_avaliacao',
+  'lucas_projetos',
+  'ana_compras',
+  'mila_financeiro',
+  'castro_estrategia',
+  'julia_marketing',
+  'supervisora_geral',
+];
+
 const ANALYST_SYSTEM_INSTRUCTION = `Você é o analista técnico sênior de reforma de estofados da Castros Interiores.
 Sua função é avaliar tecnicamente as fotografias reais enviadas e as informações do atendimento para identificar problemas por área, possibilidades de recuperação e materiais candidatos a reaproveitamento.
 
@@ -2066,6 +2077,101 @@ async function startServer() {
       settings: store.settings,
     });
     res.json({ ok: true, settings: store.settings });
+  });
+
+  // Identidade Visual dos Agentes — retrato por mesa/agente, arquivo fixo e durável
+  // (sobrescrito a cada novo envio), servido pela rota já existente /api/photos/:fileName.
+  app.post('/api/agent-portraits/:deskId', (req, res) => {
+    try {
+      const { deskId } = req.params;
+      if (!VALID_DESK_IDS.includes(deskId as DepartmentId)) {
+        res.status(400).json({ error: 'Identificador de agente desconhecido.' });
+        return;
+      }
+      const { dataUrl, mimeType } = req.body as { dataUrl: string; mimeType?: string };
+      if (!dataUrl) {
+        res.status(400).json({ error: 'Imagem não enviada.' });
+        return;
+      }
+      const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!match) {
+        res.status(400).json({ error: 'Formato de imagem inválido (esperado base64 dataURL).' });
+        return;
+      }
+      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      const base64Data = match[2];
+      const fileName = `agent-portrait-${deskId}.jpg`;
+      savePhotoFile(fileName, Buffer.from(base64Data, 'base64'), detectedMime);
+
+      const store = loadStore();
+      const now = new Date().toISOString();
+      store.settings.agentPortraitUpdatedAt = {
+        ...(store.settings.agentPortraitUpdatedAt || {}),
+        [deskId]: now,
+      };
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'settings:updated',
+        timestamp: now,
+        settings: store.settings,
+      });
+      res.json({
+        ok: true,
+        imageUrl: `/api/photos/${fileName}`,
+        settings: store.settings,
+      });
+    } catch (error) {
+      console.error('Erro ao salvar retrato do agente:', error);
+      res.status(500).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Falha ao gravar o retrato no armazenamento do servidor.',
+      });
+    }
+  });
+
+  // Imagem de Capa do Escritório — mesmo padrão de arquivo fixo e durável
+  app.post('/api/office-cover', (req, res) => {
+    try {
+      const { dataUrl, mimeType } = req.body as { dataUrl: string; mimeType?: string };
+      if (!dataUrl) {
+        res.status(400).json({ error: 'Imagem não enviada.' });
+        return;
+      }
+      const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!match) {
+        res.status(400).json({ error: 'Formato de imagem inválido (esperado base64 dataURL).' });
+        return;
+      }
+      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      const base64Data = match[2];
+      const fileName = 'office-cover-image.jpg';
+      savePhotoFile(fileName, Buffer.from(base64Data, 'base64'), detectedMime);
+
+      const store = loadStore();
+      const now = new Date().toISOString();
+      store.settings.officeCoverImageUpdatedAt = now;
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'settings:updated',
+        timestamp: now,
+        settings: store.settings,
+      });
+      res.json({
+        ok: true,
+        imageUrl: `/api/photos/${fileName}`,
+        settings: store.settings,
+      });
+    } catch (error) {
+      console.error('Erro ao salvar imagem de capa do escritório:', error);
+      res.status(500).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Falha ao gravar a imagem de capa no armazenamento do servidor.',
+      });
+    }
   });
 
   // Create new attendance with automatic number

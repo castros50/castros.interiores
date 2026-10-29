@@ -576,6 +576,9 @@ export interface WorkshopSettings {
   defectAgentCustomInstructions?: string;
   reuseAgentCustomInstructions?: string;
   proposalAgentCustomInstructions?: string;
+  // Identidade Visual dos Agentes
+  agentPortraitUpdatedAt?: Partial<Record<DepartmentId, string>>;
+  officeCoverImageUpdatedAt?: string;
 }
 
 export type DeviceFormFactor = 'Computador' | 'Tablet' | 'Celular';
