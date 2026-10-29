@@ -18,6 +18,7 @@ import {
   Sparkles,
   ChevronRight,
   FolderOpen,
+  Wallet,
 } from 'lucide-react';
 import {
   AttendanceRecord,
@@ -38,13 +39,14 @@ import { SupervisorDesk } from './SupervisorDesk';
 import { AgentVoiceTextChat } from './AgentVoiceTextChat';
 import { AgentPortrait } from './AgentPortrait';
 import { TapeceiroTecnicoDesk } from './TapeceiroTecnicoDesk';
+import { MilaFactoryFinanceView } from './MilaFactoryFinanceView';
 
 interface OfficeDesksHubProps {
   attendances: AttendanceRecord[];
   materialsCatalog: MaterialCatalogItem[];
   settings: WorkshopSettings;
   activeAttendanceId: string | null;
-  onSelectAttendance: (id: string) => void;
+  onSelectAttendance: (id: string | null) => void;
   onUpdateAttendance: (updated: AttendanceRecord) => void;
   onNavigateTab: (tab: any) => void;
   onJumpToStep?: (step: number) => void;
@@ -116,7 +118,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   const activeOrder =
     attendances.find((a) => a.id === activeAttendanceId) ||
     attendances.find((a) => a.currentDesk === selectedDeskId && (selectedDeskId !== 'lucas_projetos' || a.orderType === 'Fabricação')) ||
-    (selectedDeskId === 'lucas_projetos' ? null : attendances[0]);
+    (selectedDeskId === 'lucas_projetos' || selectedDeskId === 'mila_financeiro' ? null : attendances[0]);
 
   // Contagem de pedidos por mesa
   const getOrdersCountByDesk = (deskId: DepartmentId) => {
@@ -566,6 +568,14 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
         </div>
       </div>
 
+      {/* FINANCEIRO DA FÁBRICA — funciona sem nenhum pedido selecionado */}
+      {!activeOrder && selectedDeskId === 'mila_financeiro' && (
+        <MilaFactoryFinanceView
+          settings={settings}
+          onOpenOrder={(orderId) => onSelectAttendance(orderId)}
+        />
+      )}
+
       {/* ÁREA OPERACIONAL DA MESA ATUAL */}
       {activeOrder && (
         <div className="space-y-4">
@@ -686,16 +696,26 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
           )}
 
           {selectedDeskId === 'mila_financeiro' && (
-            <MilaFinancialDesk
-              order={activeOrder}
-              materialsCatalog={materialsCatalog}
-              settings={settings}
-              onUpdateOrder={onUpdateAttendance}
-              onRequestHandoff={(orderId, toDesk, reason) => {
-                const target = attendances.find((a) => a.id === orderId);
-                if (target) handleOpenTransfer(target, toDesk);
-              }}
-            />
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => onSelectAttendance(null)}
+                className="px-3.5 py-1.5 rounded-lg bg-[#F3EFE6] hover:bg-[#E5DEC9] text-xs font-semibold text-[#181512] flex items-center gap-1.5"
+              >
+                <Wallet className="w-3.5 h-3.5 text-[#9A7138]" />
+                ← Ver Financeiro da Fábrica (sem pedido)
+              </button>
+              <MilaFinancialDesk
+                order={activeOrder}
+                materialsCatalog={materialsCatalog}
+                settings={settings}
+                onUpdateOrder={onUpdateAttendance}
+                onRequestHandoff={(orderId, toDesk, reason) => {
+                  const target = attendances.find((a) => a.id === orderId);
+                  if (target) handleOpenTransfer(target, toDesk);
+                }}
+              />
+            </div>
           )}
 
           {selectedDeskId === 'castro_estrategia' && officeData && (

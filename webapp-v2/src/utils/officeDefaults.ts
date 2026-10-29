@@ -1137,30 +1137,11 @@ export function createDefaultOfficeData(): SharedOfficeData {
   const now = new Date().toISOString();
   return {
     handoffs: [],
-    generalTransactions: [
-      {
-        id: 'gt-01',
-        type: 'despesa_fixa',
-        description: 'Aluguel e IPTU do Galpão / Atelier Castros Interiores',
-        amountCents: 350000,
-        dueDate: new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10),
-        status: 'previsto',
-        paymentMethod: 'Boleto Bancário',
-        receiptNotes: 'Despesa fixa da oficina rateada proporcionalmente aos pedidos do mês.',
-        history: [{ action: 'Despesa fixa cadastrada', timestamp: now }],
-      },
-      {
-        id: 'gt-02',
-        type: 'despesa_fixa',
-        description: 'Energia Elétrica Trifásica (Compressores e Máquinas da Oficina)',
-        amountCents: 68000,
-        dueDate: new Date(Date.now() + 15 * 86400000).toISOString().slice(0, 10),
-        status: 'previsto',
-        paymentMethod: 'Débito em Conta',
-        receiptNotes: 'Rateio de despesa operacional de maquinário.',
-        history: [{ action: 'Despesa fixa cadastrada', timestamp: now }],
-      },
-    ],
+    // Lançamentos gerais da fábrica começam vazios: nenhuma despesa real é presumida
+    // antes de ser cadastrada de fato pelo responsável (ver financeiro da fábrica / Mila).
+    generalTransactions: [],
+    fixedExpenses: [],
+    initialBalance: null,
     strategyRecommendations: [
       {
         id: 'rec-1',

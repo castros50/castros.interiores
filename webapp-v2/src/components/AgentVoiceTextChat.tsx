@@ -69,6 +69,9 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const synthRef = useRef<SpeechSynthesis | null>(typeof window !== 'undefined' ? window.speechSynthesis : null);
+  // Garante no máximo um envio por sessão de reconhecimento de fala (evita mensagens
+  // duplicadas quando o navegador segmenta uma fala longa em mais de um resultado "final").
+  const sentThisSessionRef = useRef(false);
 
   const draftStorageKey = `draft_${deskId}_${attendanceId || 'gen'}`;
 
@@ -120,6 +123,26 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
   useEffect(() => {
     loadChatHistory();
   }, [deskId, attendanceId, campaignId]);
+
+  // Sair do modo "Conversa Contínua" encerra o ciclo de escuta/fala imediatamente,
+  // para que trocar de modo funcione como um "encerrar" explícito do loop de voz.
+  useEffect(() => {
+    if (voiceMode !== 'conversa') {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch {
+          // ignore
+        }
+      }
+      setIsListening(false);
+      if (synthRef.current) {
+        synthRef.current.cancel();
+      }
+      setIsSpeaking(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceMode]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -218,6 +241,7 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
       recognition.onstart = () => {
         setIsListening(true);
         setVoiceNotice(null);
+        sentThisSessionRef.current = false;
       };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -239,10 +263,18 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
           if (voiceMode === 'revisar') {
             // Preenche o input para o usuário revisar e editar antes de enviar
             handleInputChange(spokenText);
-          } else if (final && voiceMode === 'conversa') {
-            // Modo conversa contínua: envia automaticamente ao término da fala
+          } else if (final && voiceMode === 'conversa' && !sentThisSessionRef.current) {
+            // Modo conversa contínua: envia automaticamente ao término da fala.
+            // Trava o envio aqui: se o navegador emitir mais de um resultado "final"
+            // para a mesma sessão de escuta, os próximos são ignorados.
+            sentThisSessionRef.current = true;
             handleInputChange('');
             handleSendMessage(final.trim(), 'voz');
+            try {
+              recognition.stop();
+            } catch {
+              // ignore
+            }
           }
         }
       };

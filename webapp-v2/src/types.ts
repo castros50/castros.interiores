@@ -1076,6 +1076,10 @@ export type FinancialTransactionType =
   | 'despesa_mao_de_obra'
   | 'retirada_proprietario'
   | 'despesa_fixa'
+  | 'despesa_geral_fabrica'
+  | 'saldo_inicial'
+  | 'retirada_reserva_edson'
+  | 'estorno_cliente'
   | 'outro';
 
 export type PaymentStatus = 'previsto' | 'confirmado' | 'cancelado' | 'realizado';
@@ -1098,6 +1102,34 @@ export interface FinancialTransaction {
   paymentMethod?: string;
   receiptNotes?: string;
   history: Array<{ action: string; timestamp: string; notes?: string }>;
+  // Financeiro da fábrica (lançamentos gerais, não vinculados a um pedido específico)
+  source?: 'pedido' | 'fabrica';
+  fixedExpenseId?: string;
+  referenceMonth?: string; // "YYYY-MM" — mês de competência (conta fixa gerada / reserva do Edson)
+}
+
+// ----------------------------------------------------------------------------
+// MILA — FINANCEIRO DA FÁBRICA (contas fixas, saldo inicial, reserva do Edson)
+// ----------------------------------------------------------------------------
+
+export interface FixedExpense {
+  id: string;
+  name: string; // Ex: Aluguel, Energia, Água
+  category: string;
+  amountCents: number | null; // null quando o valor varia mês a mês (nunca tratar como zero)
+  isVariableAmount: boolean;
+  dueDayOfMonth: number; // 1–31
+  active: boolean;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InitialBalanceRecord {
+  amountCents: number;
+  referenceDate: string; // data de referência informada pelo usuário
+  recordedAt: string;
+  recordedBy?: string;
 }
 
 export interface OrderFinancialData {
@@ -1218,6 +1250,8 @@ export interface SharedOfficeData {
   currentPlannedHoursWeek?: number;
   activeBottlenecks?: any[];
   lastReconciledAt?: string;
+  fixedExpenses?: FixedExpense[];
+  initialBalance?: InitialBalanceRecord | null;
 }
 
 
