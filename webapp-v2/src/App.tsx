@@ -143,6 +143,10 @@ async function createCompressedThumbnail(fileOrDataUrl: File | string): Promise<
 export default function App() {
   const [activeTab, setActiveTab] = useState<MenuTab>('painel');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  // Qual mesa abrir no Escritório de Mesas quando se navega até lá a partir de um
+  // cartão específico do Painel (ex.: "Abrir mesa" da Helena) — sem isso, o Escritório
+  // sempre reabria na última mesa vista, não na que a pessoa clicou.
+  const [pendingDeskId, setPendingDeskId] = useState<DepartmentId | null>(null);
 
   // Firebase Auth User
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -1566,6 +1570,10 @@ export default function App() {
                     }
                   }}
                   onNavigateTab={(tab) => setActiveTab(tab)}
+                  onOpenDeskInOffice={(deptId) => {
+                    setPendingDeskId(deptId);
+                    setActiveTab('escritorio');
+                  }}
                   onRunDefectsAnalysis={handleRunDefectsAnalysis}
                   onRunReuseAnalysis={handleRunReuseAnalysis}
                   onGenerateInternalPdf={(att) =>
@@ -1787,6 +1795,8 @@ export default function App() {
                     });
                   }
                 }}
+                initialDeskId={pendingDeskId}
+                onDeskIdConsumed={() => setPendingDeskId(null)}
               />
             )}
 
