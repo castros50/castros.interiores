@@ -37,6 +37,7 @@ import { CastroStrategyDesk } from './CastroStrategyDesk';
 import { SupervisorDesk } from './SupervisorDesk';
 import { AgentVoiceTextChat } from './AgentVoiceTextChat';
 import { AgentPortrait } from './AgentPortrait';
+import { TapeceiroTecnicoDesk } from './TapeceiroTecnicoDesk';
 
 interface OfficeDesksHubProps {
   attendances: AttendanceRecord[];
@@ -720,6 +721,14 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
               onOpenOrder={onSelectAttendance}
               onNavigateTab={onNavigateTab}
               onJumpToStep={onJumpToStep}
+            />
+          )}
+
+          {selectedDeskId === 'tapeceiro_tecnico' && (
+            <TapeceiroTecnicoDesk
+              order={activeOrder}
+              settings={settings}
+              onUpdateOrder={onUpdateAttendance}
             />
           )}
 

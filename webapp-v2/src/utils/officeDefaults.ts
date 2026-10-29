@@ -15,7 +15,7 @@ export interface DeskMeta {
   role: string;
   roomTitle: string;
   summary: string;
-  iconName: 'carla' | 'pedro' | 'lucas' | 'ana' | 'mila' | 'castro' | 'julia' | 'supervisora';
+  iconName: 'carla' | 'pedro' | 'lucas' | 'ana' | 'mila' | 'castro' | 'julia' | 'supervisora' | 'tapeceiro';
   colorBadge: string;
   accentBg: string;
   description: string;
@@ -237,6 +237,32 @@ export const OFFICE_DESKS: DeskMeta[] = [
       'Cobrar Retorno de Agente com Recado Auditado',
       'Homologar Aprovações Técnicas Pendentes',
       'Auditar Status de Campanhas e Compras',
+    ],
+  },
+  {
+    id: 'tapeceiro_tecnico',
+    number: 9,
+    name: 'Tapeceiro Técnico',
+    role: 'Planejamento de Produção e Materiais',
+    roomTitle: 'Mesa do Tapeceiro Técnico — Produção e Materiais',
+    summary: 'Transforma a avaliação revisada do Pedro ou a ficha técnica do Lucas em lista técnica de peças, cálculo de materiais e instruções de montagem.',
+    iconName: 'tapeceiro',
+    colorBadge: 'bg-orange-100 text-orange-950 border-orange-400',
+    accentBg: 'from-orange-50 to-white',
+    description:
+      'Mesa de planejamento técnico de produção: lista de peças com código estável, cálculo de consumo de materiais com perdas e arredondamentos, e manual de montagem, a partir dos dados já revisados pelo Pedro (reforma) ou pelo Lucas (fabricação).',
+    responsibilities: [
+      'Lista técnica de peças com código estável, dimensão acabada e dimensão de corte',
+      'Cálculo de consumo de tecido, espuma, madeira, percintas, forros, linhas e grampos',
+      'Separação entre consumo previsto, estoque confirmado, quantidade a comprar e sobra prevista',
+      'Manual de montagem com passos numerados, ferramentas e pontos de verificação',
+      'Liberação do plano mediante revisão humana, com histórico de versões preservado',
+    ],
+    sampleActions: [
+      'Preparar Plano Técnico a partir da Avaliação/Projeto',
+      'Revisar Medidas e Quantidades Pendentes',
+      'Liberar Plano para Execução',
+      'Encaminhar Lista de Compras para Ana (Compras)',
     ],
   },
 ];

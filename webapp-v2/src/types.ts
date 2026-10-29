@@ -338,6 +338,9 @@ export interface AttendanceRecord {
   assignedAgentName?: string;
   handoffHistory?: OrderHandoffEntry[];
   manufacturingData?: ManufacturingProjectData;
+  // Versões anteriores do plano do Tapeceiro Técnico, arquivadas quando a proposta/ficha de
+  // origem muda e invalida uma liberação já feita. manufacturingData é sempre a vigente.
+  technicalPlanRevisions?: ManufacturingProjectData[];
   financialData?: OrderFinancialData;
   isTestScenario?: boolean;
 }
@@ -518,7 +521,8 @@ export type DepartmentId =
   | 'mila_financeiro'
   | 'castro_estrategia'
   | 'julia_marketing'
-  | 'supervisora_geral';
+  | 'supervisora_geral'
+  | 'tapeceiro_tecnico';
 
 export type SpecialistAgentId =
   | 'vistoriador_defeitos'
@@ -892,6 +896,18 @@ export interface ManufacturingComponent {
   material?: string;
   source: SpecificationSource;
   notes?: string;
+  // Dimensão de corte (com margens) vs. dimensionsMm acima (dimensão acabada/nominal)
+  cutDimensionsMm?: {
+    length: number | null;
+    width: number | null;
+    thickness: number | null;
+  };
+  seamAllowanceMm?: number; // margem de costura
+  foldAllowanceMm?: number; // margem de dobra
+  fixingAllowanceMm?: number; // margem de fixação/grampeamento
+  // Reaproveitamento (somente relevante em atendimentos de Reforma)
+  reformStatus?: 'Recuperar' | 'Substituir' | 'Aguardar desmontagem';
+  sourceReuseItemId?: string; // vínculo ao ReuseEvaluationItem de origem, quando houver
 }
 
 export interface ManufacturingMaterialRequirement {
@@ -1032,6 +1048,21 @@ export interface ManufacturingProjectData {
   qualityCheckpoints: QualityCheckpoint[];
   aiVisibleObservations?: string[];
   aiMissingQuestions?: string[];
+
+  // Mesa do Tapeceiro Técnico — plano de produção e materiais (Fase 1: sem mapa visual de corte)
+  planStatus?: 'Rascunho' | 'Pendente de medição' | 'Em revisão' | 'Liberado pelo responsável';
+  planOrderType?: 'Reforma' | 'Fabricação';
+  planSourceProposalTier?: ProposalTier; // para detectar mudança de proposta (Reforma) e invalidar liberação
+  planSourceComponentsSignature?: string; // para detectar mudança na ficha do Lucas (Fabricação) e invalidar liberação
+  planPreparedByName?: string;
+  planPreparedAt?: string;
+  planLiberatedByName?: string;
+  planLiberatedAt?: string;
+  // Mapa de corte: Fase 1 não produz desenho vetorial real; nunca declarar aproveitamento sem cálculo
+  cuttingPlanStatus?: 'Pendente de mapa visual';
+  purchasingHandoffStatus?: 'Não encaminhado' | 'Encaminhado para Compras';
+  purchasingHandoffAt?: string;
+  financialHandoffStatus?: 'Aguardando integração financeira';
 }
 
 // ----------------------------------------------------------------------------
