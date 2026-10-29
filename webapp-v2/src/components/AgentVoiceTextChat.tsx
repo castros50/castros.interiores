@@ -158,7 +158,11 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
 
   // Falar texto em voz alta com sintetizador em português do Brasil
   const speakTextInPortuguese = (text: string) => {
-    if (!voiceSpeechEnabled || typeof window === 'undefined' || !window.speechSynthesis) return;
+    if (!voiceSpeechEnabled) return;
+    if (typeof window === 'undefined' || !window.speechSynthesis) {
+      setVoiceNotice('Este navegador não tem suporte a síntese de voz — a resposta só aparece em texto.');
+      return;
+    }
 
     stopSpeaking();
 
@@ -544,6 +548,18 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
             </button>
           </div>
 
+          {/* Encerrar o ciclo de conversa contínua (volta pro modo Revisar Fala e para tudo) */}
+          {voiceMode === 'conversa' && (
+            <button
+              type="button"
+              onClick={() => setVoiceMode('revisar')}
+              className="px-2.5 py-1.5 rounded-lg bg-[#2E2722] hover:bg-[#3D352E] border border-[#57534E] text-[#E5DEC9] text-[11px] font-semibold flex items-center gap-1"
+              title="Encerrar a conversa contínua (para a escuta e a fala em andamento)"
+            >
+              Encerrar Conversa
+            </button>
+          )}
+
           {/* Ativar/Silenciar voz do agente */}
           <button
             type="button"
@@ -570,7 +586,7 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
               title="Interromper fala do agente agora"
             >
               <Square className="w-3 h-3 fill-current" />
-              <span>Parar Fala</span>
+              <span>Reproduzindo... Parar Fala</span>
             </button>
           )}
         </div>

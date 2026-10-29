@@ -390,7 +390,10 @@ export const MilaFinancialDesk: React.FC<MilaFinancialDeskProps> = ({
                     }
                     className="w-full p-2 rounded-lg border border-[#D6CFC5] font-mono tabular-nums"
                   />
-                  <span className="text-[10px] text-[#6B6257]">Classificação separada de lucro</span>
+                  <span className="text-[10px] text-[#6B6257]">
+                    Custo previsto no orçamento — não é retirada real. A retirada efetiva da reserva do
+                    Edson é feita no Financeiro da Fábrica, nunca aqui.
+                  </span>
                 </div>
 
                 <div>

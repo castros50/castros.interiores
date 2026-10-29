@@ -6,6 +6,8 @@ import {
   ManufacturingProjectData,
   ManufacturingMaterialRequirement,
   ReformMaterialsList,
+  FinancialTransaction,
+  FixedExpense,
 } from '../types';
 import {
   calculateBudgetSummary,
@@ -1742,4 +1744,200 @@ export async function generateManufacturingClientPdf(
 
   addPageNumbersAndFooter(doc, isConfirmed, attendance.attendanceNumber);
   doc.save(`Proposta_Comercial_Fabricacao_${attendance.attendanceNumber}.pdf`);
+}
+
+// ----------------------------------------------------------------------------
+// MILA — RELATÓRIO MENSAL DO FINANCEIRO DA FÁBRICA
+// ----------------------------------------------------------------------------
+
+interface MonthlyFinancialReportSummary {
+  month: string;
+  entradasRealizadoMesCents: number;
+  saidasRealizadoMesCents: number;
+  saldoOperacionalMesCents: number;
+  saldoCaixaTotalCents: number;
+  contasAPagar: FinancialTransaction[];
+  contasAReceber: FinancialTransaction[];
+  edsonReserve: {
+    month: string;
+    baseCents: number;
+    reserveCents: number;
+    withdrawnCents: number;
+    remainingCents: number;
+  };
+  initialBalance: { amountCents: number; referenceDate: string } | null;
+  fixedExpenses: FixedExpense[];
+}
+
+function monthlyReportFooter(doc: jsPDF, workshopName: string) {
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setDrawColor(215, 208, 198);
+    doc.line(15, 282, 195, 282);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(100, 95, 90);
+    doc.text(`${workshopName} — Relatório Financeiro Mensal`, 15, 286.5);
+    doc.text(`Página ${i} de ${pageCount}`, 195, 286.5, { align: 'right' });
+  }
+}
+
+export async function generateMonthlyFinancialReportPdf(
+  summary: MonthlyFinancialReportSummary,
+  month: string,
+  settings: WorkshopSettings
+): Promise<void> {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const workshopName = (settings.workshopName || 'Castros Interiores');
+  const [y, m] = month.split('-');
+  const monthNames = [
+    'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
+  ];
+  const monthLabel = `${monthNames[parseInt(m, 10) - 1] || m} de ${y}`;
+
+  // Header Banner
+  doc.setFillColor(24, 21, 18);
+  doc.rect(15, 14, 180, 22, 'F');
+  doc.setTextColor(249, 246, 240);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.text(`${workshopName.toUpperCase()} — RELATÓRIO FINANCEIRO MENSAL`, 20, 23);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(212, 185, 140);
+  doc.text(
+    `Competência: ${monthLabel}   |   Emissão: ${new Date().toLocaleDateString('pt-BR')}`,
+    20,
+    30
+  );
+
+  let cursorY = 42;
+
+  // 1. Resumo do período
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('1. RESUMO DO PERÍODO', 15, cursorY);
+  cursorY += 3;
+
+  const saldoInicialPeriodo = summary.initialBalance
+    ? formatCurrencyBRL(summary.initialBalance.amountCents)
+    : 'Não registrado';
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 9, cellPadding: 3, textColor: [28, 25, 23], lineColor: [220, 214, 205] },
+    headStyles: { fillColor: [45, 40, 35], textColor: [255, 255, 255], fontStyle: 'bold' },
+    body: [
+      ['Saldo Inicial Registrado', saldoInicialPeriodo],
+      ['Entradas Realizadas no Mês', formatCurrencyBRL(summary.entradasRealizadoMesCents)],
+      ['Saídas Realizadas no Mês', formatCurrencyBRL(summary.saidasRealizadoMesCents)],
+      ['Saldo Operacional do Mês', formatCurrencyBRL(summary.saldoOperacionalMesCents)],
+      ['Saldo em Caixa (todas as contas, hoje)', formatCurrencyBRL(summary.saldoCaixaTotalCents)],
+    ],
+  });
+
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+
+  // 2. Pendências
+  if (cursorY > 230) {
+    doc.addPage();
+    cursorY = 20;
+  }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('2. PENDÊNCIAS (CONTAS A PAGAR E A RECEBER)', 15, cursorY);
+  cursorY += 3;
+
+  const pendenciasBody = [
+    ...summary.contasAPagar.map((t) => [
+      'A Pagar',
+      t.description,
+      t.dueDate.split('-').reverse().join('/'),
+      formatCurrencyBRL(Math.max(0, t.amountCents - (t.amountPaidCents || 0))),
+    ]),
+    ...summary.contasAReceber.map((t) => [
+      'A Receber',
+      t.description,
+      t.dueDate.split('-').reverse().join('/'),
+      formatCurrencyBRL(Math.max(0, t.amountCents - (t.amountPaidCents || 0))),
+    ]),
+  ];
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 2.5, textColor: [28, 25, 23], lineColor: [220, 214, 205] },
+    headStyles: { fillColor: [45, 40, 35], textColor: [255, 255, 255], fontStyle: 'bold' },
+    head: [['Tipo', 'Descrição', 'Vencimento', 'Valor Pendente']],
+    body: pendenciasBody.length > 0 ? pendenciasBody : [['—', 'Nenhuma pendência no momento', '—', '—']],
+  });
+
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+
+  // 3. Remuneração do Edson
+  if (cursorY > 235) {
+    doc.addPage();
+    cursorY = 20;
+  }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('3. REMUNERAÇÃO DO EDSON (10% SOBRE VALORES RECEBIDOS)', 15, cursorY);
+  cursorY += 3;
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 9, cellPadding: 3, textColor: [28, 25, 23], lineColor: [220, 214, 205] },
+    headStyles: { fillColor: [45, 40, 35], textColor: [255, 255, 255], fontStyle: 'bold' },
+    body: [
+      ['Base de Cálculo (valores recebidos dos clientes no mês)', formatCurrencyBRL(summary.edsonReserve.baseCents)],
+      ['Reserva Calculada (10%)', formatCurrencyBRL(summary.edsonReserve.reserveCents)],
+      ['Retiradas Confirmadas no Mês', formatCurrencyBRL(summary.edsonReserve.withdrawnCents)],
+      ['Reserva Restante', formatCurrencyBRL(summary.edsonReserve.remainingCents)],
+    ],
+  });
+
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+
+  // 4. Contas Fixas Ativas
+  if (cursorY > 235) {
+    doc.addPage();
+    cursorY = 20;
+  }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('4. CONTAS FIXAS ATIVAS', 15, cursorY);
+  cursorY += 3;
+
+  const activeFixed = summary.fixedExpenses.filter((f) => f.active);
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 2.5, textColor: [28, 25, 23], lineColor: [220, 214, 205] },
+    headStyles: { fillColor: [45, 40, 35], textColor: [255, 255, 255], fontStyle: 'bold' },
+    head: [['Conta', 'Categoria', 'Vencimento (dia)', 'Valor']],
+    body:
+      activeFixed.length > 0
+        ? activeFixed.map((f) => [
+            f.name,
+            f.category,
+            String(f.dueDayOfMonth),
+            f.isVariableAmount || f.amountCents === null ? 'Variável' : formatCurrencyBRL(f.amountCents),
+          ])
+        : [['—', 'Nenhuma conta fixa cadastrada', '—', '—']],
+  });
+
+  monthlyReportFooter(doc, workshopName);
+  doc.save(`Relatorio_Financeiro_${month}.pdf`);
 }
