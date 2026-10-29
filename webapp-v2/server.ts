@@ -83,6 +83,9 @@ import type {
   SharedOfficeData,
   OrderHandoffEntry,
   ManufacturingProjectData,
+  ManufacturingComponent,
+  ManufacturingMaterialRequirement,
+  ReuseComponentType,
   OrderFinancialData,
   DepartmentId,
   OrderDeskStatus,
@@ -1766,6 +1769,147 @@ function deriveMaterialsListItems(
   return items;
 }
 
+// ===================== Mesa do Tapeceiro Técnico — Plano de Produção e Materiais =====================
+// Fase 1: lista técnica de peças/materiais + estados de revisão + PDFs reaproveitados.
+// O mapa visual de corte (nesting vetorial real) e o manual ilustrado ficam para uma fase futura;
+// aqui apenas sinalizamos "Pendente de mapa visual", nunca uma ilustração como se fosse o projeto.
+
+function mapReuseComponentToManufacturingType(
+  component: ReuseComponentType
+): ManufacturingComponent['componentType'] {
+  switch (component) {
+    case 'Madeira':
+      return 'Madeira';
+    case 'Pés':
+      return 'Acessório';
+    case 'Ferragens':
+      return 'Ferragem';
+    case 'Mecanismos':
+      return 'Ferragem';
+    case 'Molas':
+      return 'Sustentação';
+    case 'Percintas':
+      return 'Sustentação';
+    case 'Espumas':
+      return 'Espuma';
+    case 'Enchimentos':
+      return 'Espuma';
+    case 'Revestimento':
+      return 'Revestimento';
+    case 'Zíperes e acabamentos':
+      return 'Acessório';
+    default:
+      return 'Acessório';
+  }
+}
+
+function buildComponentsFromReuseItems(attendance: AttendanceRecord): ManufacturingComponent[] {
+  const now = new Date().toISOString();
+  return attendance.reuseItems.map((item, idx) => {
+    let reformStatus: ManufacturingComponent['reformStatus'];
+    if (item.classification === 'Substituição indicada') {
+      reformStatus = 'Substituir';
+    } else if (
+      item.classification === 'Candidato a reaproveitamento, sujeito à inspeção' ||
+      item.classification === 'Recuperável com reparo, sujeito à inspeção'
+    ) {
+      reformStatus = attendance.internalInspectionCompleted ? 'Recuperar' : 'Aguardar desmontagem';
+    } else {
+      reformStatus = 'Aguardar desmontagem';
+    }
+    return {
+      id: `comp-reuse-${item.id}`,
+      code: `RF-${String(idx + 1).padStart(2, '0')}`,
+      name: item.component,
+      componentType: mapReuseComponentToManufacturingType(item.component),
+      dimensionsMm: { length: null, width: null, thickness: null },
+      specification: item.condition,
+      quantityPerUnit: 1,
+      totalQuantity: 1,
+      source: attendance.internalInspectionCompleted ? 'informado_oficina' : 'proposta_pendente',
+      notes:
+        'Peça derivada automaticamente da avaliação de reaproveitamento (categoria, não peça individual). Desmembre em peças reais com código próprio e meça antes de liberar.',
+      reformStatus,
+      sourceReuseItemId: item.id,
+    };
+  });
+}
+
+function buildMaterialsFromReformList(list: ReformMaterialsList): ManufacturingMaterialRequirement[] {
+  return list.items.map((item) => {
+    const totalCostCents =
+      item.unitCostCents != null && item.purchaseQuantity != null
+        ? Math.round(item.unitCostCents * item.purchaseQuantity)
+        : undefined;
+    const availableStock =
+      item.physicalStockAtCreation != null && item.reservedForThisOrder != null
+        ? Math.max(0, item.physicalStockAtCreation - item.reservedForThisOrder)
+        : undefined;
+    return {
+      id: `mr-${item.id}`,
+      materialCode: item.materialCatalogItemId,
+      code: item.materialCatalogItemId,
+      materialName: item.materialName,
+      name: item.materialName,
+      category: 'Material',
+      specification: item.specification,
+      unit: item.unit,
+      purchaseUnit: item.purchaseUnit,
+      totalOrderRequirement: item.consumptionQuantity ?? undefined,
+      totalRequired: item.consumptionQuantity ?? undefined,
+      usableWidthMeters: item.fabricUsableWidthMeters,
+      patternDirection: item.fabricPatternDirection,
+      scrapLossPercentage: item.lossMarginPercent,
+      physicalStock: item.physicalStockAtCreation,
+      reservedStock: item.reservedForThisOrder,
+      availableStock,
+      toPurchaseQuantity: item.purchaseQuantity ?? undefined,
+      unitCostCents: item.unitCostCents ?? undefined,
+      totalCostCents,
+      source: item.quantitySource,
+      notes: item.notes,
+    };
+  });
+}
+
+function computeInitialPlanStatus(
+  materials: ManufacturingMaterialRequirement[],
+  components: ManufacturingComponent[]
+): NonNullable<ManufacturingProjectData['planStatus']> {
+  const hasPendingMaterial = materials.some(
+    (m) => m.toPurchaseQuantity == null && m.totalRequired == null && m.totalOrderRequirement == null
+  );
+  const hasPendingComponent = components.some(
+    (c) =>
+      c.reformStatus === 'Aguardar desmontagem' ||
+      (c.dimensionsMm.length == null && c.dimensionsMm.width == null && c.dimensionsMm.thickness == null)
+  );
+  return hasPendingMaterial || hasPendingComponent ? 'Pendente de medição' : 'Rascunho';
+}
+
+function bumpPlanVersion(version: string | undefined): string {
+  const match = /^v(\d+)\.(\d+)/.exec(version || '');
+  if (!match) return 'v1.0';
+  const major = parseInt(match[1], 10);
+  const minor = parseInt(match[2], 10);
+  return `v${major}.${minor + 1}`;
+}
+
+function buildDraftAssemblyManual(attendance: AttendanceRecord, now: string): AssemblyManual {
+  return {
+    modelName: attendance.furnitureType || 'Estofado',
+    version: 'v1.0',
+    status: 'rascunho_tecnico',
+    isDraft: true,
+    lastUpdatedAt: now,
+    referenceImages: [],
+    steps: [],
+    materialsAndTools: [],
+    generalPreparationNotes: '',
+    finalInspectionCriteria: '',
+  };
+}
+
 const VALID_DESK_IDS: DepartmentId[] = [
   'carla_atendimento',
   'pedro_avaliacao',
@@ -1775,6 +1919,7 @@ const VALID_DESK_IDS: DepartmentId[] = [
   'castro_estrategia',
   'julia_marketing',
   'supervisora_geral',
+  'tapeceiro_tecnico',
 ];
 
 const ANALYST_SYSTEM_INSTRUCTION = `Você é o analista técnico sênior de reforma de estofados da Castros Interiores.
@@ -2032,15 +2177,19 @@ async function startServer() {
   });
 
   // Status endpoint (checks if ANTHROPIC_API_KEY is present without exposing it)
-  app.get('/api/status', (_req, res) => {
-    const store = loadStore();
+  app.get('/api/status', (req, res) => {
     const hasAnthropicKey = Boolean(
       process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim().length > 5
     );
-    const activeAppUrl =
-      process.env.APP_URL ||
-      'https://ais-dev-5eeb75lqrgyidj3iykztd7-90595154148.us-west2.run.app';
-    const sharedPreUrl = activeAppUrl.replace('://ais-dev-', '://ais-pre-');
+    // Endereço público real usado para instalar o app em celular/tablet (QR code e link
+    // compartilhado). Nunca um domínio fixo de outro serviço: usa APP_URL se configurado,
+    // senão deriva do próprio host da requisição (correto automaticamente em qualquer
+    // domínio que sirva o app, inclusive atrás do proxy do Cloud Run).
+    const forwardedProto = req.get('x-forwarded-proto');
+    const protocol = forwardedProto ? forwardedProto.split(',')[0].trim() : req.protocol;
+    const host = req.get('host');
+    const requestOrigin = host ? `${protocol}://${host}` : undefined;
+    const activeAppUrl = process.env.APP_URL || requestOrigin;
     res.json({
       ok: true,
       geminiConfigured: hasAnthropicKey,
@@ -2048,7 +2197,6 @@ async function startServer() {
       storageConfigured: true,
       configuredModel: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
       appUrl: activeAppUrl,
-      sharedPreUrl,
       devices: getActiveDevicesList(),
     });
   });
@@ -2705,6 +2853,247 @@ async function startServer() {
   // Edição manual dos itens da lista (inclusão, exclusão, ajuste) usa a rota genérica
   // PUT /api/attendances/:id já existente (mesmo caminho usado para os itens do orçamento),
   // já que materialsLists é apenas mais um campo do registro do atendimento.
+
+  // Mesa do Tapeceiro Técnico — prepara o plano técnico a partir da avaliação revisada do
+  // Pedro (Reforma) ou da ficha técnica revisada do Lucas (Fabricação). Sem IA: deriva
+  // determinísticamente, sem inventar medida/encaixe/preço. Edição manual de componentes e
+  // materiais usa a rota genérica PUT /api/attendances/:id, como no restante do app.
+  app.post('/api/attendances/:id/technical-plan/prepare', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const { actorName } = req.body as { actorName?: string };
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const actor = actorName || 'Tapeceiro Técnico';
+      const existing = attendance.manufacturingData;
+      let detailsForLog = '';
+
+      if (attendance.orderType === 'Fabricação') {
+        const sourceComponents = existing?.components || [];
+        if (!existing || sourceComponents.length === 0) {
+          res.status(400).json({
+            error:
+              'Lucas ainda não preparou a ficha técnica deste projeto (nenhum componente cadastrado). Prepare a ficha técnica na mesa de Projetos e Fabricação antes.',
+          });
+          return;
+        }
+        const signature = JSON.stringify(
+          sourceComponents.map((c) => [c.code, c.dimensionsMm, c.quantityPerUnit, c.totalQuantity])
+        );
+        const sourceMaterials = existing.materialRequirements || existing.materials || [];
+
+        if (existing.planStatus === 'Liberado pelo responsável' && existing.planSourceComponentsSignature !== signature) {
+          attendance.technicalPlanRevisions = [...(attendance.technicalPlanRevisions || []), existing];
+          attendance.manufacturingData = {
+            ...existing,
+            version: bumpPlanVersion(existing.version),
+            planStatus: computeInitialPlanStatus(sourceMaterials, sourceComponents),
+            planOrderType: 'Fabricação',
+            planSourceComponentsSignature: signature,
+            planPreparedByName: actor,
+            planPreparedAt: now,
+            planLiberatedByName: undefined,
+            planLiberatedAt: undefined,
+          };
+          detailsForLog = `Ficha do Lucas mudou após liberação — nova revisão ${attendance.manufacturingData.version} criada.`;
+        } else if (!existing.planStatus) {
+          existing.planStatus = computeInitialPlanStatus(sourceMaterials, sourceComponents);
+          existing.planOrderType = 'Fabricação';
+          existing.planSourceComponentsSignature = signature;
+          existing.planPreparedByName = actor;
+          existing.planPreparedAt = now;
+          detailsForLog = `Plano técnico iniciado a partir da ficha do Lucas com ${sourceComponents.length} componente(s).`;
+        } else {
+          detailsForLog = 'Plano técnico já em preparação; nenhuma mudança estrutural detectada na ficha do Lucas.';
+        }
+      } else {
+        const tier = attendance.selectedProposalTier;
+        if (!tier) {
+          res.status(400).json({
+            error: 'Nenhuma proposta selecionada ainda. Escolha a proposta com o Pedro antes de preparar o plano técnico.',
+          });
+          return;
+        }
+        const lists = attendance.materialsLists || [];
+        const latestList = lists[lists.length - 1];
+        if (!latestList || latestList.proposalTier !== tier) {
+          res.status(400).json({
+            error: 'Prepare a lista de materiais da reforma com o Pedro (mesa de Avaliação Técnica) antes de preparar o plano técnico.',
+          });
+          return;
+        }
+
+        const derivedComponents = buildComponentsFromReuseItems(attendance);
+        const derivedMaterials = buildMaterialsFromReformList(latestList);
+
+        if (!existing) {
+          attendance.manufacturingData = {
+            id: `mfg-${attendance.id}`,
+            modelName: attendance.furnitureType || 'Reforma de estofado',
+            version: 'v1.0',
+            components: derivedComponents,
+            materialRequirements: derivedMaterials,
+            materials: derivedMaterials,
+            assemblyManual: buildDraftAssemblyManual(attendance, now),
+            qualityCheckpoints: [],
+            planStatus: computeInitialPlanStatus(derivedMaterials, derivedComponents),
+            planOrderType: 'Reforma',
+            planSourceProposalTier: tier,
+            planPreparedByName: actor,
+            planPreparedAt: now,
+          };
+          detailsForLog = `Plano técnico criado a partir da avaliação do Pedro (proposta ${tier}) com ${derivedComponents.length} componente(s) e ${derivedMaterials.length} material(is).`;
+        } else if (existing.planStatus === 'Liberado pelo responsável' && existing.planSourceProposalTier !== tier) {
+          attendance.technicalPlanRevisions = [...(attendance.technicalPlanRevisions || []), existing];
+          attendance.manufacturingData = {
+            id: `mfg-${attendance.id}`,
+            modelName: attendance.furnitureType || 'Reforma de estofado',
+            version: bumpPlanVersion(existing.version),
+            components: derivedComponents,
+            materialRequirements: derivedMaterials,
+            materials: derivedMaterials,
+            assemblyManual: buildDraftAssemblyManual(attendance, now),
+            qualityCheckpoints: [],
+            planStatus: computeInitialPlanStatus(derivedMaterials, derivedComponents),
+            planOrderType: 'Reforma',
+            planSourceProposalTier: tier,
+            planPreparedByName: actor,
+            planPreparedAt: now,
+          };
+          detailsForLog = `Proposta mudou após liberação (agora ${tier}) — nova revisão ${attendance.manufacturingData.version} criada.`;
+        } else {
+          // Mesma proposta: mescla preservando edições manuais já feitas pelo tapeceiro.
+          const existingComponentsById = new Map((existing.components || []).map((c) => [c.id, c]));
+          const mergedComponents = derivedComponents.map((derived) => {
+            const prev = existingComponentsById.get(derived.id);
+            if (!prev) return derived;
+            if (prev.reformStatus !== derived.reformStatus) return derived;
+            return { ...prev, name: derived.name, specification: prev.specification };
+          });
+          const derivedComponentIds = new Set(derivedComponents.map((c) => c.id));
+          const keptManualComponents = (existing.components || []).filter((c) => !derivedComponentIds.has(c.id));
+
+          const existingMaterialsById = new Map(
+            (existing.materialRequirements || existing.materials || []).map((m) => [m.id, m])
+          );
+          const mergedMaterials = derivedMaterials.map((derived) => {
+            const prev = existingMaterialsById.get(derived.id);
+            if (!prev) return derived;
+            return { ...prev, materialName: derived.materialName, name: derived.name };
+          });
+          const derivedMaterialIds = new Set(derivedMaterials.map((m) => m.id));
+          const keptManualMaterials = (existing.materialRequirements || existing.materials || []).filter(
+            (m) => !derivedMaterialIds.has(m.id)
+          );
+
+          const finalComponents = [...mergedComponents, ...keptManualComponents];
+          const finalMaterials = [...mergedMaterials, ...keptManualMaterials];
+          existing.components = finalComponents;
+          existing.materialRequirements = finalMaterials;
+          existing.materials = finalMaterials;
+          detailsForLog = 'Plano técnico atualizado a partir da avaliação revisada; edições manuais preservadas.';
+        }
+      }
+
+      attendance.updatedAt = now;
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor,
+        stage: 'Tapeceiro Técnico',
+        action: 'Plano técnico preparado/atualizado',
+        details: detailsForLog,
+      });
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+      res.json({ ok: true, attendance });
+    } catch (err) {
+      console.error('Erro ao preparar plano técnico:', err);
+      res.status(500).json({ error: 'Erro ao preparar plano técnico.' });
+    }
+  });
+
+  // Libera o plano técnico para execução — exige revisão humana e bloqueia se houver
+  // pendência de medição/quantidade (nunca libera com dado inventado).
+  app.post('/api/attendances/:id/technical-plan/release', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const { reviewerName } = req.body as { reviewerName?: string };
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+      const plan = attendance.manufacturingData;
+      if (!plan) {
+        res.status(400).json({ error: 'Nenhum plano técnico preparado ainda.' });
+        return;
+      }
+      if (!reviewerName || !reviewerName.trim()) {
+        res.status(400).json({ error: 'Informe o nome do responsável pela revisão antes de liberar.' });
+        return;
+      }
+
+      const materials = plan.materialRequirements || plan.materials || [];
+      const pendingMaterials = materials.filter(
+        (m) => m.toPurchaseQuantity == null && m.totalRequired == null && m.totalOrderRequirement == null
+      );
+      const pendingComponents = (plan.components || []).filter(
+        (c) =>
+          c.reformStatus === 'Aguardar desmontagem' ||
+          (c.dimensionsMm.length == null && c.dimensionsMm.width == null && c.dimensionsMm.thickness == null)
+      );
+      if (pendingMaterials.length > 0 || pendingComponents.length > 0) {
+        res.status(400).json({
+          error: 'Não é possível liberar: há medidas ou quantidades pendentes de revisão.',
+          pendingMaterials: pendingMaterials.map((m) => m.materialName || m.name || m.id),
+          pendingComponents: pendingComponents.map((c) => `${c.code} — ${c.name}`),
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      plan.planStatus = 'Liberado pelo responsável';
+      plan.planLiberatedByName = reviewerName.trim();
+      plan.planLiberatedAt = now;
+      plan.version = bumpPlanVersion(plan.version);
+      plan.cuttingPlanStatus = 'Pendente de mapa visual';
+      plan.financialHandoffStatus = 'Aguardando integração financeira';
+      attendance.manufacturingData = plan;
+      attendance.updatedAt = now;
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor: reviewerName.trim(),
+        stage: 'Tapeceiro Técnico',
+        action: 'Plano técnico liberado para execução',
+        details: `Revisão ${plan.version} liberada por ${reviewerName.trim()}.`,
+      });
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+      res.json({ ok: true, attendance });
+    } catch (err) {
+      console.error('Erro ao liberar plano técnico:', err);
+      res.status(500).json({ error: 'Erro ao liberar plano técnico.' });
+    }
+  });
 
   // 1 & 6 & 7. Central AI Service (Claude): Analyze Defects by Area (sending actual image binaries)
   app.post('/api/ai/analyze-defects', async (req, res) => {
@@ -4878,6 +5267,12 @@ Missão: Coordenar a capacidade produtiva da oficina (base de 80 horas/semana), 
 Missão: Governança transversal de toda a operação. Você acompanha o trâmite de pedidos entre todas as mesas, prazos de entrega, estoques críticos de materiais, campanhas de divulgação e atua na homologação de decisões técnicas e orçamentárias.
 Regra: Forneça diagnósticos objetivos baseados estritamente nos dados reais da oficina. Quando uma intervenção for necessária, proponha uma ação formal estruturada com confirmação.`,
         },
+        tapeceiro_tecnico: {
+          name: 'Tapeceiro Técnico',
+          title: 'Tapeceiro Técnico (Planejamento de Produção e Materiais — Mesa 9)',
+          systemPrompt: `Você é o TAPECEIRO TÉCNICO da Castros Interiores (Mesa 9), responsável por transformar a avaliação revisada do Pedro (reforma) ou a ficha técnica revisada do Lucas (fabricação) em lista técnica de peças, cálculo de materiais e instruções de montagem.
+Regra: Nunca invente medida, encaixe, furação ou especificação estrutural a partir de foto. Diferencie dimensão acabada de dimensão de corte. Quantidade ou preço desconhecidos ficam pendentes, nunca zero ou estimativa apresentada como definitiva.`,
+        },
       };
 
       const meta = deskMetaMap[deskId] || deskMetaMap.carla_atendimento;
@@ -5449,6 +5844,8 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         mila_financeiro: 'Mila (Administração Financeira)',
         castro_estrategia: 'Castro (Estratégia & Negócio)',
         julia_marketing: 'Júlia (Marketing & Divulgação)',
+        supervisora_geral: 'Helena (Supervisora Geral)',
+        tapeceiro_tecnico: 'Tapeceiro Técnico (Produção e Materiais)',
       };
 
       const now = new Date().toISOString();
@@ -5728,9 +6125,11 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
   app.post('/api/orders/manufacturing', (req, res) => {
     try {
       const store = loadStore();
-      const { orderId, manufacturingData } = req.body as {
+      const { orderId, manufacturingData, actorLabel, stageLabel } = req.body as {
         orderId: string;
         manufacturingData: Partial<ManufacturingProjectData>;
+        actorLabel?: string;
+        stageLabel?: string;
       };
 
       const order = store.attendances.find((a) => a.id === orderId);
@@ -5783,8 +6182,8 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       order.auditHistory.unshift({
         id: `aud-${Date.now()}`,
         timestamp: now,
-        actor: 'Lucas (Projetos & Fabricação)',
-        stage: 'Mesa de Projetos',
+        actor: actorLabel || 'Lucas (Projetos & Fabricação)',
+        stage: stageLabel || 'Mesa de Projetos',
         action: `Ficha técnica e projeto atualizados (${order.manufacturingData?.version || 'v1.0'})`,
         details: `${order.manufacturingData?.components?.length || 0} componentes | ${order.manufacturingData?.materialRequirements?.length || 0} requisitos de materiais`,
       });
@@ -5794,7 +6193,7 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       broadcastRealtimeEvent({
         type: 'attendance:updated',
         timestamp: now,
-        sourceStationName: 'Lucas Projetos',
+        sourceStationName: stageLabel || 'Lucas Projetos',
         attendance: order,
       });
 

@@ -4,6 +4,7 @@ import {
   AttendanceRecord,
   WorkshopSettings,
   ManufacturingProjectData,
+  ManufacturingMaterialRequirement,
   ReformMaterialsList,
 } from '../types';
 import {
@@ -1218,7 +1219,9 @@ export async function generateManufacturingInternalPdf(
   doc.setFontSize(8.5);
   doc.setTextColor(212, 185, 140);
   doc.text(
-    `Pedido: ${attendance.attendanceNumber} (Fabricação Própria)   |   Lote: ${proj.unitsCount} un   |   Versão: ${proj.version}   |   ${new Date().toLocaleDateString('pt-BR')}`,
+    `Pedido: ${attendance.attendanceNumber} (${attendance.orderType || 'Fabricação'})   |   ${
+      proj.unitsCount ? `Lote: ${proj.unitsCount} un   |   ` : ''
+    }Versão: ${proj.version}   |   ${new Date().toLocaleDateString('pt-BR')}`,
     20,
     30.5
   );
@@ -1239,14 +1242,21 @@ export async function generateManufacturingInternalPdf(
     styles: { fontSize: 8.5, cellPadding: 2.5, textColor: [28, 25, 23] },
     body: [
       ['Cliente / Contato', `${formatMissingText(attendance.clientName)} — ${formatMissingText(attendance.clientPhone)}`],
-      ['Modelo / Categoria', `${proj.modelName} (${proj.productCategory})`],
-      ['Tamanho do Lote', `${proj.unitsCount} unidade(s)`],
+      ['Modelo / Categoria', `${proj.modelName}${proj.productCategory ? ` (${proj.productCategory})` : ''}`],
+      ['Tamanho do Lote', proj.unitsCount != null ? `${proj.unitsCount} unidade(s)` : formatMissingText(undefined)],
       [
         'Dimensões Principais',
         `${proj.dimensions?.widthCm || '-'} cm (L) x ${proj.dimensions?.depthCm || '-'} cm (P) x ${proj.dimensions?.heightCm || '-'} cm (A) | Assento: ${proj.dimensions?.seatHeightCm || '-'}cm alt / ${proj.dimensions?.seatDepthCm || '-'}cm prof | Braço: ${proj.dimensions?.armWidthCm || '-'}cm`,
       ],
       ['Acabamento e Conforto', formatMissingText(proj.finishingWishes)],
-      ['Homologação Técnica', proj.responsibleApproval?.approved ? `Aprovado por ${proj.responsibleApproval.approvedBy} (${proj.responsibleApproval.version}) em ${new Date(proj.responsibleApproval.approvedAt).toLocaleDateString('pt-BR')}` : 'Aguardando validação formal do responsável técnico'],
+      [
+        'Homologação Técnica',
+        proj.responsibleApproval?.approved
+          ? `Aprovado por ${proj.responsibleApproval.approvedBy} (${proj.responsibleApproval.version}) em ${new Date(proj.responsibleApproval.approvedAt).toLocaleDateString('pt-BR')}`
+          : proj.planStatus === 'Liberado pelo responsável'
+          ? `Liberado por ${proj.planLiberatedByName || formatMissingText(undefined)} (${proj.version})${proj.planLiberatedAt ? ` em ${new Date(proj.planLiberatedAt).toLocaleDateString('pt-BR')}` : ''}`
+          : 'Aguardando validação formal do responsável técnico',
+      ],
     ],
   });
 
@@ -1335,18 +1345,27 @@ export async function generateManufacturingInternalPdf(
   doc.text('4. MATERIAIS, TECIDOS E ESTIMATIVA DE COMPRA', 15, cursorY);
   cursorY += 3;
 
+  const lossLabel = (m: ManufacturingMaterialRequirement) => {
+    const pct = m.justifiedLossPercent ?? m.scrapLossPercentage;
+    const pctText = pct != null ? `+${pct}%` : 'perda pendente';
+    return m.usableWidthMeters ? `${m.usableWidthMeters}m (${pctText})` : pctText;
+  };
   const matRows: string[][] = (proj.materials && proj.materials.length > 0)
     ? proj.materials.map((m) => [
-        m.name || '',
-        m.usableWidthMeters ? `${m.usableWidthMeters}m (+${m.justifiedLossPercent || 10}%)` : `+${m.justifiedLossPercent || 10}%`,
-        `${m.requiredPerProduct ?? 0} ${m.consumptionUnit || 'un'}`,
-        `${m.totalRequired ?? 0} ${m.consumptionUnit || 'un'}`,
-        `${m.availableStock ?? 0} ${m.consumptionUnit || 'un'}`,
-        (m.toPurchaseQuantity ?? 0) > 0 ? `${m.toPurchaseQuantity ?? 0} ${m.consumptionUnit || 'un'}` : 'Disponível',
-        formatCurrencyBRL(m.unitCostCents ?? 0),
-        formatCurrencyBRL(m.totalCostCents ?? 0),
+        m.name || m.materialName || '',
+        lossLabel(m),
+        m.requiredPerProduct != null ? `${m.requiredPerProduct} ${m.consumptionUnit || m.unit || 'un'}` : 'pendente',
+        m.totalRequired != null ? `${m.totalRequired} ${m.consumptionUnit || m.unit || 'un'}` : 'pendente',
+        m.availableStock != null ? `${m.availableStock} ${m.consumptionUnit || m.unit || 'un'}` : 'não confirmado',
+        (m.toPurchaseQuantity ?? null) != null
+          ? (m.toPurchaseQuantity as number) > 0
+            ? `${m.toPurchaseQuantity} ${m.consumptionUnit || m.unit || 'un'}`
+            : 'Disponível'
+          : 'pendente',
+        m.unitCostCents != null ? formatCurrencyBRL(m.unitCostCents) : 'a cotar',
+        m.totalCostCents != null ? formatCurrencyBRL(m.totalCostCents) : 'a cotar',
       ])
-    : [['Tecido Linho Misto', '1,40m (+10%)', '8 m', `${8 * (proj.unitsCount ?? 1)} m`, '12 m', 'Disponível', 'R$ 78,00', formatCurrencyBRL(8 * (proj.unitsCount ?? 1) * 7800)]];
+    : [];
 
   autoTable(doc, {
     startY: cursorY,
@@ -1372,18 +1391,36 @@ export async function generateManufacturingInternalPdf(
   cursorY += 3;
 
   const fin = attendance.financialData;
-  const totalMatsCost = (proj.materials || []).reduce((sum, m) => sum + (m.totalCostCents || 0), 0);
-  const laborOficina = fin?.laborWorkshopCostCents ?? (65000 * (proj.unitsCount ?? 1));
-  const laborMestre = fin?.ownerLaborCostCents ?? (25000 * (proj.unitsCount ?? 1));
-  const rateioFixos = fin?.overheadApportionmentCents ?? (15000 * (proj.unitsCount ?? 1));
-  const frete = fin?.transportFreightCents ?? 18000;
-  const custoTotal = totalMatsCost + laborOficina + laborMestre + rateioFixos + frete;
+  // Soma apenas os materiais que já têm custo real informado; o restante fica pendente,
+  // nunca somado como zero disfarçado de total.
+  const pricedMaterials = (proj.materials || []).filter((m) => m.totalCostCents != null);
+  const hasUnpricedMaterials = (proj.materials || []).some((m) => m.totalCostCents == null);
+  const totalMatsCost = pricedMaterials.reduce((sum, m) => sum + (m.totalCostCents || 0), 0);
+  const laborOficina = fin?.laborWorkshopCostCents;
+  const laborMestre = fin?.ownerLaborCostCents;
+  const rateioFixos = fin?.overheadApportionmentCents;
+  const frete = fin?.transportFreightCents;
+  const allCostsKnown =
+    !hasUnpricedMaterials &&
+    laborOficina != null &&
+    laborMestre != null &&
+    rateioFixos != null &&
+    frete != null;
+  const custoTotal = allCostsKnown
+    ? totalMatsCost + (laborOficina || 0) + (laborMestre || 0) + (rateioFixos || 0) + (frete || 0)
+    : null;
 
-  const precoFinal = fin?.approvedSellingPriceCents || (
-    fin?.pricingMethod === 'markup_sobre_custo'
-      ? Math.round(custoTotal * (fin.markupMultiplier || 1.45))
-      : Math.round(custoTotal / (1 - (fin?.targetMarginPercent || 30) / 100))
-  );
+  const precoFinal =
+    fin?.approvedSellingPriceCents ??
+    (custoTotal != null
+      ? fin?.pricingMethod === 'markup_sobre_custo'
+        ? Math.round(custoTotal * (fin.markupMultiplier || 1))
+        : fin?.targetMarginPercent
+        ? Math.round(custoTotal / (1 - fin.targetMarginPercent / 100))
+        : null
+      : null);
+
+  const money = (v: number | null | undefined) => (v != null ? formatCurrencyBRL(v) : 'pendente (financeiro)');
 
   autoTable(doc, {
     startY: cursorY,
@@ -1391,14 +1428,14 @@ export async function generateManufacturingInternalPdf(
     theme: 'grid',
     styles: { fontSize: 8.5, cellPadding: 2.5, textColor: [28, 25, 23] },
     body: [
-      ['Consumo Total de Materiais', formatCurrencyBRL(totalMatsCost)],
-      ['Mão de Obra Tapeçaria e Costura', formatCurrencyBRL(laborOficina)],
-      ['Mão de Obra Especializada do Mestre', formatCurrencyBRL(laborMestre)],
-      ['Rateio de Custos Fixos da Oficina', formatCurrencyBRL(rateioFixos)],
-      ['Logística de Transporte e Entrega', formatCurrencyBRL(frete)],
-      ['Custo Total Interno Apurado', formatCurrencyBRL(custoTotal)],
-      ['Método / Parâmetro de Margem', fin?.pricingMethod === 'markup_sobre_custo' ? `Markup s/ Custo (${fin.markupMultiplier || 1.45}x)` : `Margem s/ Venda (${fin?.targetMarginPercent || 30}%)`],
-      ['Preço Final de Venda Homologado', formatCurrencyBRL(precoFinal)],
+      ['Consumo Total de Materiais', hasUnpricedMaterials ? `${money(totalMatsCost)} (parcial — há material sem preço)` : money(totalMatsCost)],
+      ['Mão de Obra Tapeçaria e Costura', money(laborOficina)],
+      ['Mão de Obra Especializada do Mestre', money(laborMestre)],
+      ['Rateio de Custos Fixos da Oficina', money(rateioFixos)],
+      ['Logística de Transporte e Entrega', money(frete)],
+      ['Custo Total Interno Apurado', money(custoTotal)],
+      ['Método / Parâmetro de Margem', fin?.pricingMethod === 'markup_sobre_custo' ? `Markup s/ Custo (${fin.markupMultiplier}x)` : fin?.targetMarginPercent ? `Margem s/ Venda (${fin.targetMarginPercent}%)` : 'pendente (financeiro)'],
+      ['Preço Final de Venda Homologado', money(precoFinal)],
     ],
   });
 
@@ -1411,34 +1448,40 @@ export async function generateManufacturingInternalPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10.5);
   doc.setTextColor(28, 25, 23);
-  doc.text('6. MANUAL DE FABRICAÇÃO E MONTAGEM (12 ETAPAS PADRONIZADAS)', 15, cursorY);
+  const realSteps = proj.assemblyManual?.steps || [];
+  doc.text(
+    `6. MANUAL DE MONTAGEM${realSteps.length > 0 ? ` (${realSteps.length} ETAPA${realSteps.length > 1 ? 'S' : ''})` : ''}`,
+    15,
+    cursorY
+  );
   cursorY += 3;
 
-  const stepsToPrint = (proj.assemblyManual?.steps && proj.assemblyManual.steps.length > 0)
-    ? proj.assemblyManual.steps
-    : [
-        { stepNumber: 1, title: 'Corte e Esquadrejamento da Madeira', description: 'Corte preciso dos elementos estruturais conforme dimensões em mm.', sequenceOrder: 1, piecesUsed: ['P-01'], toolsRequired: ['Esquadrejadeira', 'Trena'], pointsOfAttention: ['Tolerância de +/- 1mm'], qualityCheckCriteria: 'Ângulo de 90°', hasUncertainties: false },
-        { stepNumber: 2, title: 'Montagem do Chassi Estrutural', description: 'Fixação e colagem das longarinas e travessas.', sequenceOrder: 2, piecesUsed: ['P-01', 'P-02'], toolsRequired: ['Grampeador pneumático', 'Cola PVA D3'], pointsOfAttention: ['Esquadro perfeito na caixa'], qualityCheckCriteria: 'Zero torção', hasUncertainties: false },
-      ];
+  if (realSteps.length === 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(87, 83, 78);
+    doc.text('Nenhuma etapa de montagem cadastrada ainda.', 15, cursorY + 4);
+    cursorY += 10;
+  } else {
+    const manualRows = realSteps.map((s) => [
+      `Passo ${s.stepNumber}\n${s.title}`,
+      `${s.description}\n\nFerramentas: ${(s.toolsRequired || []).join(', ') || 'não informadas'}\nPontos de Atenção: ${(s.pointsOfAttention || []).join('; ') || 'nenhum registrado'}\nTolerância: ${s.qualityCheckCriteria || 'não informada'}`,
+    ]);
 
-  const manualRows = stepsToPrint.map((s) => [
-    `Passo ${s.stepNumber}\n${s.title}`,
-    `${s.description}\n\nFerramentas: ${s.toolsRequired.join(', ')}\nPontos de Atenção: ${s.pointsOfAttention.join('; ')}\nTolerância: ${s.qualityCheckCriteria}`,
-  ]);
+    autoTable(doc, {
+      startY: cursorY,
+      margin: { left: 15, right: 15 },
+      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 2.5, textColor: [28, 25, 23] },
+      columnStyles: {
+        0: { cellWidth: 50, fontStyle: 'bold' },
+        1: { cellWidth: 130 },
+      },
+      body: manualRows,
+    });
 
-  autoTable(doc, {
-    startY: cursorY,
-    margin: { left: 15, right: 15 },
-    theme: 'grid',
-    styles: { fontSize: 8, cellPadding: 2.5, textColor: [28, 25, 23] },
-    columnStyles: {
-      0: { cellWidth: 50, fontStyle: 'bold' },
-      1: { cellWidth: 130 },
-    },
-    body: manualRows,
-  });
-
-  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+    cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+  }
 
   // 7. Liberação e Assinatura
   if (cursorY > 240) {
@@ -1457,15 +1500,30 @@ export async function generateManufacturingInternalPdf(
     theme: 'grid',
     styles: { fontSize: 8.5, cellPadding: 3, textColor: [28, 25, 23] },
     body: [
-      ['Status do Projeto', proj.responsibleApproval?.approved ? 'HOMOLOGADO E LIBERADO PARA CORTE' : 'PENDENTE DE HOMOLOGAÇÃO'],
-      ['Responsável Técnico Homologador', proj.responsibleApproval?.approvedBy || settings.responsibleDefaultName || 'Responsável Castros Interiores'],
-      ['Data de Homologação', proj.responsibleApproval?.approvedAt ? new Date(proj.responsibleApproval.approvedAt).toLocaleDateString('pt-BR') : 'Aguardando aprovação'],
-      ['Observações Finais da Oficina', proj.responsibleApproval?.notes || 'Conferir alinhamento das costuras e lote da espuma antes do fechamento.'],
+      [
+        'Status do Projeto',
+        proj.responsibleApproval?.approved || proj.planStatus === 'Liberado pelo responsável'
+          ? 'HOMOLOGADO E LIBERADO PARA CORTE'
+          : 'PENDENTE DE HOMOLOGAÇÃO',
+      ],
+      [
+        'Responsável Técnico Homologador',
+        proj.responsibleApproval?.approvedBy || proj.planLiberatedByName || formatMissingText(undefined),
+      ],
+      [
+        'Data de Homologação',
+        proj.responsibleApproval?.approvedAt
+          ? new Date(proj.responsibleApproval.approvedAt).toLocaleDateString('pt-BR')
+          : proj.planLiberatedAt
+          ? new Date(proj.planLiberatedAt).toLocaleDateString('pt-BR')
+          : 'Aguardando aprovação',
+      ],
+      ['Observações Finais da Oficina', formatMissingText(proj.responsibleApproval?.notes)],
     ],
   });
 
   addPageNumbersAndFooter(doc, isConfirmed, attendance.attendanceNumber);
-  doc.save(`Ficha_Tecnica_Fabricacao_${attendance.attendanceNumber}.pdf`);
+  doc.save(`Ficha_Tecnica_${(attendance.orderType || 'Fabricacao').replace(/\s+/g, '_')}_${attendance.attendanceNumber}.pdf`);
 }
 
 export async function generateManufacturingClientPdf(
