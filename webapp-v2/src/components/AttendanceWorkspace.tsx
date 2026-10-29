@@ -2848,42 +2848,38 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
                             </select>
                           </td>
                           <td className="py-2 px-3 text-right">
-                            {item.consumptionQuantity === null ? (
-                              <span className="text-amber-800 font-medium">pendente</span>
-                            ) : (
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={item.consumptionQuantity}
-                                onChange={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  handleUpdateMaterialsListItem(item.id, {
-                                    consumptionQuantity: Number.isNaN(val) ? null : val,
-                                  });
-                                }}
-                                className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-xs tabular-nums"
-                              />
-                            )}
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="pendente"
+                              value={item.consumptionQuantity === null ? '' : item.consumptionQuantity}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                const val = parseFloat(raw);
+                                handleUpdateMaterialsListItem(item.id, {
+                                  consumptionQuantity: raw === '' || Number.isNaN(val) ? null : val,
+                                });
+                              }}
+                              className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-xs tabular-nums placeholder:text-amber-800 placeholder:font-medium"
+                            />
                           </td>
                           <td className="py-2 px-3 text-right">
-                            {item.purchaseQuantity === null ? (
-                              <span className="text-amber-800 font-medium">pendente</span>
-                            ) : (
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={item.purchaseQuantity}
-                                onChange={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  handleUpdateMaterialsListItem(item.id, {
-                                    purchaseQuantity: Number.isNaN(val) ? null : val,
-                                  });
-                                }}
-                                className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-xs tabular-nums"
-                              />
-                            )}
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="pendente"
+                              value={item.purchaseQuantity === null ? '' : item.purchaseQuantity}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                const val = parseFloat(raw);
+                                handleUpdateMaterialsListItem(item.id, {
+                                  purchaseQuantity: raw === '' || Number.isNaN(val) ? null : val,
+                                });
+                              }}
+                              className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-xs tabular-nums placeholder:text-amber-800 placeholder:font-medium"
+                            />
                           </td>
                           <td className="py-2 px-3">
                             <input
@@ -2915,24 +2911,23 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
                             </select>
                           </td>
                           <td className="py-2 px-3 text-right">
-                            {item.unitCostCents === null ? (
-                              <span className="text-amber-800 font-medium">a cotar</span>
-                            ) : (
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={(item.unitCostCents / 100).toFixed(2)}
-                                onChange={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  handleUpdateMaterialsListItem(item.id, {
-                                    unitCostCents: Number.isNaN(val) ? null : Math.round(val * 100),
-                                    priceStatus: Number.isNaN(val) ? 'A cotar' : 'Confirmado',
-                                  });
-                                }}
-                                className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-xs tabular-nums"
-                              />
-                            )}
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="a cotar"
+                              value={item.unitCostCents === null ? '' : (item.unitCostCents / 100).toFixed(2)}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                const val = parseFloat(raw);
+                                const isEmpty = raw === '' || Number.isNaN(val);
+                                handleUpdateMaterialsListItem(item.id, {
+                                  unitCostCents: isEmpty ? null : Math.round(val * 100),
+                                  priceStatus: isEmpty ? 'A cotar' : 'Confirmado',
+                                });
+                              }}
+                              className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-xs tabular-nums placeholder:text-amber-800 placeholder:font-medium"
+                            />
                           </td>
                           <td className="py-2 px-3 text-center">
                             <button

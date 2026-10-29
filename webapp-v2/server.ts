@@ -102,6 +102,8 @@ import type {
   ReformMaterialListItem,
   ReformMaterialComponentStatus,
   ProposalTier,
+  FixedExpense,
+  InitialBalanceRecord,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -1284,6 +1286,28 @@ function loadStore(): PersistentStore {
           parsed.officeData = createDefaultOfficeData();
           storeModified = true;
         }
+        if (!Array.isArray(parsed.officeData.fixedExpenses)) {
+          parsed.officeData.fixedExpenses = [];
+          storeModified = true;
+        }
+        if (parsed.officeData.initialBalance === undefined) {
+          parsed.officeData.initialBalance = null;
+          storeModified = true;
+        }
+        // Remove lançamentos de demonstração (nunca reais) deixados por uma versão
+        // anterior do seed padrão, antes de o financeiro da fábrica passar a exibi-los de fato.
+        if (Array.isArray(parsed.officeData.generalTransactions)) {
+          const beforeCount = parsed.officeData.generalTransactions.length;
+          parsed.officeData.generalTransactions = parsed.officeData.generalTransactions.filter(
+            (t) => t.id !== 'gt-01' && t.id !== 'gt-02'
+          );
+          if (parsed.officeData.generalTransactions.length !== beforeCount) {
+            storeModified = true;
+          }
+        } else {
+          parsed.officeData.generalTransactions = [];
+          storeModified = true;
+        }
 
         // Reconciliar campos compartilhados de todos os pedidos
         for (const att of parsed.attendances) {
@@ -1910,6 +1934,149 @@ function buildDraftAssemblyManual(attendance: AttendanceRecord, now: string): As
   };
 }
 
+// ===================== Mila — Financeiro da Fábrica (Fase 1) =====================
+// Entradas/saídas/contas fixas/reserva do Edson calculados a partir dos MESMOS
+// lançamentos já existentes (transações por pedido + lançamentos gerais da fábrica),
+// nunca duplicados: cada lançamento vive em exatamente um lugar (attendance.financialData.transactions
+// para os vinculados a pedido, officeData.generalTransactions para os gerais).
+
+function monthKeyFromDateStr(dateStr: string | undefined | null): string | null {
+  if (!dateStr || dateStr.length < 7) return null;
+  return dateStr.slice(0, 7); // "YYYY-MM"
+}
+
+function currentMonthKey(): string {
+  return new Date().toISOString().slice(0, 7);
+}
+
+interface FactoryFinancialSummary {
+  month: string;
+  entradasRealizadoMesCents: number;
+  saidasRealizadoMesCents: number;
+  saldoOperacionalMesCents: number;
+  totalReceitaClienteAllTimeCents: number;
+  totalDespesasAllTimeCents: number;
+  saldoCaixaTotalCents: number;
+  contasAPagar: FinancialTransaction[];
+  contasAReceber: FinancialTransaction[];
+  edsonReserve: {
+    month: string;
+    baseCents: number;
+    reserveCents: number;
+    withdrawnCents: number;
+    remainingCents: number;
+  };
+  initialBalance: InitialBalanceRecord | null;
+  fixedExpenses: FixedExpense[];
+  allTransactions: FinancialTransaction[];
+}
+
+function computeFactoryFinancialSummary(
+  store: PersistentStore,
+  month?: string
+): FactoryFinancialSummary {
+  const office: SharedOfficeData = store.officeData || createDefaultOfficeData();
+  const targetMonth = month || currentMonthKey();
+
+  const orderTransactions: FinancialTransaction[] = store.attendances.flatMap((a) =>
+    (a.financialData?.transactions || []).map((t) => ({
+      ...t,
+      orderId: a.id,
+      orderNumber: a.attendanceNumber,
+      clientName: a.clientName,
+      source: 'pedido' as const,
+    }))
+  );
+
+  const generalTransactions: FinancialTransaction[] = (office.generalTransactions || []).map(
+    (t) => ({ ...t, source: 'fabrica' as const })
+  );
+
+  const allTransactions = [...orderTransactions, ...generalTransactions];
+
+  const isRealizadoInMonth = (t: FinancialTransaction, m: string) =>
+    t.status === 'realizado' && monthKeyFromDateStr(t.paidDate || t.dueDate) === m;
+
+  // Saldo inicial nunca entra como "entrada"/venda do mês — só compõe o saldo de caixa total.
+  const isRevenueType = (t: FinancialTransaction) => t.type === 'receita_cliente';
+  const isExpenseType = (t: FinancialTransaction) =>
+    t.type !== 'receita_cliente' && t.type !== 'saldo_inicial' && t.type !== 'estorno_cliente';
+
+  const entradasRealizadoMesCents = allTransactions
+    .filter((t) => isRevenueType(t) && isRealizadoInMonth(t, targetMonth))
+    .reduce((s, t) => s + t.amountCents, 0);
+  const estornosRealizadoMesCents = allTransactions
+    .filter((t) => t.type === 'estorno_cliente' && isRealizadoInMonth(t, targetMonth))
+    .reduce((s, t) => s + t.amountCents, 0);
+  const saidasRealizadoMesCents = allTransactions
+    .filter((t) => isExpenseType(t) && isRealizadoInMonth(t, targetMonth))
+    .reduce((s, t) => s + t.amountCents, 0);
+
+  const totalReceitaClienteAllTimeCents = allTransactions
+    .filter((t) => isRevenueType(t) && t.status === 'realizado')
+    .reduce((s, t) => s + t.amountCents, 0);
+  const totalEstornosAllTimeCents = allTransactions
+    .filter((t) => t.type === 'estorno_cliente' && t.status === 'realizado')
+    .reduce((s, t) => s + t.amountCents, 0);
+  const totalDespesasAllTimeCents = allTransactions
+    .filter((t) => isExpenseType(t) && t.status === 'realizado')
+    .reduce((s, t) => s + t.amountCents, 0);
+  const initialBalanceCents = office.initialBalance?.amountCents || 0;
+
+  const saldoCaixaTotalCents =
+    initialBalanceCents +
+    totalReceitaClienteAllTimeCents -
+    totalEstornosAllTimeCents -
+    totalDespesasAllTimeCents;
+
+  const contasAPagar = allTransactions
+    .filter((t) => t.status === 'previsto' && isExpenseType(t))
+    .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+  const contasAReceber = allTransactions
+    .filter((t) => t.status === 'previsto' && isRevenueType(t))
+    .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+
+  // Reserva do Edson: 10% dos recebimentos de clientes efetivamente confirmados no mês,
+  // já descontando estornos do mesmo mês (que ajustam a base). Nunca inclui saldo inicial,
+  // transferências, empréstimos, aportes ou valores ainda "previsto" (não recebidos).
+  const baseReservaCents = Math.max(
+    0,
+    entradasRealizadoMesCents - estornosRealizadoMesCents
+  );
+  const reserveCents = Math.round(baseReservaCents * 0.1);
+  const withdrawnCents = generalTransactions
+    .filter(
+      (t) =>
+        t.type === 'retirada_reserva_edson' &&
+        t.status === 'realizado' &&
+        t.referenceMonth === targetMonth
+    )
+    .reduce((s, t) => s + t.amountCents, 0);
+  const remainingCents = Math.max(0, reserveCents - withdrawnCents);
+
+  return {
+    month: targetMonth,
+    entradasRealizadoMesCents,
+    saidasRealizadoMesCents,
+    saldoOperacionalMesCents: entradasRealizadoMesCents - saidasRealizadoMesCents,
+    totalReceitaClienteAllTimeCents,
+    totalDespesasAllTimeCents,
+    saldoCaixaTotalCents,
+    contasAPagar,
+    contasAReceber,
+    edsonReserve: {
+      month: targetMonth,
+      baseCents: baseReservaCents,
+      reserveCents,
+      withdrawnCents,
+      remainingCents,
+    },
+    initialBalance: office.initialBalance || null,
+    fixedExpenses: office.fixedExpenses || [],
+    allTransactions,
+  };
+}
+
 const VALID_DESK_IDS: DepartmentId[] = [
   'carla_atendimento',
   'pedro_avaliacao',
@@ -2246,7 +2413,11 @@ async function startServer() {
         res.status(400).json({ error: 'Formato de imagem inválido (esperado base64 dataURL).' });
         return;
       }
-      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      // O prefixo da própria data URL (match[1]) descreve os bytes reais que seguem;
+      // um "mimeType" enviado à parte é só uma alegação do cliente e pode estar errado
+      // (ex.: miniatura sempre marcada como jpeg mesmo quando a imagem original é PNG).
+      // Por isso o prefixo tem prioridade — nunca declarar um tipo que não bate com o conteúdo.
+      const detectedMime = match[1] || mimeType || 'image/jpeg';
       const base64Data = match[2];
       const fileName = `agent-portrait-${deskId}.jpg`;
       savePhotoFile(fileName, Buffer.from(base64Data, 'base64'), detectedMime);
@@ -2292,7 +2463,11 @@ async function startServer() {
         res.status(400).json({ error: 'Formato de imagem inválido (esperado base64 dataURL).' });
         return;
       }
-      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      // O prefixo da própria data URL (match[1]) descreve os bytes reais que seguem;
+      // um "mimeType" enviado à parte é só uma alegação do cliente e pode estar errado
+      // (ex.: miniatura sempre marcada como jpeg mesmo quando a imagem original é PNG).
+      // Por isso o prefixo tem prioridade — nunca declarar um tipo que não bate com o conteúdo.
+      const detectedMime = match[1] || mimeType || 'image/jpeg';
       const base64Data = match[2];
       const fileName = 'office-cover-image.jpg';
       savePhotoFile(fileName, Buffer.from(base64Data, 'base64'), detectedMime);
@@ -2532,7 +2707,11 @@ async function startServer() {
         res.status(400).json({ error: 'Formato de imagem inválido (esperado base64 dataURL).' });
         return;
       }
-      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      // O prefixo da própria data URL (match[1]) descreve os bytes reais que seguem;
+      // um "mimeType" enviado à parte é só uma alegação do cliente e pode estar errado
+      // (ex.: miniatura sempre marcada como jpeg mesmo quando a imagem original é PNG).
+      // Por isso o prefixo tem prioridade — nunca declarar um tipo que não bate com o conteúdo.
+      const detectedMime = match[1] || mimeType || 'image/jpeg';
       const base64Data = match[2];
       const ext = detectedMime.includes('png')
         ? '.png'
@@ -4485,7 +4664,11 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         return;
       }
 
-      const detectedMime = mimeType || match[1] || 'image/jpeg';
+      // O prefixo da própria data URL (match[1]) descreve os bytes reais que seguem;
+      // um "mimeType" enviado à parte é só uma alegação do cliente e pode estar errado
+      // (ex.: miniatura sempre marcada como jpeg mesmo quando a imagem original é PNG).
+      // Por isso o prefixo tem prioridade — nunca declarar um tipo que não bate com o conteúdo.
+      const detectedMime = match[1] || mimeType || 'image/jpeg';
       const base64Data = match[2];
       const ext = detectedMime.includes('png')
         ? '.png'
@@ -6118,6 +6301,361 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     } catch (error) {
       console.error('Erro ao atualizar dados financeiros:', error);
       res.status(500).json({ error: 'Erro ao atualizar dados financeiros.' });
+    }
+  });
+
+  // ===================== Mila — Financeiro da Fábrica (Fase 1) =====================
+
+  // Resumo financeiro da fábrica: funciona sem nenhum pedido selecionado.
+  // Consulta os MESMOS lançamentos usados pela área por pedido (sem duplicar).
+  app.get('/api/office/financial-summary', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const month = typeof req.query.month === 'string' ? req.query.month : undefined;
+      const summary = computeFactoryFinancialSummary(store, month);
+      res.json({ ok: true, summary });
+    } catch (error) {
+      console.error('Erro ao calcular resumo financeiro da fábrica:', error);
+      res.status(500).json({ error: 'Erro ao calcular resumo financeiro da fábrica.' });
+    }
+  });
+
+  // Saldo inicial: registrado uma única vez, com data de referência e confirmação explícita.
+  // Nunca tratado como venda/recebimento de cliente (entra só no saldo de caixa total).
+  app.post('/api/office/initial-balance', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { amountCents, referenceDate, confirmedBy } = req.body as {
+        amountCents: number;
+        referenceDate: string;
+        confirmedBy?: string;
+      };
+
+      if (store.officeData.initialBalance) {
+        res.status(400).json({
+          error: 'Saldo inicial já registrado anteriormente. Não é possível registrar novamente.',
+          initialBalance: store.officeData.initialBalance,
+        });
+        return;
+      }
+      if (!amountCents || amountCents <= 0) {
+        res.status(400).json({ error: 'Informe um valor de saldo inicial válido.' });
+        return;
+      }
+      if (!referenceDate) {
+        res.status(400).json({ error: 'Informe a data de referência do saldo inicial.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      store.officeData.initialBalance = {
+        amountCents,
+        referenceDate,
+        recordedAt: now,
+        recordedBy: confirmedBy || undefined,
+      };
+
+      if (!store.officeData.generalTransactions) store.officeData.generalTransactions = [];
+      store.officeData.generalTransactions.unshift({
+        id: `gt-saldo-inicial-${Date.now()}`,
+        type: 'saldo_inicial',
+        description: 'Saldo inicial de caixa da fábrica (não é venda nem recebimento de cliente)',
+        amountCents,
+        dueDate: referenceDate,
+        paidDate: referenceDate,
+        status: 'realizado',
+        createdAt: now,
+        source: 'fabrica',
+        history: [
+          {
+            action: 'Saldo inicial registrado',
+            timestamp: now,
+            notes: confirmedBy ? `Confirmado por ${confirmedBy}` : undefined,
+          },
+        ],
+      });
+
+      saveStore(store);
+      res.json({ ok: true, initialBalance: store.officeData.initialBalance });
+    } catch (error) {
+      console.error('Erro ao registrar saldo inicial:', error);
+      res.status(500).json({ error: 'Erro ao registrar saldo inicial.' });
+    }
+  });
+
+  // Contas fixas: cadastro das despesas recorrentes da fábrica (definição, não o lançamento mensal).
+  app.post('/api/office/fixed-expenses', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { name, category, amountCents, isVariableAmount, dueDayOfMonth, notes } = req.body as {
+        name: string;
+        category: string;
+        amountCents: number | null;
+        isVariableAmount: boolean;
+        dueDayOfMonth: number;
+        notes?: string;
+      };
+
+      if (!name || !name.trim()) {
+        res.status(400).json({ error: 'Informe o nome da conta fixa.' });
+        return;
+      }
+      if (!dueDayOfMonth || dueDayOfMonth < 1 || dueDayOfMonth > 31) {
+        res.status(400).json({ error: 'Informe um dia de vencimento válido (1 a 31).' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const expense: FixedExpense = {
+        id: `fix-${Date.now()}`,
+        name: name.trim(),
+        category: category || 'Outro',
+        amountCents: isVariableAmount ? null : amountCents ?? null,
+        isVariableAmount: Boolean(isVariableAmount),
+        dueDayOfMonth,
+        active: true,
+        notes,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      if (!store.officeData.fixedExpenses) store.officeData.fixedExpenses = [];
+      store.officeData.fixedExpenses.push(expense);
+      saveStore(store);
+      res.json({ ok: true, fixedExpense: expense, fixedExpenses: store.officeData.fixedExpenses });
+    } catch (error) {
+      console.error('Erro ao cadastrar conta fixa:', error);
+      res.status(500).json({ error: 'Erro ao cadastrar conta fixa.' });
+    }
+  });
+
+  app.put('/api/office/fixed-expenses/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { id } = req.params;
+      const updates = req.body as Partial<FixedExpense>;
+      const expense = (store.officeData.fixedExpenses || []).find((f) => f.id === id);
+      if (!expense) {
+        res.status(404).json({ error: 'Conta fixa não encontrada.' });
+        return;
+      }
+      Object.assign(expense, updates, { updatedAt: new Date().toISOString() });
+      if (expense.isVariableAmount) expense.amountCents = null;
+      saveStore(store);
+      res.json({ ok: true, fixedExpense: expense, fixedExpenses: store.officeData.fixedExpenses });
+    } catch (error) {
+      console.error('Erro ao atualizar conta fixa:', error);
+      res.status(500).json({ error: 'Erro ao atualizar conta fixa.' });
+    }
+  });
+
+  app.delete('/api/office/fixed-expenses/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { id } = req.params;
+      store.officeData.fixedExpenses = (store.officeData.fixedExpenses || []).filter((f) => f.id !== id);
+      saveStore(store);
+      res.json({ ok: true, fixedExpenses: store.officeData.fixedExpenses });
+    } catch (error) {
+      console.error('Erro ao remover conta fixa:', error);
+      res.status(500).json({ error: 'Erro ao remover conta fixa.' });
+    }
+  });
+
+  // Gera as contas pendentes do mês para as contas fixas de valor conhecido.
+  // Recorrência não significa pagamento realizado: toda conta nasce "previsto".
+  // Contas de valor variável não são geradas automaticamente (nunca lançar R$ 0,00 fictício);
+  // ficam como pendência para lançamento manual quando o valor real for conhecido.
+  app.post('/api/office/fixed-expenses/generate-bills', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { referenceMonth } = req.body as { referenceMonth?: string };
+      const month = referenceMonth || currentMonthKey();
+      const [yearStr, monthStr] = month.split('-');
+
+      if (!store.officeData.generalTransactions) store.officeData.generalTransactions = [];
+      const fixedExpenses = store.officeData.fixedExpenses || [];
+
+      let createdCount = 0;
+      const pendingManual: string[] = [];
+      const now = new Date().toISOString();
+
+      for (const fe of fixedExpenses) {
+        if (!fe.active) continue;
+        const alreadyExists = store.officeData.generalTransactions.some(
+          (t) => t.fixedExpenseId === fe.id && t.referenceMonth === month
+        );
+        if (alreadyExists) continue;
+
+        if (fe.isVariableAmount || fe.amountCents == null) {
+          pendingManual.push(fe.name);
+          continue;
+        }
+
+        const day = String(Math.min(fe.dueDayOfMonth, 28)).padStart(2, '0');
+        store.officeData.generalTransactions.push({
+          id: `gt-fix-${fe.id}-${month}`,
+          type: 'despesa_fixa',
+          description: fe.name,
+          amountCents: fe.amountCents,
+          dueDate: `${yearStr}-${monthStr}-${day}`,
+          status: 'previsto',
+          createdAt: now,
+          fixedExpenseId: fe.id,
+          referenceMonth: month,
+          source: 'fabrica',
+          history: [{ action: 'Conta do mês gerada a partir da conta fixa cadastrada', timestamp: now }],
+        });
+        createdCount++;
+      }
+
+      saveStore(store);
+      res.json({
+        ok: true,
+        createdCount,
+        pendingManual,
+        generalTransactions: store.officeData.generalTransactions,
+      });
+    } catch (error) {
+      console.error('Erro ao gerar contas do mês:', error);
+      res.status(500).json({ error: 'Erro ao gerar contas do mês.' });
+    }
+  });
+
+  // Lançamento geral da fábrica (não vinculado a um pedido específico).
+  app.post('/api/office/general-transaction', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const newTransaction = req.body.newTransaction as Omit<FinancialTransaction, 'id' | 'createdAt' | 'history'>;
+      if (!newTransaction || !newTransaction.amountCents) {
+        res.status(400).json({ error: 'Informe um valor válido para o lançamento.' });
+        return;
+      }
+
+      if (!store.officeData.generalTransactions) store.officeData.generalTransactions = [];
+      const now = new Date().toISOString();
+      const trans: FinancialTransaction = {
+        id: `gt-${Date.now()}`,
+        type: newTransaction.type,
+        description: newTransaction.description || 'Lançamento geral da fábrica',
+        amountCents: Number(newTransaction.amountCents) || 0,
+        status: newTransaction.status || 'previsto',
+        dueDate: newTransaction.dueDate || now.slice(0, 10),
+        paidDate: newTransaction.paidDate,
+        paymentMethod: newTransaction.paymentMethod,
+        receiptNotes: newTransaction.receiptNotes,
+        createdAt: now,
+        source: 'fabrica',
+        history: [{ action: 'Lançamento geral registrado', timestamp: now }],
+      };
+      store.officeData.generalTransactions.unshift(trans);
+      saveStore(store);
+      res.json({ ok: true, transaction: trans, generalTransactions: store.officeData.generalTransactions });
+    } catch (error) {
+      console.error('Erro ao registrar lançamento geral:', error);
+      res.status(500).json({ error: 'Erro ao registrar lançamento geral.' });
+    }
+  });
+
+  // Quitar uma conta pendente (geral da fábrica) — marca como realizado, sem criar outro lançamento.
+  app.put('/api/office/general-transaction/:id/settle', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { id } = req.params;
+      const { paidDate, paymentMethod, receiptNotes } = req.body as {
+        paidDate?: string;
+        paymentMethod?: string;
+        receiptNotes?: string;
+      };
+      const trans = (store.officeData.generalTransactions || []).find((t) => t.id === id);
+      if (!trans) {
+        res.status(404).json({ error: 'Lançamento não encontrado.' });
+        return;
+      }
+      if (trans.status === 'realizado') {
+        res.status(400).json({ error: 'Este lançamento já está quitado.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      trans.status = 'realizado';
+      trans.paidDate = paidDate || now.slice(0, 10);
+      if (paymentMethod) trans.paymentMethod = paymentMethod;
+      if (receiptNotes) trans.receiptNotes = receiptNotes;
+      trans.history.push({ action: 'Conta quitada', timestamp: now });
+      saveStore(store);
+      res.json({ ok: true, transaction: trans, generalTransactions: store.officeData.generalTransactions });
+    } catch (error) {
+      console.error('Erro ao quitar lançamento:', error);
+      res.status(500).json({ error: 'Erro ao quitar lançamento.' });
+    }
+  });
+
+  // Retirada confirmada da reserva do Edson — gera saída real de caixa, uma única vez por valor confirmado.
+  // Bloqueia se o valor pedido exceder o saldo de reserva restante do mês (nunca permite "estourar" a reserva).
+  app.post('/api/office/edson-reserve/withdraw', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { referenceMonth, amountCents, confirmedBy, notes } = req.body as {
+        referenceMonth?: string;
+        amountCents: number;
+        confirmedBy?: string;
+        notes?: string;
+      };
+      const month = referenceMonth || currentMonthKey();
+
+      if (!amountCents || amountCents <= 0) {
+        res.status(400).json({ error: 'Informe um valor de retirada válido.' });
+        return;
+      }
+      if (!confirmedBy || !confirmedBy.trim()) {
+        res.status(400).json({ error: 'Informe o nome de quem confirma a retirada.' });
+        return;
+      }
+
+      const summary = computeFactoryFinancialSummary(store, month);
+      if (amountCents > summary.edsonReserve.remainingCents) {
+        res.status(400).json({
+          error: `Valor solicitado (R$ ${(amountCents / 100).toFixed(2)}) excede a reserva restante do mês (R$ ${(summary.edsonReserve.remainingCents / 100).toFixed(2)}).`,
+          remainingCents: summary.edsonReserve.remainingCents,
+        });
+        return;
+      }
+
+      if (!store.officeData.generalTransactions) store.officeData.generalTransactions = [];
+      const now = new Date().toISOString();
+      const trans: FinancialTransaction = {
+        id: `gt-retirada-edson-${Date.now()}`,
+        type: 'retirada_reserva_edson',
+        description: `Retirada confirmada da reserva do Edson — ${month}`,
+        amountCents,
+        status: 'realizado',
+        dueDate: now.slice(0, 10),
+        paidDate: now.slice(0, 10),
+        receiptNotes: notes,
+        createdAt: now,
+        referenceMonth: month,
+        source: 'fabrica',
+        history: [
+          { action: 'Retirada confirmada pelo responsável', timestamp: now, notes: `Confirmado por ${confirmedBy}` },
+        ],
+      };
+      store.officeData.generalTransactions.unshift(trans);
+      saveStore(store);
+
+      const updatedSummary = computeFactoryFinancialSummary(store, month);
+      res.json({ ok: true, transaction: trans, edsonReserve: updatedSummary.edsonReserve });
+    } catch (error) {
+      console.error('Erro ao registrar retirada da reserva do Edson:', error);
+      res.status(500).json({ error: 'Erro ao registrar retirada da reserva do Edson.' });
     }
   });
 
