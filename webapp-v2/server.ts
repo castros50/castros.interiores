@@ -2032,15 +2032,19 @@ async function startServer() {
   });
 
   // Status endpoint (checks if ANTHROPIC_API_KEY is present without exposing it)
-  app.get('/api/status', (_req, res) => {
-    const store = loadStore();
+  app.get('/api/status', (req, res) => {
     const hasAnthropicKey = Boolean(
       process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim().length > 5
     );
-    const activeAppUrl =
-      process.env.APP_URL ||
-      'https://ais-dev-5eeb75lqrgyidj3iykztd7-90595154148.us-west2.run.app';
-    const sharedPreUrl = activeAppUrl.replace('://ais-dev-', '://ais-pre-');
+    // Endereço público real usado para instalar o app em celular/tablet (QR code e link
+    // compartilhado). Nunca um domínio fixo de outro serviço: usa APP_URL se configurado,
+    // senão deriva do próprio host da requisição (correto automaticamente em qualquer
+    // domínio que sirva o app, inclusive atrás do proxy do Cloud Run).
+    const forwardedProto = req.get('x-forwarded-proto');
+    const protocol = forwardedProto ? forwardedProto.split(',')[0].trim() : req.protocol;
+    const host = req.get('host');
+    const requestOrigin = host ? `${protocol}://${host}` : undefined;
+    const activeAppUrl = process.env.APP_URL || requestOrigin;
     res.json({
       ok: true,
       geminiConfigured: hasAnthropicKey,
@@ -2048,7 +2052,6 @@ async function startServer() {
       storageConfigured: true,
       configuredModel: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
       appUrl: activeAppUrl,
-      sharedPreUrl,
       devices: getActiveDevicesList(),
     });
   });

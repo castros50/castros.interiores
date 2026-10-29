@@ -20,13 +20,16 @@ import { CorporateDeviceSession, DeviceFormFactor } from '../types';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 
 export function getDirectPublicAppUrl(sharedAppUrl?: string): string {
+  // O endereço do navegador é sempre o domínio que realmente carregou a página —
+  // a fonte mais confiável, sem depender do servidor ter uma variável de ambiente
+  // configurada corretamente.
+  if (typeof window !== 'undefined' && window.location.origin.startsWith('http')) {
+    return window.location.origin;
+  }
   if (sharedAppUrl && sharedAppUrl.startsWith('http')) {
     return sharedAppUrl;
   }
-  if (typeof window !== 'undefined') {
-    return window.location.origin;
-  }
-  return 'https://ais-dev-5eeb75lqrgyidj3iykztd7-90595154148.us-west2.run.app';
+  return '';
 }
 
 interface PWAInstallButtonProps {
@@ -182,13 +185,7 @@ export const CorporateSyncModal: React.FC<CorporateSyncModalProps> = ({
   const [broadcastingFocus, setBroadcastingFocus] = useState(false);
   const [broadcastSuccess, setBroadcastSuccess] = useState(false);
 
-  const liveActiveUrl =
-    (sharedAppUrl && sharedAppUrl.startsWith('http') ? sharedAppUrl : '') ||
-    (typeof window !== 'undefined' ? window.location.origin : '') ||
-    'https://ais-dev-5eeb75lqrgyidj3iykztd7-90595154148.us-west2.run.app';
-  const sharedPreUrl = liveActiveUrl.replace('://ais-dev-', '://ais-pre-');
-  const [selectedUrlType, setSelectedUrlType] = useState<'active' | 'shared'>('active');
-  const targetUrl = selectedUrlType === 'active' ? liveActiveUrl : sharedPreUrl;
+  const targetUrl = getDirectPublicAppUrl(sharedAppUrl);
 
   useEffect(() => {
     setLocalFactor(formFactor);
@@ -289,13 +286,10 @@ export const CorporateSyncModal: React.FC<CorporateSyncModalProps> = ({
               <Check className="w-5 h-5 text-emerald-800 shrink-0 mt-0.5" />
               <div className="space-y-1">
                 <h3 className="font-bold text-sm text-emerald-950">
-                  Solução de Conexão no Tablet e Celular (Resolvido)
+                  Link Oficial de Instalação
                 </h3>
-                <p className="text-emerald-900 leading-relaxed text-[11px]">
-                  Se o seu tablet abriu a tela com <strong>&ldquo;Não foi possível encontrar a página deste ais-pre-... (404)&rdquo;</strong>, isso acontecia porque o link tentava acessar o endereço de prévia externa antes de ser compartilhado.
-                </p>
                 <p className="text-emerald-950 font-semibold text-[11px]">
-                  O <strong>Link Ativo Oficial</strong> abaixo acessa diretamente o servidor em tempo real da sua oficina, abrindo na hora no seu tablet e celular para instalar o aplicativo na tela inicial!
+                  O link abaixo acessa diretamente o servidor em tempo real da sua oficina, abrindo na hora no seu tablet e celular para instalar o aplicativo na tela inicial.
                 </p>
               </div>
             </div>
@@ -353,32 +347,6 @@ export const CorporateSyncModal: React.FC<CorporateSyncModalProps> = ({
                 <p className="text-[#57534E]">
                   Aponte a câmera do seu <strong>Tablet</strong> ou <strong>Celular</strong> para este QR Code. Ele abre diretamente o sistema da <strong>Castros Interiores</strong> pronto para instalar:
                 </p>
-
-                {/* Seletor de Tipo de Link */}
-                <div className="flex rounded-lg bg-[#EFECE6] p-1 text-[11px] font-semibold w-full">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedUrlType('active')}
-                    className={`flex-1 py-1 px-2 rounded-md transition-colors ${
-                      selectedUrlType === 'active'
-                        ? 'bg-white text-[#181512] shadow-sm'
-                        : 'text-[#6B6257] hover:text-[#181512]'
-                    }`}
-                  >
-                    Link Ativo Oficial (Recomendado)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedUrlType('shared')}
-                    className={`flex-1 py-1 px-2 rounded-md transition-colors ${
-                      selectedUrlType === 'shared'
-                        ? 'bg-white text-[#181512] shadow-sm'
-                        : 'text-[#6B6257] hover:text-[#181512]'
-                    }`}
-                  >
-                    Link Compartilhado (ais-pre)
-                  </button>
-                </div>
 
                 {qrDataUrl ? (
                   <div className="p-3 bg-white rounded-xl border border-[#D6CFC5] shadow-sm">
