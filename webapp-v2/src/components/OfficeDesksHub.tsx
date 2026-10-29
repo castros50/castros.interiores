@@ -576,6 +576,41 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
         />
       )}
 
+      {/* SUPERVISORA GERAL (Helena) — função panorâmica, nunca depende de um pedido específico */}
+      {selectedDeskId === 'supervisora_geral' && (
+        <SupervisorDesk
+          attendances={attendances}
+          officeData={officeData}
+          materialsCatalog={materialsCatalog}
+          settings={settings}
+          onUpdateAttendance={onUpdateAttendance}
+          onOpenOrder={onSelectAttendance}
+          onNavigateTab={onNavigateTab}
+          onJumpToStep={onJumpToStep}
+        />
+      )}
+
+      {/* Nenhum pedido ativo nesta mesa ainda — nunca deixar a área em branco sem explicação */}
+      {!activeOrder && selectedDeskId !== 'mila_financeiro' && selectedDeskId !== 'supervisora_geral' && (
+        <div className="p-8 rounded-xl bg-white border border-[#E5DEC9] shadow-sm text-center space-y-3">
+          <p className="text-sm font-semibold text-[#181512]">
+            Nenhum pedido ativo na Mesa {selectedDeskMeta.number} — {selectedDeskMeta.name} ainda.
+          </p>
+          <p className="text-xs text-[#6B6257] max-w-md mx-auto">
+            Crie um novo atendimento ou clique num pedido da lista acima (quando houver algum nesta
+            mesa) para abrir a área de trabalho.
+          </p>
+          <button
+            type="button"
+            onClick={() => setNewOrderModalOpen(true)}
+            className="px-4 py-2 rounded-lg bg-[#181512] hover:bg-[#2E2722] text-white text-xs font-semibold inline-flex items-center gap-1.5"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Novo Pedido (Reforma / Fabricação)
+          </button>
+        </div>
+      )}
+
       {/* ÁREA OPERACIONAL DA MESA ATUAL */}
       {activeOrder && (
         <div className="space-y-4">
@@ -728,19 +763,6 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                 const target = attendances.find((a) => a.id === orderId);
                 if (target) handleOpenTransfer(target, toDesk);
               }}
-            />
-          )}
-
-          {selectedDeskId === 'supervisora_geral' && (
-            <SupervisorDesk
-              attendances={attendances}
-              officeData={officeData}
-              materialsCatalog={materialsCatalog}
-              settings={settings}
-              onUpdateAttendance={onUpdateAttendance}
-              onOpenOrder={onSelectAttendance}
-              onNavigateTab={onNavigateTab}
-              onJumpToStep={onJumpToStep}
             />
           )}
 
