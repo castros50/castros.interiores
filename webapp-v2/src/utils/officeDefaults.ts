@@ -1142,6 +1142,10 @@ export function createDefaultOfficeData(): SharedOfficeData {
     generalTransactions: [],
     fixedExpenses: [],
     initialBalance: null,
+    cashAccounts: [
+      { id: 'acc-caixa', name: 'Caixa', type: 'caixa', active: true, createdAt: now, updatedAt: now },
+    ],
+    cashTransfers: [],
     strategyRecommendations: [
       {
         id: 'rec-1',

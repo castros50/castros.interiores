@@ -587,10 +587,26 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
 
       {/* FINANCEIRO DA FÁBRICA — funciona sem nenhum pedido selecionado */}
       {!activeOrder && selectedDeskId === 'mila_financeiro' && (
-        <MilaFactoryFinanceView
-          settings={settings}
-          onOpenOrder={(orderId) => onSelectAttendance(orderId)}
-        />
+        <div className="space-y-4">
+          <MilaFactoryFinanceView
+            settings={settings}
+            onOpenOrder={(orderId) => onSelectAttendance(orderId)}
+          />
+
+          {/* Central de Conversa Funcional por Voz e Texto com a Mila — consulta o financeiro real */}
+          <AgentVoiceTextChat
+            deskId="mila_financeiro"
+            agentName={selectedDeskMeta.name}
+            agentRole={selectedDeskMeta.role}
+            portraitUpdatedAt={settings.agentPortraitUpdatedAt?.mila_financeiro}
+            suggestedQuestions={[
+              'Quanto já entrou e quanto já saiu do caixa este mês?',
+              'Quais contas estão pendentes de pagamento ou recebimento?',
+              'Qual é a reserva do Edson este mês e quanto já foi retirado?',
+              'Onde está o saldo da fábrica hoje, por conta?',
+            ]}
+          />
+        </div>
       )}
 
       {/* SUPERVISORA GERAL (Helena) — função panorâmica, nunca depende de um pedido específico */}

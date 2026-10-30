@@ -104,6 +104,8 @@ import type {
   ProposalTier,
   FixedExpense,
   InitialBalanceRecord,
+  CashAccount,
+  CashTransfer,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -1294,6 +1296,24 @@ function loadStore(): PersistentStore {
           parsed.officeData.initialBalance = null;
           storeModified = true;
         }
+        if (!Array.isArray(parsed.officeData.cashTransfers)) {
+          parsed.officeData.cashTransfers = [];
+          storeModified = true;
+        }
+        if (!Array.isArray(parsed.officeData.cashAccounts) || parsed.officeData.cashAccounts.length === 0) {
+          const now = new Date().toISOString();
+          parsed.officeData.cashAccounts = [
+            {
+              id: 'acc-caixa',
+              name: 'Caixa',
+              type: 'caixa',
+              active: true,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ];
+          storeModified = true;
+        }
         // Remove lançamentos de demonstração (nunca reais) deixados por uma versão
         // anterior do seed padrão, antes de o financeiro da fábrica passar a exibi-los de fato.
         if (Array.isArray(parsed.officeData.generalTransactions)) {
@@ -1968,12 +1988,31 @@ interface FactoryFinancialSummary {
   };
   initialBalance: InitialBalanceRecord | null;
   fixedExpenses: FixedExpense[];
+  cashAccounts: CashAccount[];
+  cashTransfers: CashTransfer[];
+  accountBalancesCents: Record<string, number>;
+  categories: string[];
   allTransactions: FinancialTransaction[];
+}
+
+// Um lançamento "realizado" de corpo inteiro conta como um único evento de caixa na
+// sua própria data. Um lançamento com pagamentos parciais (payments[]) conta como
+// VÁRIOS eventos, cada um na sua própria data — essencial para atribuir corretamente
+// o mês de competência de cada parcela recebida/paga, inclusive pra reserva do Edson.
+function getRealizedCashEvents(t: FinancialTransaction): Array<{ amountCents: number; date: string | undefined }> {
+  if (t.payments && t.payments.length > 0) {
+    return t.payments.map((p) => ({ amountCents: p.amountCents, date: p.paidDate }));
+  }
+  if (t.status === 'realizado') {
+    return [{ amountCents: t.amountCents, date: t.paidDate || t.dueDate }];
+  }
+  return [];
 }
 
 function computeFactoryFinancialSummary(
   store: PersistentStore,
-  month?: string
+  month?: string,
+  category?: string
 ): FactoryFinancialSummary {
   const office: SharedOfficeData = store.officeData || createDefaultOfficeData();
   const targetMonth = month || currentMonthKey();
@@ -1992,35 +2031,43 @@ function computeFactoryFinancialSummary(
     (t) => ({ ...t, source: 'fabrica' as const })
   );
 
-  const allTransactions = [...orderTransactions, ...generalTransactions];
-
-  const isRealizadoInMonth = (t: FinancialTransaction, m: string) =>
-    t.status === 'realizado' && monthKeyFromDateStr(t.paidDate || t.dueDate) === m;
+  const allTransactionsUnfiltered = [...orderTransactions, ...generalTransactions];
+  const categories = Array.from(
+    new Set(allTransactionsUnfiltered.map((t) => t.category).filter((c): c is string => Boolean(c)))
+  ).sort();
+  const allTransactions = category
+    ? allTransactionsUnfiltered.filter((t) => t.category === category)
+    : allTransactionsUnfiltered;
 
   // Saldo inicial nunca entra como "entrada"/venda do mês — só compõe o saldo de caixa total.
   const isRevenueType = (t: FinancialTransaction) => t.type === 'receita_cliente';
   const isExpenseType = (t: FinancialTransaction) =>
     t.type !== 'receita_cliente' && t.type !== 'saldo_inicial' && t.type !== 'estorno_cliente';
 
-  const entradasRealizadoMesCents = allTransactions
-    .filter((t) => isRevenueType(t) && isRealizadoInMonth(t, targetMonth))
-    .reduce((s, t) => s + t.amountCents, 0);
-  const estornosRealizadoMesCents = allTransactions
-    .filter((t) => t.type === 'estorno_cliente' && isRealizadoInMonth(t, targetMonth))
-    .reduce((s, t) => s + t.amountCents, 0);
-  const saidasRealizadoMesCents = allTransactions
-    .filter((t) => isExpenseType(t) && isRealizadoInMonth(t, targetMonth))
-    .reduce((s, t) => s + t.amountCents, 0);
+  const sumEventsInMonth = (txs: FinancialTransaction[], m: string) =>
+    txs.reduce(
+      (s, t) =>
+        s +
+        getRealizedCashEvents(t)
+          .filter((ev) => monthKeyFromDateStr(ev.date) === m)
+          .reduce((es, ev) => es + ev.amountCents, 0),
+      0
+    );
+  const sumEventsAllTime = (txs: FinancialTransaction[]) =>
+    txs.reduce((s, t) => s + getRealizedCashEvents(t).reduce((es, ev) => es + ev.amountCents, 0), 0);
 
-  const totalReceitaClienteAllTimeCents = allTransactions
-    .filter((t) => isRevenueType(t) && t.status === 'realizado')
-    .reduce((s, t) => s + t.amountCents, 0);
-  const totalEstornosAllTimeCents = allTransactions
-    .filter((t) => t.type === 'estorno_cliente' && t.status === 'realizado')
-    .reduce((s, t) => s + t.amountCents, 0);
-  const totalDespesasAllTimeCents = allTransactions
-    .filter((t) => isExpenseType(t) && t.status === 'realizado')
-    .reduce((s, t) => s + t.amountCents, 0);
+  const entradasRealizadoMesCents = sumEventsInMonth(allTransactions.filter(isRevenueType), targetMonth);
+  const estornosRealizadoMesCents = sumEventsInMonth(
+    allTransactions.filter((t) => t.type === 'estorno_cliente'),
+    targetMonth
+  );
+  const saidasRealizadoMesCents = sumEventsInMonth(allTransactions.filter(isExpenseType), targetMonth);
+
+  const totalReceitaClienteAllTimeCents = sumEventsAllTime(allTransactions.filter(isRevenueType));
+  const totalEstornosAllTimeCents = sumEventsAllTime(
+    allTransactions.filter((t) => t.type === 'estorno_cliente')
+  );
+  const totalDespesasAllTimeCents = sumEventsAllTime(allTransactions.filter(isExpenseType));
   const initialBalanceCents = office.initialBalance?.amountCents || 0;
 
   const saldoCaixaTotalCents =
@@ -2029,20 +2076,19 @@ function computeFactoryFinancialSummary(
     totalEstornosAllTimeCents -
     totalDespesasAllTimeCents;
 
+  const isPending = (t: FinancialTransaction) => t.status === 'previsto' || t.status === 'parcial';
+
   const contasAPagar = allTransactions
-    .filter((t) => t.status === 'previsto' && isExpenseType(t))
+    .filter((t) => isPending(t) && isExpenseType(t))
     .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
   const contasAReceber = allTransactions
-    .filter((t) => t.status === 'previsto' && isRevenueType(t))
+    .filter((t) => isPending(t) && isRevenueType(t))
     .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
 
-  // Reserva do Edson: 10% dos recebimentos de clientes efetivamente confirmados no mês,
-  // já descontando estornos do mesmo mês (que ajustam a base). Nunca inclui saldo inicial,
-  // transferências, empréstimos, aportes ou valores ainda "previsto" (não recebidos).
-  const baseReservaCents = Math.max(
-    0,
-    entradasRealizadoMesCents - estornosRealizadoMesCents
-  );
+  // Reserva do Edson: 10% dos recebimentos de clientes efetivamente confirmados no mês
+  // (entradas + parcelas pagas), já descontando estornos do mesmo mês. Nunca inclui
+  // saldo inicial, transferências, empréstimos, aportes ou valores ainda "previsto".
+  const baseReservaCents = Math.max(0, entradasRealizadoMesCents - estornosRealizadoMesCents);
   const reserveCents = Math.round(baseReservaCents * 0.1);
   const withdrawnCents = generalTransactions
     .filter(
@@ -2053,6 +2099,26 @@ function computeFactoryFinancialSummary(
     )
     .reduce((s, t) => s + t.amountCents, 0);
   const remainingCents = Math.max(0, reserveCents - withdrawnCents);
+
+  // Saldo por conta (caixa/banco cadastrados manualmente): soma dos eventos de caixa
+  // vinculados à conta, mais transferências recebidas, menos transferências enviadas.
+  const cashAccounts = office.cashAccounts || [];
+  const cashTransfers = office.cashTransfers || [];
+  const accountBalancesCents: Record<string, number> = {};
+  for (const acc of cashAccounts) accountBalancesCents[acc.id] = 0;
+  if (office.initialBalance?.accountId && accountBalancesCents[office.initialBalance.accountId] !== undefined) {
+    accountBalancesCents[office.initialBalance.accountId] += office.initialBalance.amountCents;
+  }
+  for (const t of allTransactionsUnfiltered) {
+    if (!t.accountId || accountBalancesCents[t.accountId] === undefined) continue;
+    const sign = isRevenueType(t) ? 1 : isExpenseType(t) ? -1 : t.type === 'estorno_cliente' ? -1 : 0;
+    const events = getRealizedCashEvents(t);
+    accountBalancesCents[t.accountId] += sign * events.reduce((s, ev) => s + ev.amountCents, 0);
+  }
+  for (const tr of cashTransfers) {
+    if (accountBalancesCents[tr.fromAccountId] !== undefined) accountBalancesCents[tr.fromAccountId] -= tr.amountCents;
+    if (accountBalancesCents[tr.toAccountId] !== undefined) accountBalancesCents[tr.toAccountId] += tr.amountCents;
+  }
 
   return {
     month: targetMonth,
@@ -2073,6 +2139,10 @@ function computeFactoryFinancialSummary(
     },
     initialBalance: office.initialBalance || null,
     fixedExpenses: office.fixedExpenses || [],
+    cashAccounts,
+    cashTransfers,
+    accountBalancesCents,
+    categories,
     allTransactions,
   };
 }
@@ -5432,8 +5502,8 @@ Regra: NUNCA invente preços ou assuma custo zero para matérias-primas faltante
           name: 'Mila',
           title: 'Mila (Administração Financeira)',
           systemPrompt: `Você é a MILA, diretora de Administração Financeira da Castros Interiores.
-Missão: Gerenciar formação de preços de venda (margem sobre venda vs markup sobre custo), custos diretos de materiais, mão de obra, rateio de despesas fixas, impostos, pagamentos e parcelas.
-Regra: NUNCA misture custos diretos com despesas de oficina. Sempre apresente cálculos claros em Reais (R$) sem arredondar arbitrariamente.`,
+Missão: Gerenciar o financeiro geral da fábrica (entradas, saídas, contas, reserva do Edson) e o financeiro de cada pedido (formação de preços, custos diretos, mão de obra, rateio de despesas fixas, impostos, pagamentos e parcelas).
+Regra: NUNCA misture custos diretos com despesas de oficina. Sempre apresente cálculos claros em Reais (R$) sem arredondar arbitrariamente. Distinga sempre valores já REALIZADOS (recebidos/pagos de fato) de valores apenas PREVISTOS ou de orçamento aprovado — orçamento aprovado nunca é dinheiro recebido. Você pode sugerir lançamentos, retiradas ou transferências, mas NUNCA os confirma ou registra sozinha: toda movimentação real exige a confirmação explícita do responsável pelos próprios botões da mesa, nunca pela conversa.`,
         },
         castro_estrategia: {
           name: 'Roberto Castro',
@@ -5564,6 +5634,22 @@ ${store.materials
       `  * [${m.rawCategory || m.category}] ${m.name} | Custo: R$ ${(m.unitCostCents / 100).toFixed(2)}/${m.unit} | Estoque físico: ${m.physicalStock ?? 'N/D'} | Reservado: ${m.reservedStock ?? 0}`
   )
   .join('\n')}
+`;
+      }
+
+      if (deskId === 'mila_financeiro') {
+        const fin = computeFactoryFinancialSummary(store);
+        factualContext += `
+FINANCEIRO GERAL DA FÁBRICA — ${fin.month} (dados reais, atualizados agora):
+- Entradas realizadas no mês: R$ ${(fin.entradasRealizadoMesCents / 100).toFixed(2)}
+- Saídas realizadas no mês: R$ ${(fin.saidasRealizadoMesCents / 100).toFixed(2)}
+- Saldo operacional do mês: R$ ${(fin.saldoOperacionalMesCents / 100).toFixed(2)}
+- Saldo de caixa total (todas as contas): R$ ${(fin.saldoCaixaTotalCents / 100).toFixed(2)}
+- Contas a pagar pendentes: ${fin.contasAPagar.length} (soma R$ ${(fin.contasAPagar.reduce((s, t) => s + (t.amountCents - (t.amountPaidCents || 0)), 0) / 100).toFixed(2)})
+- Valores a receber pendentes: ${fin.contasAReceber.length} (soma R$ ${(fin.contasAReceber.reduce((s, t) => s + (t.amountCents - (t.amountPaidCents || 0)), 0) / 100).toFixed(2)})
+- Reserva do Edson no mês (10% dos recebimentos realizados): R$ ${(fin.edsonReserve.reserveCents / 100).toFixed(2)} | já retirado: R$ ${(fin.edsonReserve.withdrawnCents / 100).toFixed(2)} | restante: R$ ${(fin.edsonReserve.remainingCents / 100).toFixed(2)}
+- Saldo inicial registrado: ${fin.initialBalance ? `R$ ${(fin.initialBalance.amountCents / 100).toFixed(2)} em ${fin.initialBalance.referenceDate}` : 'ainda não registrado'}
+REGRA CRÍTICA: distinga sempre valores REALIZADOS (já recebidos/pagos) de PREVISTOS (ainda pendentes) — nunca trate orçamento aprovado como dinheiro recebido. Se a pergunta exigir um dado que não está nesta lista, diga explicitamente que não tem esse dado em mãos em vez de estimar. Você pode sugerir um lançamento, uma retirada ou uma transferência, mas NUNCA registre, confirme ou quite nada sozinha — toda ação financeira real exige confirmação explícita do responsável pelos botões da mesa.
 `;
       }
 
@@ -6316,7 +6402,8 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       const store = loadStore();
       if (!store.officeData) store.officeData = createDefaultOfficeData();
       const month = typeof req.query.month === 'string' ? req.query.month : undefined;
-      const summary = computeFactoryFinancialSummary(store, month);
+      const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+      const summary = computeFactoryFinancialSummary(store, month, category);
       res.json({ ok: true, summary });
     } catch (error) {
       console.error('Erro ao calcular resumo financeiro da fábrica:', error);
@@ -6330,10 +6417,11 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     try {
       const store = loadStore();
       if (!store.officeData) store.officeData = createDefaultOfficeData();
-      const { amountCents, referenceDate, confirmedBy } = req.body as {
+      const { amountCents, referenceDate, confirmedBy, accountId } = req.body as {
         amountCents: number;
         referenceDate: string;
         confirmedBy?: string;
+        accountId?: string;
       };
 
       if (store.officeData.initialBalance) {
@@ -6353,11 +6441,16 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       }
 
       const now = new Date().toISOString();
+      const resolvedAccountId =
+        accountId && (store.officeData.cashAccounts || []).some((a) => a.id === accountId)
+          ? accountId
+          : (store.officeData.cashAccounts || [])[0]?.id;
       store.officeData.initialBalance = {
         amountCents,
         referenceDate,
         recordedAt: now,
         recordedBy: confirmedBy || undefined,
+        accountId: resolvedAccountId,
       };
 
       if (!store.officeData.generalTransactions) store.officeData.generalTransactions = [];
@@ -6371,6 +6464,7 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         status: 'realizado',
         createdAt: now,
         source: 'fabrica',
+        accountId: resolvedAccountId,
         history: [
           {
             action: 'Saldo inicial registrado',
@@ -6537,13 +6631,38 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       const store = loadStore();
       if (!store.officeData) store.officeData = createDefaultOfficeData();
       const newTransaction = req.body.newTransaction as Omit<FinancialTransaction, 'id' | 'createdAt' | 'history'>;
+      const confirmDespiteDuplicate = Boolean(req.body.confirmDespiteDuplicate);
       if (!newTransaction || !newTransaction.amountCents) {
         res.status(400).json({ error: 'Informe um valor válido para o lançamento.' });
         return;
       }
 
       if (!store.officeData.generalTransactions) store.officeData.generalTransactions = [];
+
+      // Alerta de possível duplicidade: mesmo valor e tipo lançado nos últimos 3 dias,
+      // com descrição ou pagador/favorecido parecidos. Nunca bloqueia — só avisa, e só
+      // efetivamente registra se o pedido vier com confirmDespiteDuplicate=true.
       const now = new Date().toISOString();
+      const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
+      const normalize = (s?: string) => (s || '').trim().toLowerCase();
+      const possibleDuplicates = store.officeData.generalTransactions.filter(
+        (t) =>
+          t.type === newTransaction.type &&
+          t.amountCents === Number(newTransaction.amountCents) &&
+          (t.createdAt || '') >= threeDaysAgo &&
+          (normalize(t.description) === normalize(newTransaction.description) ||
+            (newTransaction.payerOrPayee && normalize(t.payerOrPayee) === normalize(newTransaction.payerOrPayee)))
+      );
+      if (possibleDuplicates.length > 0 && !confirmDespiteDuplicate) {
+        res.json({
+          ok: false,
+          possibleDuplicate: true,
+          duplicates: possibleDuplicates,
+          message: 'Encontramos lançamento(s) parecido(s) nos últimos 3 dias. Confirme se não é duplicado.',
+        });
+        return;
+      }
+
       const trans: FinancialTransaction = {
         id: `gt-${Date.now()}`,
         type: newTransaction.type,
@@ -6554,8 +6673,25 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         paidDate: newTransaction.paidDate,
         paymentMethod: newTransaction.paymentMethod,
         receiptNotes: newTransaction.receiptNotes,
+        category: newTransaction.category,
+        payerOrPayee: newTransaction.payerOrPayee,
+        accountId: newTransaction.accountId,
+        receiptImageUrl: newTransaction.receiptImageUrl,
+        receiptMimeType: newTransaction.receiptMimeType,
         createdAt: now,
         source: 'fabrica',
+        amountPaidCents: newTransaction.status === 'realizado' ? Number(newTransaction.amountCents) || 0 : 0,
+        payments:
+          newTransaction.status === 'realizado'
+            ? [
+                {
+                  id: `pay-${Date.now()}`,
+                  amountCents: Number(newTransaction.amountCents) || 0,
+                  paidDate: newTransaction.paidDate || now.slice(0, 10),
+                  paymentMethod: newTransaction.paymentMethod,
+                },
+              ]
+            : [],
         history: [{ action: 'Lançamento geral registrado', timestamp: now }],
       };
       store.officeData.generalTransactions.unshift(trans);
@@ -6567,16 +6703,28 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     }
   });
 
-  // Quitar uma conta pendente (geral da fábrica) — marca como realizado, sem criar outro lançamento.
-  app.put('/api/office/general-transaction/:id/settle', (req, res) => {
+  // Registrar um pagamento (total ou parcial) numa conta geral pendente — nunca cria
+  // outra despesa/receita: só atualiza o lançamento já existente. Também usada para
+  // anexar um comprovante a uma conta pendente e quitá-la ao mesmo tempo.
+  app.put('/api/office/general-transaction/:id/pay', (req, res) => {
     try {
       const store = loadStore();
       if (!store.officeData) store.officeData = createDefaultOfficeData();
       const { id } = req.params;
-      const { paidDate, paymentMethod, receiptNotes } = req.body as {
+      const {
+        amountCents,
+        paidDate,
+        paymentMethod,
+        receiptNotes,
+        receiptImageUrl,
+        receiptMimeType,
+      } = req.body as {
+        amountCents?: number;
         paidDate?: string;
         paymentMethod?: string;
         receiptNotes?: string;
+        receiptImageUrl?: string;
+        receiptMimeType?: string;
       };
       const trans = (store.officeData.generalTransactions || []).find((t) => t.id === id);
       if (!trans) {
@@ -6584,20 +6732,82 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         return;
       }
       if (trans.status === 'realizado') {
-        res.status(400).json({ error: 'Este lançamento já está quitado.' });
+        res.status(400).json({ error: 'Este lançamento já está totalmente quitado.' });
         return;
       }
       const now = new Date().toISOString();
-      trans.status = 'realizado';
+      const alreadyPaid = trans.amountPaidCents || 0;
+      const remaining = Math.max(0, trans.amountCents - alreadyPaid);
+      const payAmount = amountCents != null ? Number(amountCents) : remaining;
+      if (!payAmount || payAmount <= 0) {
+        res.status(400).json({ error: 'Informe um valor de pagamento válido.' });
+        return;
+      }
+      if (payAmount > remaining) {
+        res.status(400).json({
+          error: `Valor informado (R$ ${(payAmount / 100).toFixed(2)}) excede o saldo pendente (R$ ${(remaining / 100).toFixed(2)}).`,
+        });
+        return;
+      }
+
+      if (!trans.payments) trans.payments = [];
+      trans.payments.push({
+        id: `pay-${Date.now()}`,
+        amountCents: payAmount,
+        paidDate: paidDate || now.slice(0, 10),
+        paymentMethod,
+        notes: receiptNotes,
+      });
+      trans.amountPaidCents = alreadyPaid + payAmount;
+      trans.status = trans.amountPaidCents >= trans.amountCents ? 'realizado' : 'parcial';
       trans.paidDate = paidDate || now.slice(0, 10);
       if (paymentMethod) trans.paymentMethod = paymentMethod;
       if (receiptNotes) trans.receiptNotes = receiptNotes;
-      trans.history.push({ action: 'Conta quitada', timestamp: now });
+      if (receiptImageUrl) {
+        trans.receiptImageUrl = receiptImageUrl;
+        trans.receiptMimeType = receiptMimeType;
+      }
+      trans.history.push({
+        action: trans.status === 'realizado' ? 'Conta quitada' : 'Pagamento parcial registrado',
+        timestamp: now,
+        notes: `R$ ${(payAmount / 100).toFixed(2)}`,
+      });
       saveStore(store);
       res.json({ ok: true, transaction: trans, generalTransactions: store.officeData.generalTransactions });
     } catch (error) {
-      console.error('Erro ao quitar lançamento:', error);
-      res.status(500).json({ error: 'Erro ao quitar lançamento.' });
+      console.error('Erro ao registrar pagamento:', error);
+      res.status(500).json({ error: 'Erro ao registrar pagamento.' });
+    }
+  });
+
+  // Excluir um lançamento geral da fábrica (lançado por engano, duplicado, etc.).
+  // Só atua sobre store.officeData.generalTransactions — nunca alcança lançamentos
+  // vinculados a um pedido (esses vivem em attendance.financialData.transactions).
+  // O saldo inicial não pode ser excluído por aqui para não dessincronizar com
+  // officeData.initialBalance.
+  app.delete('/api/office/general-transaction/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { id } = req.params;
+      const list = store.officeData.generalTransactions || [];
+      const trans = list.find((t) => t.id === id);
+      if (!trans) {
+        res.status(404).json({ error: 'Lançamento não encontrado.' });
+        return;
+      }
+      if (trans.type === 'saldo_inicial') {
+        res.status(400).json({
+          error: 'O saldo inicial não pode ser excluído por aqui. Fale com o suporte técnico para corrigi-lo.',
+        });
+        return;
+      }
+      store.officeData.generalTransactions = list.filter((t) => t.id !== id);
+      saveStore(store);
+      res.json({ ok: true, generalTransactions: store.officeData.generalTransactions });
+    } catch (error) {
+      console.error('Erro ao excluir lançamento:', error);
+      res.status(500).json({ error: 'Erro ao excluir lançamento.' });
     }
   });
 
@@ -6607,11 +6817,12 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     try {
       const store = loadStore();
       if (!store.officeData) store.officeData = createDefaultOfficeData();
-      const { referenceMonth, amountCents, confirmedBy, notes } = req.body as {
+      const { referenceMonth, amountCents, confirmedBy, notes, accountId } = req.body as {
         referenceMonth?: string;
         amountCents: number;
         confirmedBy?: string;
         notes?: string;
+        accountId?: string;
       };
       const month = referenceMonth || currentMonthKey();
 
@@ -6647,6 +6858,9 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         createdAt: now,
         referenceMonth: month,
         source: 'fabrica',
+        accountId,
+        amountPaidCents: amountCents,
+        payments: [{ id: `pay-${Date.now()}`, amountCents, paidDate: now.slice(0, 10) }],
         history: [
           { action: 'Retirada confirmada pelo responsável', timestamp: now, notes: `Confirmado por ${confirmedBy}` },
         ],
@@ -6659,6 +6873,103 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     } catch (error) {
       console.error('Erro ao registrar retirada da reserva do Edson:', error);
       res.status(500).json({ error: 'Erro ao registrar retirada da reserva do Edson.' });
+    }
+  });
+
+  // Contas (caixa/banco) onde o dinheiro da fábrica está fisicamente.
+  app.post('/api/office/accounts', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { name, type } = req.body as { name: string; type?: CashAccount['type'] };
+      if (!name || !name.trim()) {
+        res.status(400).json({ error: 'Informe o nome da conta.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      const account: CashAccount = {
+        id: `acc-${Date.now()}`,
+        name: name.trim(),
+        type: type || 'outro',
+        active: true,
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (!store.officeData.cashAccounts) store.officeData.cashAccounts = [];
+      store.officeData.cashAccounts.push(account);
+      saveStore(store);
+      res.json({ ok: true, account, cashAccounts: store.officeData.cashAccounts });
+    } catch (error) {
+      console.error('Erro ao cadastrar conta:', error);
+      res.status(500).json({ error: 'Erro ao cadastrar conta.' });
+    }
+  });
+
+  app.put('/api/office/accounts/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { id } = req.params;
+      const updates = req.body as Partial<CashAccount>;
+      const account = (store.officeData.cashAccounts || []).find((a) => a.id === id);
+      if (!account) {
+        res.status(404).json({ error: 'Conta não encontrada.' });
+        return;
+      }
+      Object.assign(account, updates, { updatedAt: new Date().toISOString() });
+      saveStore(store);
+      res.json({ ok: true, account, cashAccounts: store.officeData.cashAccounts });
+    } catch (error) {
+      console.error('Erro ao atualizar conta:', error);
+      res.status(500).json({ error: 'Erro ao atualizar conta.' });
+    }
+  });
+
+  // Transferência entre contas: só move o saldo individual de cada uma, nunca entra
+  // como receita/despesa no consolidado geral da fábrica.
+  app.post('/api/office/transfer', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { fromAccountId, toAccountId, amountCents, date, notes, createdBy } = req.body as {
+        fromAccountId: string;
+        toAccountId: string;
+        amountCents: number;
+        date?: string;
+        notes?: string;
+        createdBy?: string;
+      };
+      const accounts = store.officeData.cashAccounts || [];
+      if (!accounts.some((a) => a.id === fromAccountId) || !accounts.some((a) => a.id === toAccountId)) {
+        res.status(400).json({ error: 'Conta de origem ou destino inválida.' });
+        return;
+      }
+      if (fromAccountId === toAccountId) {
+        res.status(400).json({ error: 'A conta de origem e destino não podem ser a mesma.' });
+        return;
+      }
+      if (!amountCents || amountCents <= 0) {
+        res.status(400).json({ error: 'Informe um valor de transferência válido.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      const transfer: CashTransfer = {
+        id: `trf-${Date.now()}`,
+        fromAccountId,
+        toAccountId,
+        amountCents,
+        date: date || now.slice(0, 10),
+        notes,
+        createdAt: now,
+        createdBy,
+      };
+      if (!store.officeData.cashTransfers) store.officeData.cashTransfers = [];
+      store.officeData.cashTransfers.unshift(transfer);
+      saveStore(store);
+      res.json({ ok: true, transfer, cashTransfers: store.officeData.cashTransfers });
+    } catch (error) {
+      console.error('Erro ao registrar transferência:', error);
+      res.status(500).json({ error: 'Erro ao registrar transferência.' });
     }
   });
 

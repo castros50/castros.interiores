@@ -1082,7 +1082,15 @@ export type FinancialTransactionType =
   | 'estorno_cliente'
   | 'outro';
 
-export type PaymentStatus = 'previsto' | 'confirmado' | 'cancelado' | 'realizado';
+export type PaymentStatus = 'previsto' | 'parcial' | 'confirmado' | 'cancelado' | 'realizado';
+
+export interface FinancialPaymentEntry {
+  id: string;
+  amountCents: number;
+  paidDate: string;
+  paymentMethod?: string;
+  notes?: string;
+}
 
 export interface FinancialTransaction {
   id: string;
@@ -1106,6 +1114,16 @@ export interface FinancialTransaction {
   source?: 'pedido' | 'fabrica';
   fixedExpenseId?: string;
   referenceMonth?: string; // "YYYY-MM" — mês de competência (conta fixa gerada / reserva do Edson)
+  // Categorização e rastreio detalhado do lançamento
+  category?: string;
+  payerOrPayee?: string;
+  accountId?: string; // conta (caixa/banco) usada — ver CashAccount
+  receiptImageUrl?: string; // comprovante anexado (foto/PDF), quando houver
+  receiptMimeType?: string;
+  // Pagamento parcial: soma de "payments" é o valor já efetivamente pago;
+  // status vira 'parcial' enquanto amountPaidCents < amountCents.
+  amountPaidCents?: number;
+  payments?: FinancialPaymentEntry[];
 }
 
 // ----------------------------------------------------------------------------
@@ -1130,6 +1148,30 @@ export interface InitialBalanceRecord {
   referenceDate: string; // data de referência informada pelo usuário
   recordedAt: string;
   recordedBy?: string;
+  accountId?: string; // conta onde o saldo inicial foi registrado (ex.: Caixa)
+}
+
+// Onde o dinheiro da fábrica está fisicamente — caixa, contas bancárias cadastradas
+// manualmente (nunca conectadas a banco real). Transferência entre contas move o
+// saldo individual de cada uma sem contar como receita/despesa no consolidado.
+export interface CashAccount {
+  id: string;
+  name: string;
+  type: 'caixa' | 'banco' | 'outro';
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CashTransfer {
+  id: string;
+  fromAccountId: string;
+  toAccountId: string;
+  amountCents: number;
+  date: string;
+  notes?: string;
+  createdAt: string;
+  createdBy?: string;
 }
 
 export interface OrderFinancialData {
@@ -1252,6 +1294,8 @@ export interface SharedOfficeData {
   lastReconciledAt?: string;
   fixedExpenses?: FixedExpense[];
   initialBalance?: InitialBalanceRecord | null;
+  cashAccounts?: CashAccount[];
+  cashTransfers?: CashTransfer[];
 }
 
 
