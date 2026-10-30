@@ -40,6 +40,8 @@ import { AgentVoiceTextChat } from './AgentVoiceTextChat';
 import { AgentPortrait } from './AgentPortrait';
 import { TapeceiroTecnicoDesk } from './TapeceiroTecnicoDesk';
 import { MilaFactoryFinanceView } from './MilaFactoryFinanceView';
+import { CarlaAtendimentoDesk } from './CarlaAtendimentoDesk';
+import { CarlaOrderPanel } from './CarlaOrderPanel';
 
 interface OfficeDesksHubProps {
   attendances: AttendanceRecord[];
@@ -101,6 +103,14 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   const [categorizeModalOpen, setCategorizeModalOpen] = useState(false);
   const [orderToCategorize, setOrderToCategorize] = useState<AttendanceRecord | null>(null);
 
+  // O usuário pode clicar explicitamente em "voltar à busca / sem pedido" (Mila, Carla).
+  // Sem isso, limpar activeAttendanceId não bastava: a mesa reencontrava sozinha o
+  // primeiro pedido já estacionado na fila dela e nunca voltava para a tela sem pedido.
+  const [forceNoOrderView, setForceNoOrderView] = useState(false);
+  useEffect(() => {
+    setForceNoOrderView(false);
+  }, [selectedDeskId]);
+
   // Carregar dados centrais do escritório
   const loadOfficeState = async () => {
     setIsLoadingOffice(true);
@@ -132,10 +142,13 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDeskId]);
 
-  const activeOrder =
-    attendances.find((a) => a.id === activeAttendanceId) ||
-    attendances.find((a) => a.currentDesk === selectedDeskId && (selectedDeskId !== 'lucas_projetos' || a.orderType === 'Fabricação')) ||
-    (selectedDeskId === 'lucas_projetos' || selectedDeskId === 'mila_financeiro' ? null : attendances[0]);
+  const activeOrder = forceNoOrderView
+    ? null
+    : attendances.find((a) => a.id === activeAttendanceId) ||
+      attendances.find((a) => a.currentDesk === selectedDeskId && (selectedDeskId !== 'lucas_projetos' || a.orderType === 'Fabricação')) ||
+      (selectedDeskId === 'lucas_projetos' || selectedDeskId === 'mila_financeiro' || selectedDeskId === 'carla_atendimento'
+        ? null
+        : attendances[0]);
 
   // Contagem de pedidos por mesa
   const getOrdersCountByDesk = (deskId: DepartmentId) => {
@@ -279,6 +292,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
       if (data.ok && data.order) {
         onUpdateAttendance(data.order);
         onSelectAttendance(data.order.id);
+        setForceNoOrderView(false);
         setSelectedDeskId(data.order.currentDesk);
         setNewOrderModalOpen(false);
         setNewClientName('');
@@ -300,7 +314,8 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
       !searchTerm ||
       att.attendanceNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
       att.clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      att.furnitureType.toLowerCase().includes(searchTerm.toLowerCase());
+      att.furnitureType.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (att.clientPhone || '').toLowerCase().includes(searchTerm.toLowerCase());
     return matchesDesk && matchesType && matchesSearch;
   });
 
@@ -465,6 +480,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                   type="button"
                   onClick={() => {
                     onSelectAttendance(sc.id);
+                    setForceNoOrderView(false);
                     if (sc.currentDesk) setSelectedDeskId(sc.currentDesk);
                   }}
                   className={`px-2.5 py-1 rounded border text-[11px] font-bold ${
@@ -517,11 +533,16 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
               <div
                 key={ord.id}
                 onClick={() => {
-                  if (!ord.orderType) {
+                  // Atendimentos sem orderType mas com requestType (compra de produto,
+                  // acompanhamento, reclamação) são assim por definição — não são "pedido
+                  // ainda não classificado", então abrem direto, sem passar pelo modal de
+                  // classificar Reforma/Fabricação.
+                  if (!ord.orderType && !ord.requestType) {
                     setOrderToCategorize(ord);
                     setCategorizeModalOpen(true);
                   } else {
                     onSelectAttendance(ord.id);
+                    setForceNoOrderView(false);
                   }
                 }}
                 className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
@@ -590,7 +611,10 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
         <div className="space-y-4">
           <MilaFactoryFinanceView
             settings={settings}
-            onOpenOrder={(orderId) => onSelectAttendance(orderId)}
+            onOpenOrder={(orderId) => {
+              onSelectAttendance(orderId);
+              setForceNoOrderView(false);
+            }}
           />
 
           {/* Central de Conversa Funcional por Voz e Texto com a Mila — consulta o financeiro real */}
@@ -604,6 +628,34 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
               'Quais contas estão pendentes de pagamento ou recebimento?',
               'Qual é a reserva do Edson este mês e quanto já foi retirado?',
               'Onde está o saldo da fábrica hoje, por conta?',
+            ]}
+          />
+        </div>
+      )}
+
+      {/* ATENDIMENTO AO CLIENTE (Carla) — busca, cadastro inicial e triagem, sem depender de pedido */}
+      {!activeOrder && selectedDeskId === 'carla_atendimento' && (
+        <div className="space-y-4">
+          <CarlaAtendimentoDesk
+            attendances={attendances}
+            settings={settings}
+            onSelectOrder={(id) => {
+              onSelectAttendance(id);
+              setForceNoOrderView(false);
+            }}
+          />
+
+          {/* Central de Conversa Funcional por Voz e Texto com a Carla */}
+          <AgentVoiceTextChat
+            deskId="carla_atendimento"
+            agentName={selectedDeskMeta.name}
+            agentRole={selectedDeskMeta.role}
+            portraitUpdatedAt={settings.agentPortraitUpdatedAt?.carla_atendimento}
+            suggestedQuestions={[
+              'Quais atendimentos estão com pendência de dados?',
+              'Tem alguma reclamação aberta para encaminhar?',
+              'Como está o status do pedido CI-2026-0001?',
+              'Prepare uma mensagem de acompanhamento para o cliente de um pedido.',
             ]}
           />
         </div>
@@ -624,7 +676,10 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
       )}
 
       {/* Nenhum pedido ativo nesta mesa ainda — nunca deixar a área em branco sem explicação */}
-      {!activeOrder && selectedDeskId !== 'mila_financeiro' && selectedDeskId !== 'supervisora_geral' && (
+      {!activeOrder &&
+        selectedDeskId !== 'mila_financeiro' &&
+        selectedDeskId !== 'supervisora_geral' &&
+        selectedDeskId !== 'carla_atendimento' && (
         <div className="p-8 rounded-xl bg-white border border-[#E5DEC9] shadow-sm text-center space-y-3">
           <p className="text-sm font-semibold text-[#181512]">
             Nenhum pedido ativo na Mesa {selectedDeskMeta.number} — {selectedDeskMeta.name} ainda.
@@ -659,7 +714,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                     Pedido Selecionado na Mesa:
                   </span>
                   <span className="font-mono font-bold text-white text-sm">
-                    {activeOrder.attendanceNumber} ({activeOrder.orderType})
+                    {activeOrder.attendanceNumber} ({activeOrder.orderType || activeOrder.requestType || 'não classificado'})
                   </span>
                   <span className="text-xs text-[#E5DEC9]">
                     — {activeOrder.clientName} ({activeOrder.furnitureType})
@@ -719,20 +774,22 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                 Devolver p/ Correção
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  onSelectAttendance(activeOrder.id);
-                  onNavigateTab('painel');
-                }}
-                className="px-3.5 py-1.5 rounded-lg bg-[#181512] hover:bg-[#2E2722] text-xs font-semibold text-white border border-[#57534E] flex items-center gap-1.5"
-                title="Abrir fluxo completo de 8 etapas para este pedido"
-              >
-                <FolderOpen className="w-3.5 h-3.5 text-[#E5DEC9]" />
-                {activeOrder.orderType === 'Fabricação'
-                  ? 'Abrir Fluxo de Fabricação (Lucas - 8 Etapas)'
-                  : 'Abrir Fluxo de Reforma (Pedro - 8 Etapas)'}
-              </button>
+              {activeOrder.orderType && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectAttendance(activeOrder.id);
+                    onNavigateTab('painel');
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#181512] hover:bg-[#2E2722] text-xs font-semibold text-white border border-[#57534E] flex items-center gap-1.5"
+                  title="Abrir fluxo completo de 8 etapas para este pedido"
+                >
+                  <FolderOpen className="w-3.5 h-3.5 text-[#E5DEC9]" />
+                  {activeOrder.orderType === 'Fabricação'
+                    ? 'Abrir Fluxo de Fabricação (Lucas - 8 Etapas)'
+                    : 'Abrir Fluxo de Reforma (Pedro - 8 Etapas)'}
+                </button>
+              )}
 
               <button
                 type="button"
@@ -767,7 +824,10 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
             <div className="space-y-3">
               <button
                 type="button"
-                onClick={() => onSelectAttendance(null)}
+                onClick={() => {
+                  onSelectAttendance(null);
+                  setForceNoOrderView(true);
+                }}
                 className="px-3.5 py-1.5 rounded-lg bg-[#F3EFE6] hover:bg-[#E5DEC9] text-xs font-semibold text-[#181512] flex items-center gap-1.5"
               >
                 <Wallet className="w-3.5 h-3.5 text-[#9A7138]" />
@@ -805,6 +865,31 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
               settings={settings}
               onUpdateOrder={onUpdateAttendance}
             />
+          )}
+
+          {selectedDeskId === 'carla_atendimento' && (
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => {
+                  onSelectAttendance(null);
+                  setForceNoOrderView(true);
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-[#F3EFE6] hover:bg-[#E5DEC9] text-xs font-semibold text-[#181512] flex items-center gap-1.5"
+              >
+                <Search className="w-3.5 h-3.5 text-[#9A7138]" />
+                ← Buscar outro atendimento / Novo atendimento
+              </button>
+              <CarlaOrderPanel
+                order={activeOrder}
+                settings={settings}
+                onUpdateOrder={onUpdateAttendance}
+                onRequestHandoff={(orderId, toDesk) => {
+                  const target = attendances.find((a) => a.id === orderId);
+                  if (target) handleOpenTransfer(target, toDesk);
+                }}
+              />
+            </div>
           )}
 
           {/* Mesas de Atendimento (Carla), Avaliação (Pedro), Compras (Ana) ou Marketing (Júlia) */}
