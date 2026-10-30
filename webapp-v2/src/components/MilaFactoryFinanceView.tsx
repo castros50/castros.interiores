@@ -280,6 +280,25 @@ export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({ 
     }
   };
 
+  const handleDeleteTransaction = async (t: FinancialTransaction) => {
+    if (!window.confirm(`Excluir o lançamento "${t.description}" (${formatCurrencyBRL(t.amountCents)})? Esta ação não pode ser desfeita.`)) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/office/general-transaction/${t.id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.ok) {
+        flash('Lançamento excluído.');
+        loadSummary(month, categoryFilter || undefined);
+      } else {
+        alert(data.error || 'Erro ao excluir lançamento.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Erro de comunicação ao excluir lançamento.');
+    }
+  };
+
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!accName.trim()) {
@@ -971,6 +990,50 @@ export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({ 
                         })
                       )}
                     </div>
+                  </div>
+                </div>
+
+                {/* Últimos lançamentos gerais da fábrica — inclui já realizados, para poder excluir um lançamento por engano */}
+                <div>
+                  <h4 className="font-bold text-xs uppercase text-[#181512] mb-2">
+                    Últimos Lançamentos Gerais da Fábrica
+                  </h4>
+                  <div className="border border-[#E5DEC9] rounded-xl overflow-hidden max-h-96 overflow-y-auto">
+                    {summary.allTransactions.filter((t) => t.source === 'fabrica' && t.type !== 'saldo_inicial').length === 0 ? (
+                      <p className="p-3 text-xs text-[#6B6257]">Nenhum lançamento geral neste mês.</p>
+                    ) : (
+                      summary.allTransactions
+                        .filter((t) => t.source === 'fabrica' && t.type !== 'saldo_inicial')
+                        .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+                        .slice(0, 30)
+                        .map((t) => {
+                          const isEntrada = t.type === 'receita_cliente';
+                          return (
+                            <div key={t.id} className="p-3 border-b border-[#EFECE6] last:border-0 text-xs flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="font-medium text-[#181512] truncate">{t.description}</p>
+                                <p className="text-[10px] text-[#6B6257]">
+                                  {TX_TYPE_LABELS[t.type] || t.type} · {t.status === 'realizado' ? 'realizado' : t.status === 'parcial' ? 'parcial' : 'previsto'} · vence {t.dueDate}
+                                  {t.category ? ` · ${t.category}` : ''}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className={`font-mono font-bold ${isEntrada ? 'text-emerald-800' : 'text-red-800'}`}>
+                                  {formatCurrencyBRL(t.amountCents)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteTransaction(t)}
+                                  title="Excluir lançamento"
+                                  className="p-1.5 rounded bg-red-50 hover:bg-red-100 border border-red-200 text-red-700"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })
+                    )}
                   </div>
                 </div>
               </div>

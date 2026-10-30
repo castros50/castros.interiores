@@ -6780,6 +6780,37 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     }
   });
 
+  // Excluir um lançamento geral da fábrica (lançado por engano, duplicado, etc.).
+  // Só atua sobre store.officeData.generalTransactions — nunca alcança lançamentos
+  // vinculados a um pedido (esses vivem em attendance.financialData.transactions).
+  // O saldo inicial não pode ser excluído por aqui para não dessincronizar com
+  // officeData.initialBalance.
+  app.delete('/api/office/general-transaction/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      const { id } = req.params;
+      const list = store.officeData.generalTransactions || [];
+      const trans = list.find((t) => t.id === id);
+      if (!trans) {
+        res.status(404).json({ error: 'Lançamento não encontrado.' });
+        return;
+      }
+      if (trans.type === 'saldo_inicial') {
+        res.status(400).json({
+          error: 'O saldo inicial não pode ser excluído por aqui. Fale com o suporte técnico para corrigi-lo.',
+        });
+        return;
+      }
+      store.officeData.generalTransactions = list.filter((t) => t.id !== id);
+      saveStore(store);
+      res.json({ ok: true, generalTransactions: store.officeData.generalTransactions });
+    } catch (error) {
+      console.error('Erro ao excluir lançamento:', error);
+      res.status(500).json({ error: 'Erro ao excluir lançamento.' });
+    }
+  });
+
   // Retirada confirmada da reserva do Edson — gera saída real de caixa, uma única vez por valor confirmado.
   // Bloqueia se o valor pedido exceder o saldo de reserva restante do mês (nunca permite "estourar" a reserva).
   app.post('/api/office/edson-reserve/withdraw', (req, res) => {
