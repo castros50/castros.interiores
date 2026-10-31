@@ -106,6 +106,8 @@ import type {
   InitialBalanceRecord,
   CashAccount,
   CashTransfer,
+  AttendanceRequestType,
+  ComplaintEntry,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -1331,7 +1333,11 @@ function loadStore(): PersistentStore {
 
         // Reconciliar campos compartilhados de todos os pedidos
         for (const att of parsed.attendances) {
-          if (!att.orderType) {
+          // Só força orderType='Reforma' em registros antigos de verdade (sem requestType
+          // nenhum). Atendimentos da Carla sem pedido operacional (compra de produto,
+          // acompanhamento, reclamação) são assim por definição — orderType undefined é o
+          // estado correto deles, nunca "esquecido".
+          if (!att.orderType && !att.requestType) {
             att.orderType = 'Reforma';
             storeModified = true;
           }
@@ -4478,7 +4484,15 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
         julia_marketing: `VOCÊ ATUA AGORA COMO: JÚLIA — DEPARTAMENTO DE MARKETING E DIVULGAÇÃO DA CASTROS INTERIORES.
 Sua missão é criar estratégias de divulgação, textos de apresentação de projetos (antes/depois), legendas para Instagram, campanhas de valorização da reforma artesanal de alto padrão e conteúdos educativos para clientes da Castros Interiores, sempre respeitando a veracidade técnica sem inventar dados.`,
         carla_atendimento: `VOCÊ ATUA AGORA COMO: CARLA — DEPARTAMENTO DE ATENDIMENTO AO CLIENTE DA CASTROS INTERIORES.
-Sua missão é realizar o acolhimento de excelência do cliente, organizar a triagem inicial do móvel, orientar o envio correto das fotos por ângulo, responder dúvidas com empatia e clareza e redigir comunicados de acompanhamento pelo WhatsApp.`,
+Sua missão é realizar o acolhimento de excelência do cliente, organizar a triagem inicial (reforma, fabricação nova, compra de produto, acompanhamento ou reclamação), orientar o envio correto das fotos por ângulo, responder dúvidas com empatia e clareza, e preparar rascunhos de mensagem para o cliente.
+REGRAS OBRIGATÓRIAS:
+1. Faça uma pergunta de cada vez e aproveite os dados já informados — nunca peça de novo o que o cliente já disse.
+2. Nunca invente orçamento, preço, desconto, prazo de entrega ou disponibilidade. Use somente o que está confirmado pelo responsável nos dados reais informados abaixo. Se faltar, diga claramente que está pendente e que vai encaminhar ao responsável.
+3. Distinga sempre medida informada pelo cliente (não confirmada) de medida conferida na oficina — nunca afirme uma medida exata só por foto ou relato.
+4. Nunca prometa reembolso, desconto ou nova data de entrega numa reclamação sem autorização do responsável — registre a reclamação e diga que vai encaminhar.
+5. Receber uma imagem de comprovante de pagamento NUNCA significa que o pagamento foi confirmado — a confirmação é sempre da Mila, depois de conferência.
+6. O WhatsApp não está integrado para envio automático: qualquer mensagem ao cliente é um rascunho para copiar, revisar e enviar manualmente.
+7. Diferencie claramente, na sua resposta, o que é informação interna para o responsável do que é um rascunho de mensagem pronta para o cliente. Numa mensagem para o cliente, NUNCA inclua custos internos, margem, markup ou qualquer dado de outro cliente — só preço final aprovado, condições, prazo e status, quando já confirmados.`,
         pedro_avaliacao: `VOCÊ ATUA AGORA COMO: PEDRO — DEPARTAMENTO DE AVALIAÇÃO TÉCNICA DA CASTROS INTERIORES.
 Sua missão é coordenar a vistoria técnica das 11 áreas do estofado, a inspeção de abertura em bancada na oficina, a avaliação física de espumas, madeiramento, percintas e molas, e a definição técnica das propostas de reforma.\n${
           store.settings.defectAgentCustomInstructions || ''
@@ -5621,6 +5635,35 @@ PEDIDO EM FOCO (${relevantOrder.attendanceNumber} - ${relevantOrder.orderType}):
 `;
       }
 
+      if (deskId === 'carla_atendimento' && relevantOrder) {
+        const isFab = relevantOrder.orderType === 'Fabricação';
+        const currentPrice = isFab
+          ? relevantOrder.financialData?.approvedSellingPriceCents
+          : relevantOrder.budget?.sellingPriceCents;
+        const decisionSnapshot = isFab
+          ? relevantOrder.financialData?.clientDecisionPriceCentsSnapshot
+          : relevantOrder.budget?.clientDecisionPriceCentsSnapshot;
+        const decision = isFab ? relevantOrder.financialData?.clientDecision : relevantOrder.budget?.clientDecision;
+        const decisionStale = decision && decisionSnapshot !== undefined && decisionSnapshot !== currentPrice;
+        const openComplaints = (relevantOrder.complaints || []).filter((c) => c.status !== 'resolvida');
+        const pendingFields: string[] = [];
+        if (!relevantOrder.clientPhone) pendingFields.push('telefone do cliente');
+        if (!relevantOrder.neighborhood && !relevantOrder.fullAddress) pendingFields.push('bairro/endereço');
+        if (relevantOrder.approxMeasurements === 'A validar na oficina') pendingFields.push('medidas informadas pelo cliente');
+        if (!relevantOrder.workshopConfirmedMeasurements) pendingFields.push('medidas conferidas na oficina');
+        factualContext += `
+DADOS DE ATENDIMENTO (CARLA) PARA ${relevantOrder.attendanceNumber}:
+- Tipo de solicitação: ${relevantOrder.requestType || 'não classificado'}
+- Bairro/Cidade: ${relevantOrder.neighborhood || 'não informado'}${relevantOrder.city ? ` / ${relevantOrder.city}` : ''}
+- Endereço completo: ${relevantOrder.fullAddress || 'não informado'}
+- Medidas conferidas na oficina (diferente da informada pelo cliente): ${relevantOrder.workshopConfirmedMeasurements || 'ainda não conferidas'}
+- Pendências de cadastro: ${pendingFields.length > 0 ? pendingFields.join(', ') : 'nenhuma pendência de cadastro'}
+- Decisão do cliente sobre o orçamento: ${decision ? `${decision}${decisionStale ? ' — ATENÇÃO: o preço mudou depois dessa decisão, precisa de nova conferência com o cliente' : ''}` : 'ainda não decidiu'}
+- Reclamações abertas/encaminhadas: ${openComplaints.length === 0 ? 'nenhuma' : openComplaints.map((c) => `"${c.description}" (${c.urgency}, ${c.status})`).join(' | ')}
+REGRA: ao preparar uma mensagem para o cliente, use somente o preço e condições já CONFIRMADOS pelo responsável (nunca o sugerido). Se o cliente perguntar algo que depende de outra mesa (ex.: data exata de entrega ainda não definida), diga que vai confirmar e volta.
+`;
+      }
+
       if (deskId === 'ana_compras' || deskId === 'supervisora_geral') {
         const incompleteCount = store.materials.filter((m) => !m.unitCostCents || m.unitCostCents === 0).length;
         factualContext += `
@@ -6105,6 +6148,26 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       const order = store.attendances.find((a) => a.id === orderId);
       if (!order) {
         res.status(404).json({ error: 'Pedido/atendimento não encontrado.' });
+        return;
+      }
+
+      // Prevenção de duplicidade: se o encaminhamento mais recente já é para a mesma mesa,
+      // pela mesma origem, e ainda está pendente de aceite (ninguém mexeu nele ainda), um
+      // novo clique repetido não deve empilhar outro registro idêntico no histórico.
+      const lastHandoff = order.handoffHistory && order.handoffHistory[0];
+      if (
+        lastHandoff &&
+        lastHandoff.fromDesk === fromDesk &&
+        lastHandoff.toDesk === toDesk &&
+        (lastHandoff.status || 'pendente_aceite') === 'pendente_aceite'
+      ) {
+        res.json({
+          ok: true,
+          handoff: lastHandoff,
+          order,
+          officeData: store.officeData,
+          alreadyTransferred: true,
+        });
         return;
       }
 
@@ -7180,7 +7243,8 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     try {
       const store = loadStore();
       const {
-        orderType,
+        requestType,
+        orderType: incomingOrderType,
         clientName,
         clientPhone,
         clientEmail,
@@ -7189,24 +7253,47 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         approxMeasurements,
         desiredService,
         fabricAndComfortPreference,
+        neighborhood,
+        city,
+        fullAddress,
+        notes,
         assignedDesk,
       } = req.body as {
-        orderType: OrderType;
+        requestType?: AttendanceRequestType;
+        orderType?: OrderType;
         clientName: string;
         clientPhone?: string;
         clientEmail?: string;
-        furnitureType: string;
+        furnitureType?: string;
         piecesCount?: string;
         approxMeasurements?: string;
         desiredService?: string;
         fabricAndComfortPreference?: string;
+        neighborhood?: string;
+        city?: string;
+        fullAddress?: string;
+        notes?: string;
         assignedDesk?: DepartmentId;
       };
 
-      if (!clientName || !furnitureType) {
-        res.status(400).json({ error: 'Nome do cliente e tipo de móvel são obrigatórios.' });
+      // Carla deve poder salvar o atendimento mesmo com dados faltando, mostrando as
+      // pendências depois — nunca rejeitar o cadastro por falta de campos secundários.
+      // O único dado indispensável para existir um registro localizável é o nome do cliente.
+      if (!clientName || !clientName.trim()) {
+        res.status(400).json({ error: 'Informe ao menos o nome do cliente para registrar o atendimento.' });
         return;
       }
+
+      // requestType é a classificação da Carla no atendimento; orderType só existe para
+      // pedidos operacionais reais (reforma/fabricação) que seguem o fluxo de mesas.
+      const effectiveRequestType: AttendanceRequestType = requestType || (incomingOrderType === 'Fabricação' ? 'fabricacao_nova' : 'reforma');
+      const orderType: OrderType | undefined =
+        incomingOrderType ||
+        (effectiveRequestType === 'fabricacao_nova'
+          ? 'Fabricação'
+          : effectiveRequestType === 'reforma'
+          ? 'Reforma'
+          : undefined);
 
       const now = new Date().toISOString();
       const count = store.attendances.length + 1;
@@ -7216,7 +7303,11 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
           ? `FAB-2026-${formattedSeq}`
           : `CI-2026-${formattedSeq}`;
 
-      const desk = assignedDesk || (orderType === 'Fabricação' ? 'lucas_projetos' : 'carla_atendimento');
+      // Para solicitações que não são um pedido operacional de reforma/fabricação, a Carla
+      // continua sendo a responsável direta — não existe uma mesa técnica para "rotear".
+      const desk =
+        assignedDesk ||
+        (orderType === 'Fabricação' ? 'lucas_projetos' : orderType === 'Reforma' ? 'carla_atendimento' : 'carla_atendimento');
       const agentNames: Record<string, string> = {
         carla_atendimento: 'Carla (Atendimento ao Cliente)',
         pedro_avaliacao: 'Pedro (Avaliação Técnica)',
@@ -7225,10 +7316,13 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         mila_financeiro: 'Mila (Administração Financeira)',
         castro_estrategia: 'Castro (Estratégia & Negócio)',
         julia_marketing: 'Júlia (Marketing & Divulgação)',
+        tapeceiro_tecnico: 'Tapeceiro Técnico (Produção e Materiais)',
       };
+      const orderId = `ord-${Date.now()}`;
+      const resolvedFurnitureType = furnitureType || 'A confirmar';
 
       const newOrder: AttendanceRecord = {
-        id: `ord-${Date.now()}`,
+        id: orderId,
         ownerId: 'default-owner',
         attendanceNumber: orderNumber,
         status: 'em_andamento',
@@ -7236,15 +7330,29 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         clientName,
         clientPhone: clientPhone || '',
         clientEmail: clientEmail || '',
-        furnitureType,
+        requestType: effectiveRequestType,
+        neighborhood: neighborhood || undefined,
+        city: city || undefined,
+        fullAddress: fullAddress || undefined,
+        furnitureType: resolvedFurnitureType,
         piecesCount: piecesCount || '1 unidade',
         approxMeasurements: approxMeasurements || 'A validar na oficina',
         usageTime: orderType === 'Fabricação' ? 'Novo (fabricação sob medida)' : 'A confirmar',
-        reportedDefects: orderType === 'Fabricação' ? 'N/A - Produto novo' : 'Desgaste / reforma',
-        desiredService: desiredService || (orderType === 'Fabricação' ? 'Fabricação completa sob encomenda' : 'Reforma e estofamento'),
+        reportedDefects: orderType === 'Fabricação' ? 'N/A - Produto novo' : effectiveRequestType === 'compra_produto' ? 'N/A - Compra de produto' : 'Desgaste / reforma',
+        desiredService:
+          desiredService ||
+          (orderType === 'Fabricação'
+            ? 'Fabricação completa sob encomenda'
+            : effectiveRequestType === 'compra_produto'
+            ? 'Compra de produto já pronto'
+            : effectiveRequestType === 'acompanhamento'
+            ? 'Acompanhamento de pedido em andamento'
+            : effectiveRequestType === 'reclamacao'
+            ? 'Registro de reclamação'
+            : 'Reforma e estofamento'),
         previousReforms: '',
         fabricAndComfortPreference: fabricAndComfortPreference || 'A definir',
-        notes: '',
+        notes: notes || '',
         createdAt: now,
         updatedAt: now,
         photos: [],
@@ -7306,8 +7414,8 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
             timestamp: now,
             actor: 'Recepção / Escritório',
             stage: 'Abertura de Pedido',
-            action: `Pedido ${orderNumber} (${orderType}) criado`,
-            details: `Cliente: ${clientName} | Móvel: ${furnitureType} | Mesa inicial: ${desk}`,
+            action: `Atendimento ${orderNumber} (${effectiveRequestType}) criado`,
+            details: `Cliente: ${clientName} | Móvel/produto: ${resolvedFurnitureType} | Mesa inicial: ${desk}`,
           },
         ],
         staleness: {
@@ -7317,30 +7425,33 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
           proposalNeedsReview: true,
           opinionNeedsReview: true,
         },
-        orderType: orderType || 'Reforma',
+        orderType,
         currentDesk: desk,
         deskStatus: 'novo',
         assignedAgentName: agentNames[desk] || desk,
-        handoffHistory: [
-          {
-            id: `hnd-${Date.now()}`,
-            orderId: `ord-${Date.now()}`,
-            orderNumber: orderNumber,
-            fromDesk: 'carla_atendimento',
-            fromAgentName: 'Carla',
-            toDesk: desk,
-            toAgentName: agentNames[desk] || desk,
-            timestamp: now,
-            reason: 'Abertura e direcionamento do novo pedido',
-            summaryOfCompletedWork: 'Dados cadastrais coletados',
-            completedSummary: 'Dados cadastrais coletados',
-            pendingItems: ['Ficha técnica', 'Levantamento de materiais', 'Cotação'],
-            expectedNextAction: 'Abertura dos trabalhos na mesa correspondente',
-            nextActionExpected: 'Abertura dos trabalhos na mesa correspondente',
-            documentVersion: 'v1.0',
-            status: 'pendente_aceite',
-          },
-        ],
+        handoffHistory:
+          desk !== 'carla_atendimento'
+            ? [
+                {
+                  id: `hnd-${Date.now()}`,
+                  orderId,
+                  orderNumber: orderNumber,
+                  fromDesk: 'carla_atendimento',
+                  fromAgentName: 'Carla',
+                  toDesk: desk,
+                  toAgentName: agentNames[desk] || desk,
+                  timestamp: now,
+                  reason: 'Abertura e direcionamento do novo pedido',
+                  summaryOfCompletedWork: 'Dados cadastrais coletados',
+                  completedSummary: 'Dados cadastrais coletados',
+                  pendingItems: ['Ficha técnica', 'Levantamento de materiais', 'Cotação'],
+                  expectedNextAction: 'Abertura dos trabalhos na mesa correspondente',
+                  nextActionExpected: 'Abertura dos trabalhos na mesa correspondente',
+                  documentVersion: 'v1.0',
+                  status: 'pendente_aceite',
+                },
+              ]
+            : [],
         financialData: {
           pricingMethod: 'margem_sobre_venda',
           targetMarginPercent: 30,
@@ -7367,6 +7478,258 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     } catch (error) {
       console.error('Erro ao criar pedido:', error);
       res.status(500).json({ error: 'Erro ao criar pedido.' });
+    }
+  });
+
+  // Carla — registrar reclamação do cliente num atendimento já existente (nunca cria um
+  // atendimento novo para isso: evita duplicar cadastro do mesmo cliente/pedido).
+  app.post('/api/orders/:id/complaint', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const { description, urgency } = req.body as {
+        description: string;
+        urgency?: 'normal' | 'urgente';
+      };
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+      if (!description || !description.trim()) {
+        res.status(400).json({ error: 'Descreva a reclamação antes de registrar.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      const complaint: ComplaintEntry = {
+        id: `cmp-${Date.now()}`,
+        createdAt: now,
+        description: description.trim(),
+        urgency: urgency === 'urgente' ? 'urgente' : 'normal',
+        status: 'aberta',
+      };
+      if (!order.complaints) order.complaints = [];
+      order.complaints.unshift(complaint);
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: 'Carla (Atendimento ao Cliente)',
+        stage: 'Reclamação',
+        action: `Reclamação registrada (${complaint.urgency})`,
+        details: complaint.description,
+      });
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Carla (Atendimento ao Cliente)',
+        attendance: order,
+      });
+      res.json({ ok: true, order, complaint });
+    } catch (error) {
+      console.error('Erro ao registrar reclamação:', error);
+      res.status(500).json({ error: 'Erro ao registrar reclamação.' });
+    }
+  });
+
+  // Carla — atualizar status de uma reclamação (encaminhar ao responsável / marcar resolvida).
+  // Nunca promete reembolso/desconto/nova data sozinha: isso é só registro de status.
+  app.put('/api/orders/:id/complaint/:complaintId', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, complaintId } = req.params;
+      const { status, handledBy, resolutionNotes } = req.body as {
+        status: 'aberta' | 'encaminhada' | 'resolvida';
+        handledBy?: string;
+        resolutionNotes?: string;
+      };
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+      const complaint = (order.complaints || []).find((c) => c.id === complaintId);
+      if (!complaint) {
+        res.status(404).json({ error: 'Reclamação não encontrada.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      if (status) complaint.status = status;
+      if (handledBy) complaint.handledBy = handledBy;
+      if (resolutionNotes) complaint.resolutionNotes = resolutionNotes;
+      if (status === 'resolvida') complaint.resolvedAt = now;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: handledBy || 'Carla (Atendimento ao Cliente)',
+        stage: 'Reclamação',
+        action: `Reclamação atualizada: ${complaint.status}`,
+        details: resolutionNotes || '',
+      });
+      saveStore(store);
+      res.json({ ok: true, order, complaint });
+    } catch (error) {
+      console.error('Erro ao atualizar reclamação:', error);
+      res.status(500).json({ error: 'Erro ao atualizar reclamação.' });
+    }
+  });
+
+  // Carla — registrar a aceitação/recusa do cliente para o orçamento vigente, vinculada
+  // ao preço exibido no momento da decisão (clientDecisionPriceCentsSnapshot). Se o preço
+  // mudar depois, a decisão fica desatualizada e precisa de nova conferência — ver
+  // isClientBudgetDecisionStale em calculations.ts.
+  app.post('/api/orders/:id/budget-decision', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const { decision, decidedBy, notes } = req.body as {
+        decision: 'aceito' | 'recusado';
+        decidedBy?: string;
+        notes?: string;
+      };
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+      if (decision !== 'aceito' && decision !== 'recusado') {
+        res.status(400).json({ error: 'Decisão inválida — use "aceito" ou "recusado".' });
+        return;
+      }
+      const now = new Date().toISOString();
+      const isFabricacao = order.orderType === 'Fabricação';
+      if (isFabricacao && order.financialData) {
+        if (!order.financialData.confirmedByResponsible && order.financialData.approvedSellingPriceCents == null) {
+          res.status(400).json({ error: 'Ainda não há preço aprovado pelo responsável para o cliente decidir sobre ele.' });
+          return;
+        }
+        order.financialData.clientDecision = decision;
+        order.financialData.clientDecisionAt = now;
+        order.financialData.clientDecisionBy = decidedBy;
+        order.financialData.clientDecisionNotes = notes;
+        order.financialData.clientDecisionPriceCentsSnapshot = order.financialData.approvedSellingPriceCents;
+        order.financialData.clientApproved = decision === 'aceito';
+        order.financialData.clientApprovedAt = decision === 'aceito' ? now : order.financialData.clientApprovedAt;
+      } else {
+        if (!order.budget.confirmedByResponsible) {
+          res.status(400).json({ error: 'Ainda não há orçamento aprovado pelo responsável para o cliente decidir sobre ele.' });
+          return;
+        }
+        order.budget.clientDecision = decision;
+        order.budget.clientDecisionAt = now;
+        order.budget.clientDecisionBy = decidedBy;
+        order.budget.clientDecisionNotes = notes;
+        order.budget.clientDecisionPriceCentsSnapshot = order.budget.sellingPriceCents;
+      }
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: decidedBy || 'Carla (Atendimento ao Cliente)',
+        stage: 'Decisão do Cliente sobre Orçamento',
+        action: `Cliente ${decision === 'aceito' ? 'aceitou' : 'recusou'} o orçamento`,
+        details: notes || '',
+      });
+      saveStore(store);
+      res.json({ ok: true, order });
+    } catch (error) {
+      console.error('Erro ao registrar decisão do cliente sobre o orçamento:', error);
+      res.status(500).json({ error: 'Erro ao registrar decisão do cliente sobre o orçamento.' });
+    }
+  });
+
+  // Carla — anexar comprovante recebido do cliente a um pedido. Isso NUNCA confirma
+  // pagamento sozinho: se vinculado a uma parcela pendente existente, só anexa a imagem
+  // sem mexer em status/valor pago (a conferência financeira é da Mila); se não houver
+  // parcela correspondente, cria um lançamento novo já como "previsto", marcado como
+  // aguardando conferência — nunca "realizado" por aqui.
+  app.post('/api/orders/:id/receipt', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const { receiptImageUrl, receiptMimeType, transactionId, amountCents, description } = req.body as {
+        receiptImageUrl: string;
+        receiptMimeType?: string;
+        transactionId?: string;
+        amountCents?: number;
+        description?: string;
+      };
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+      if (!receiptImageUrl) {
+        res.status(400).json({ error: 'Nenhum comprovante enviado.' });
+        return;
+      }
+      if (!order.financialData) {
+        res.status(400).json({ error: 'Este atendimento ainda não tem dados financeiros iniciados.' });
+        return;
+      }
+      const now = new Date().toISOString();
+
+      if (transactionId) {
+        const trans = order.financialData.transactions.find((t) => t.id === transactionId);
+        if (!trans) {
+          res.status(404).json({ error: 'Lançamento pendente não encontrado neste pedido.' });
+          return;
+        }
+        if (trans.status === 'realizado') {
+          res.status(400).json({ error: 'Este lançamento já está confirmado — anexe o comprovante em um lançamento pendente.' });
+          return;
+        }
+        trans.receiptImageUrl = receiptImageUrl;
+        trans.receiptMimeType = receiptMimeType;
+        trans.history.push({
+          action: 'Comprovante anexado pela Carla — aguardando conferência da Mila',
+          timestamp: now,
+        });
+      } else {
+        if (!amountCents || amountCents <= 0) {
+          res.status(400).json({ error: 'Informe o valor do comprovante para registrar como pendente de conferência.' });
+          return;
+        }
+        const trans: FinancialTransaction = {
+          id: `tx-${Date.now()}`,
+          orderId: id,
+          type: 'receita_cliente',
+          amountCents,
+          status: 'previsto',
+          dueDate: now.slice(0, 10),
+          description: description || 'Comprovante recebido via Carla — aguardando conferência financeira',
+          receiptImageUrl,
+          receiptMimeType,
+          createdAt: now,
+          history: [
+            { action: 'Comprovante recebido pela Carla — aguardando conferência da Mila (não confirma pagamento)', timestamp: now },
+          ],
+        };
+        order.financialData.transactions.push(trans);
+      }
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: 'Carla (Atendimento ao Cliente)',
+        stage: 'Comprovante Recebido',
+        action: 'Comprovante anexado — aguardando conferência da Mila',
+        details: 'Recebimento de comprovante não confirma pagamento automaticamente.',
+      });
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Carla (Atendimento ao Cliente)',
+        attendance: order,
+      });
+      res.json({ ok: true, order });
+    } catch (error) {
+      console.error('Erro ao anexar comprovante:', error);
+      res.status(500).json({ error: 'Erro ao anexar comprovante.' });
     }
   });
 

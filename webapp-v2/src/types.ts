@@ -196,6 +196,14 @@ export interface BudgetData {
   discountsCents?: number;
   laborCents?: number;
   overheadCents?: number;
+  // Aceitação/recusa do orçamento pelo cliente, vinculada ao preço vigente no momento da
+  // decisão. Se sellingPriceCents mudar depois, a decisão fica desatualizada (ver
+  // isClientDecisionStale em calculations.ts) e exige nova conferência com o cliente.
+  clientDecision?: 'aceito' | 'recusado';
+  clientDecisionAt?: string;
+  clientDecisionBy?: string;
+  clientDecisionNotes?: string;
+  clientDecisionPriceCentsSnapshot?: number | null;
 }
 
 export type OpinionConclusion =
@@ -267,6 +275,27 @@ export interface StageStalenessFlags {
   staleReason?: string;
 }
 
+// Classificação inicial feita pela Carla no atendimento — mais ampla que orderType
+// ('Reforma' | 'Fabricação'), que só existe quando há um pedido operacional de fato.
+export type AttendanceRequestType =
+  | 'reforma'
+  | 'fabricacao_nova'
+  | 'compra_produto'
+  | 'acompanhamento'
+  | 'reclamacao';
+
+export interface ComplaintEntry {
+  id: string;
+  createdAt: string;
+  description: string;
+  urgency: 'normal' | 'urgente';
+  status: 'aberta' | 'encaminhada' | 'resolvida';
+  handledBy?: string;
+  resolutionNotes?: string;
+  resolvedAt?: string;
+  relatedHandoffId?: string;
+}
+
 export interface AttendanceRecord {
   id: string;
   ownerId: string;
@@ -280,7 +309,8 @@ export interface AttendanceRecord {
   clientEmail?: string;
   furnitureType: string;
   piecesCount: string;
-  approxMeasurements: string;
+  approxMeasurements: string; // medidas INFORMADAS PELO CLIENTE — nunca medida exata confirmada
+  workshopConfirmedMeasurements?: string; // medidas CONFERIDAS NA OFICINA — só a oficina preenche
   usageTime: string;
   reportedDefects: string;
   desiredService: string;
@@ -289,6 +319,13 @@ export interface AttendanceRecord {
   notes: string;
   createdAt: string;
   updatedAt: string;
+
+  // Cadastro inicial feito pela Carla (Atendimento ao Cliente)
+  requestType?: AttendanceRequestType;
+  neighborhood?: string; // bairro
+  city?: string;
+  fullAddress?: string; // endereço completo, quando necessário para retirada/entrega
+  complaints?: ComplaintEntry[];
 
   // 4. Fotos
   photos: AttendancePhoto[];
@@ -1218,6 +1255,13 @@ export interface OrderFinancialData {
   internalApprovedAt?: string;
   clientApproved?: boolean;
   clientApprovedAt?: string;
+  // Mesma lógica de decisão vinculada a versão usada em BudgetData (ver clientDecision lá) —
+  // aqui para o preço de fabricação (approvedSellingPriceCents).
+  clientDecision?: 'aceito' | 'recusado';
+  clientDecisionAt?: string;
+  clientDecisionBy?: string;
+  clientDecisionNotes?: string;
+  clientDecisionPriceCentsSnapshot?: number | null;
 
   // Fluxo de pagamento
   paymentConditions: string;
