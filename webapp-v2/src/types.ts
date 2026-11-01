@@ -656,6 +656,9 @@ export interface BackgroundTask {
   idempotencyKey: string; // evita duplicar a mesma tarefa em reprocessamentos
   createdAt: string;
   createdBy?: string;
+  // Dados específicos de execução por tipo (ex.: telefone/texto de uma mensagem de
+  // WhatsApp a enviar) — evita um campo dedicado por tipo de tarefa.
+  payload?: Record<string, unknown>;
 }
 
 // Voz própria de um agente — uma voz REAL e distinta do sintetizador do navegador

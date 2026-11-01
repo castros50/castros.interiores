@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { getApps, initializeApp, applicationDefault } from 'firebase-admin/app';
@@ -1493,6 +1494,7 @@ function createBackgroundTask(
     idempotencyKey: string;
     maxAttempts?: number;
     createdBy?: string;
+    payload?: Record<string, unknown>;
   }
 ): BackgroundTask {
   if (!Array.isArray(store.backgroundTasks)) store.backgroundTasks = [];
@@ -1521,6 +1523,7 @@ function createBackgroundTask(
     idempotencyKey: input.idempotencyKey,
     createdAt: new Date().toISOString(),
     createdBy: input.createdBy,
+    payload: input.payload,
   };
   store.backgroundTasks.push(task);
   return task;
@@ -1578,6 +1581,229 @@ async function checkIntegrationConnection(
   }
 }
 
+// Envia uma mensagem de texto REAL via WhatsApp Cloud API oficial da Meta. Exige
+// WHATSAPP_ACCESS_TOKEN e WHATSAPP_PHONE_NUMBER_ID como variáveis de ambiente do
+// servidor — nunca aceita essas credenciais vindas do chat, do corpo da requisição
+// ou de qualquer entrada do navegador.
+async function sendWhatsAppMessage(
+  to: string,
+  text: string
+): Promise<{ ok: boolean; externalId?: string; errorMessage?: string }> {
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  if (!token || !phoneNumberId) {
+    return {
+      ok: false,
+      errorMessage:
+        'Integração do WhatsApp não configurada no ambiente (WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID ausentes).',
+    };
+  }
+  try {
+    const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: to.replace(/\D/g, ''),
+        type: 'text',
+        text: { body: text },
+      }),
+    });
+    const data = (await resp.json()) as {
+      messages?: Array<{ id: string }>;
+      error?: { message?: string };
+    };
+    if (!resp.ok || data.error) {
+      return { ok: false, errorMessage: data.error?.message || `Falha ao enviar (HTTP ${resp.status}).` };
+    }
+    return { ok: true, externalId: data.messages?.[0]?.id };
+  } catch (err) {
+    return { ok: false, errorMessage: err instanceof Error ? err.message : 'Falha de rede ao enviar mensagem.' };
+  }
+}
+
+// Processa UMA mensagem inbound real do webhook do WhatsApp: identifica (ou
+// cria) o atendimento pelo telefone, nunca duplica a mesma mensagem em
+// reentregas do webhook (dedup por externalMessageId), identifica a campanha de
+// origem SÓ quando a própria Meta informar um referral que bate com um
+// referenceCode real já cadastrado — nunca por suposição a partir de um clique
+// no anúncio, que não é mensagem do cliente. Também pode enfileirar uma resposta
+// automática, mas só quando settings.carlaAutoReply.enabled estiver ligado e a
+// conversa não estiver pausada para atendimento humano.
+function handleInboundWhatsAppMessage(
+  store: PersistentStore,
+  value: {
+    contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }>;
+  },
+  msg: Record<string, unknown>
+): void {
+  const externalMessageId = msg.id as string | undefined;
+  const fromPhone = msg.from as string | undefined;
+  if (!externalMessageId || !fromPhone) return;
+
+  if (!store.agentChats) store.agentChats = {};
+  if (!store.agentChats['carla_atendimento']) store.agentChats['carla_atendimento'] = [];
+  const carlaChat = store.agentChats['carla_atendimento'];
+
+  if (carlaChat.some((m) => m.externalMessageId === externalMessageId && m.externalChannel === 'whatsapp')) {
+    return; // mesma mensagem já processada — webhook reentregue
+  }
+
+  const msgType = msg.type as string | undefined;
+  const textBody = (msg.text as { body?: string } | undefined)?.body;
+  const text = textBody || `[Mensagem do tipo "${msgType || 'desconhecido'}" recebida — anexo não processado automaticamente]`;
+
+  const normalizedFrom = fromPhone.replace(/\D/g, '');
+  let attendance = store.attendances.find((a) =>
+    a.clientPhone && a.clientPhone.replace(/\D/g, '').endsWith(normalizedFrom.slice(-8))
+  );
+
+  const referral = (msg.referral as Record<string, unknown> | undefined) || value.contacts?.[0]?.referral;
+  const sourceId = referral?.source_id as string | undefined;
+  let originCampaignId: string | undefined;
+  let originIdentified = false;
+  if (sourceId && store.juliaData) {
+    const matchingCampaign = store.juliaData.campaigns.find((c) => c.referenceCode === sourceId);
+    if (matchingCampaign) {
+      originCampaignId = matchingCampaign.projectId;
+      originIdentified = true;
+    }
+  }
+
+  if (!attendance) {
+    const now = new Date();
+    const count = store.attendances.length + 1;
+    attendance = {
+      id: `att-wa-${Date.now()}`,
+      ownerId: 'system',
+      attendanceNumber: `CI-2026-${String(count).padStart(4, '0')}`,
+      status: 'Rascunho',
+      currentStep: 1,
+      clientName: value.contacts?.[0]?.profile?.name || 'Cliente via WhatsApp',
+      clientPhone: fromPhone,
+      furnitureType: 'Sofá',
+      piecesCount: '1 unidade',
+      approxMeasurements: 'A validar na oficina',
+      usageTime: '',
+      reportedDefects: '',
+      desiredService: '',
+      previousReforms: '',
+      fabricAndComfortPreference: 'não informado',
+      notes: 'Atendimento iniciado automaticamente a partir de mensagem recebida pelo canal oficial do WhatsApp.',
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      originChannel: 'whatsapp',
+      originCampaignId,
+      originIdentified: sourceId ? originIdentified : false,
+      photos: [],
+      leftRightReference: 'Olhando o móvel de frente',
+      defectFindings: [],
+      analysisLimitations: [],
+      requestedAdditionalPhotos: [],
+      aiPreliminarySummary: '',
+      reviewCompleted: false,
+      reviewerName: '',
+      reviewerGeneralNotes: '',
+      internalInspectionCompleted: false,
+      reuseItems: [],
+      foamInspection: {
+        inspectedByWorkshop: false,
+        permanentDeformation: 'Não avaliado',
+        compressionReturn: 'Não avaliado',
+        crumbling: 'Não avaliado',
+        odor: 'Não avaliado',
+        moisture: 'Não avaliado',
+        workshopNotes: '',
+      },
+      materialConsumptionAndReworkAnalysis: '',
+      proposals: [],
+      selectedProposalTier: 'RECOMENDADA',
+      budget: {
+        items: [],
+        cuttingPlanConfirmed: false,
+        sellingPriceCents: null,
+        paymentConditions: 'não informado',
+        confirmedByResponsible: false,
+      },
+      opinion: {
+        isPreliminary: true,
+        structureStateSummary: 'não informado',
+        damageExtentSummary: 'não informado',
+        possibleRecoverySummary: 'não informado',
+        reusableMaterialsSummary: 'não informado',
+        complexityLevel: 'A confirmar na oficina',
+        expectedResultSummary: 'não informado',
+        conclusion: 'Dados insuficientes para concluir',
+        reasons: 'Avaliação ainda não iniciada.',
+        pendingFactors: 'Envio de fotos, análise de defeitos, inspeção interna e orçamento.',
+        whatCouldChangeConclusion: 'Inspeção presencial na oficina e definição de custos.',
+        clientPlainLanguageSummary: 'Avaliação em andamento.',
+        recommendedNextStep: 'Concluir o cadastro e anexar fotos do móvel.',
+      },
+      hiddenDamages: [],
+      auditHistory: [
+        {
+          id: `log-${Date.now()}`,
+          timestamp: now.toISOString(),
+          actor: 'Sistema (WhatsApp)',
+          stage: 'Cadastro',
+          action: 'Atendimento criado',
+          details: 'Criado automaticamente a partir de mensagem recebida pelo canal oficial do WhatsApp.',
+        },
+      ],
+      staleness: {
+        defectsAnalysisNeedsReview: false,
+        responsibleReviewNeedsUpdate: false,
+        reuseNeedsReview: false,
+        proposalNeedsReview: false,
+        opinionNeedsReview: false,
+      },
+      handoffHistory: [],
+      deskStatus: 'em_andamento',
+      currentDesk: 'carla_atendimento',
+    };
+    store.attendances.push(attendance);
+  } else if (originCampaignId && !attendance.originIdentified) {
+    attendance.originChannel = 'whatsapp';
+    attendance.originCampaignId = originCampaignId;
+    attendance.originIdentified = true;
+  }
+
+  carlaChat.push({
+    id: `cmsg-wa-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    deskId: 'carla_atendimento',
+    sender: 'user',
+    agentName: attendance.clientName || 'Cliente via WhatsApp',
+    text,
+    modality: 'texto',
+    timestamp: new Date().toISOString(),
+    attendanceId: attendance.id,
+    externalChannel: 'whatsapp',
+    externalMessageId,
+  });
+
+  const autoReply = store.settings.carlaAutoReply;
+  const isPaused = autoReply?.pausedConversationIds?.includes(attendance.id);
+  if (autoReply?.enabled && !isPaused) {
+    createBackgroundTask(store, {
+      type: 'enviar_resposta_whatsapp',
+      agentId: 'carla_atendimento',
+      action: `Responder mensagem de ${attendance.clientName} via WhatsApp`,
+      authorization: 'Resposta automática autorizada em Configurações > Atendimento automático da Carla',
+      scheduledFor: new Date().toISOString(),
+      relatedOrderId: attendance.id,
+      idempotencyKey: `wa-reply-${externalMessageId}`,
+      payload: {
+        to: fromPhone,
+        text: 'Olá! Sou a Carla, assistente virtual da Castros Interiores. Recebi sua mensagem e já vou te ajudar — só um instante.',
+      },
+    });
+  }
+}
+
 // Executa UMA tarefa já marcada como 'executando'. Lança erro em caso de falha —
 // quem chama é responsável por capturar e registrar errorMessage/status.
 async function executeBackgroundTask(
@@ -1621,9 +1847,31 @@ async function executeBackgroundTask(
           'Integração oficial do WhatsApp não está conectada. Não é possível enviar resposta automática — use o compartilhamento manual.'
         );
       }
-      throw new Error(
-        'Envio automático de resposta pelo WhatsApp ainda não implementado — apenas a verificação de conexão está pronta.'
-      );
+      const to = (task.payload?.to as string) || '';
+      const text = (task.payload?.text as string) || '';
+      if (!to || !text) {
+        throw new Error('Tarefa sem telefone/texto de destino — não há o que enviar.');
+      }
+      const result = await sendWhatsAppMessage(to, text);
+      if (!result.ok) throw new Error(result.errorMessage || 'Falha ao enviar mensagem.');
+
+      if (task.relatedOrderId) {
+        if (!store.agentChats) store.agentChats = {};
+        if (!store.agentChats['carla_atendimento']) store.agentChats['carla_atendimento'] = [];
+        store.agentChats['carla_atendimento'].push({
+          id: `cmsg-wa-${Date.now()}`,
+          deskId: 'carla_atendimento',
+          sender: 'agent',
+          agentName: 'Carla',
+          text,
+          modality: 'texto',
+          timestamp: new Date().toISOString(),
+          attendanceId: task.relatedOrderId,
+          externalChannel: 'whatsapp',
+          externalMessageId: result.externalId,
+        });
+      }
+      return `Mensagem enviada ao canal oficial do WhatsApp (id externo: ${result.externalId || 'não informado'}).`;
     }
     default:
       throw new Error(`Tipo de tarefa desconhecido: ${task.type}`);
@@ -2458,7 +2706,17 @@ async function startServer() {
   await restoreStoreFromFirestoreIfNeeded();
 
   const app = express();
-  app.use(express.json({ limit: '50mb' }));
+  app.use(
+    express.json({
+      limit: '50mb',
+      // Guarda os bytes crus do corpo para a verificação de assinatura HMAC do
+      // webhook do WhatsApp (X-Hub-Signature-256) — não altera o comportamento
+      // de nenhuma outra rota, que continua recebendo req.body já parseado.
+      verify: (req, _res, buf) => {
+        (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+      },
+    })
+  );
 
   // Real-time Corporate Multi-Device Hub (Computador + Tablet + Celular)
   const activeDevices = new Map<string, CorporateDeviceSession>();
@@ -5025,6 +5283,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       channel?: BackgroundTask['channel'];
       idempotencyKey?: string;
       maxAttempts?: number;
+      payload?: Record<string, unknown>;
     };
     if (!body.type || !body.agentId || !body.action || !body.authorization || !body.scheduledFor) {
       res.status(400).json({ error: 'Campos obrigatórios ausentes para criar a tarefa.' });
@@ -5077,6 +5336,124 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     const store = loadStore();
     const outcomes = await processDueBackgroundTasks(store);
     res.json({ ok: true, processed: outcomes.length, outcomes });
+  });
+
+  // --------------------------------------------------------------------------
+  // WEBHOOK OFICIAL DO WHATSAPP (Meta Cloud API) — recebe mensagens reais de
+  // clientes e as entrega à Carla. Totalmente implementado, mas SÓ funciona
+  // quando o usuário configurar as credenciais reais como variáveis de ambiente
+  // do servidor (nunca pelo chat): WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET,
+  // WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID. Sem elas, esta rota nunca
+  // recebe tráfego real da Meta — ver documentação de configuração.
+  // --------------------------------------------------------------------------
+
+  // Handshake de verificação que a Meta chama uma vez ao configurar o webhook.
+  app.get('/api/webhooks/whatsapp', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    const expected = process.env.WHATSAPP_VERIFY_TOKEN;
+    if (expected && mode === 'subscribe' && token === expected) {
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403);
+    }
+  });
+
+  app.post('/api/webhooks/whatsapp', async (req, res) => {
+    const appSecret = process.env.WHATSAPP_APP_SECRET;
+    if (appSecret) {
+      const signatureHeader = req.headers['x-hub-signature-256'] as string | undefined;
+      const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+      const expectedSig =
+        'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody || Buffer.alloc(0)).digest('hex');
+      const sigBuf = Buffer.from(signatureHeader || '');
+      const expectedBuf = Buffer.from(expectedSig);
+      const valid =
+        !!signatureHeader &&
+        !!rawBody &&
+        sigBuf.length === expectedBuf.length &&
+        crypto.timingSafeEqual(sigBuf, expectedBuf);
+      if (!valid) {
+        res.sendStatus(401);
+        return;
+      }
+    }
+
+    // Sempre responde 200 rapidamente (padrão exigido pela Meta) mesmo se o
+    // processamento interno falhar — o erro fica só no log do servidor.
+    res.sendStatus(200);
+
+    try {
+      const store = loadStore();
+      const entries = (req.body?.entry || []) as Array<{
+        changes?: Array<{ value?: Record<string, unknown> }>;
+      }>;
+      let changed = false;
+      for (const entry of entries) {
+        for (const change of entry.changes || []) {
+          const value = (change.value || {}) as {
+            messages?: Array<Record<string, unknown>>;
+            contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }>;
+          };
+          for (const msg of value.messages || []) {
+            handleInboundWhatsAppMessage(store, value, msg);
+            changed = true;
+          }
+        }
+      }
+      if (changed) saveStore(store);
+    } catch (err) {
+      console.error('[WhatsApp Webhook] Erro ao processar payload recebido:', err);
+    }
+  });
+
+  // Envio imediato pelo canal OFICIAL e integrado do WhatsApp — diferente do
+  // link manual wa.me (que só abre o WhatsApp do atendente para ele mandar com
+  // a própria mão). Só funciona quando a integração estiver realmente conectada;
+  // caso contrário recusa com o motivo exato, nunca finge sucesso.
+  app.post('/api/whatsapp/send-now', async (req, res) => {
+    const store = loadStore();
+    const { attendanceId, to, text } = req.body as {
+      attendanceId?: string;
+      to: string;
+      text: string;
+    };
+    if (!to || !text) {
+      res.status(400).json({ error: 'Telefone e texto são obrigatórios.' });
+      return;
+    }
+    const status = store.settings.integrations?.whatsapp;
+    if (!status || status.state !== 'conectado') {
+      res.status(409).json({
+        error:
+          'Integração oficial do WhatsApp não está conectada. Use o compartilhamento manual (abre o WhatsApp para você enviar) enquanto a integração não estiver configurada.',
+      });
+      return;
+    }
+    const result = await sendWhatsAppMessage(to, text);
+    if (!result.ok) {
+      res.status(502).json({ error: result.errorMessage || 'Falha ao enviar mensagem.' });
+      return;
+    }
+    if (attendanceId) {
+      if (!store.agentChats) store.agentChats = {};
+      if (!store.agentChats['carla_atendimento']) store.agentChats['carla_atendimento'] = [];
+      store.agentChats['carla_atendimento'].push({
+        id: `cmsg-wa-${Date.now()}`,
+        deskId: 'carla_atendimento',
+        sender: 'agent',
+        agentName: (req.headers['x-station-name'] as string) || 'Carla',
+        text,
+        modality: 'texto',
+        timestamp: new Date().toISOString(),
+        attendanceId,
+        externalChannel: 'whatsapp',
+        externalMessageId: result.externalId,
+      });
+      saveStore(store);
+    }
+    res.json({ ok: true, externalId: result.externalId });
   });
 
   // Direct mobile photo upload for Júlia Marketing (NO active attendance required!)
