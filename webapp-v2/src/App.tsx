@@ -64,6 +64,7 @@ import { OfficeDesksHub } from './components/OfficeDesksHub';
 import { RawMaterialsAndPricing } from './components/RawMaterialsAndPricing';
 import { getOrCreateDeviceIdentity, usePWAInstall } from './hooks/usePWAInstall';
 import { AgentPortrait, PortraitUploadModal } from './components/AgentPortrait';
+import { ManualAjuda } from './components/ManualAjuda';
 import { OFFICE_DESKS } from './utils/officeDefaults';
 
 type MenuTab =
@@ -74,6 +75,7 @@ type MenuTab =
   | 'clientes'
   | 'materiais'
   | 'relatorios'
+  | 'manual'
   | 'configuracoes';
 
 async function createCompressedThumbnail(fileOrDataUrl: File | string): Promise<{
@@ -1319,6 +1321,17 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveTab('manual')}
+            className={`hover:text-[#181512] transition-colors whitespace-nowrap shrink-0 py-1 ${
+              activeTab === 'manual'
+                ? 'text-[#181512] font-semibold underline underline-offset-8 decoration-2 decoration-[#9A7138]'
+                : ''
+            }`}
+          >
+            Manual e Ajuda
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveTab('configuracoes')}
             className={`hover:text-[#181512] transition-colors whitespace-nowrap shrink-0 py-1 ${
               activeTab === 'configuracoes'
@@ -1362,6 +1375,7 @@ export default function App() {
               ['clientes', 'Clientes'],
               ['materiais', 'Materiais e serviços'],
               ['relatorios', 'Relatórios'],
+              ['manual', 'Manual e Ajuda'],
               ['configuracoes', 'Configurações'],
             ] as const
           ).map(([key, label]) => (
@@ -2281,6 +2295,9 @@ export default function App() {
                 }}
               />
             )}
+
+            {/* ABA: MANUAL E AJUDA */}
+            {activeTab === 'manual' && <ManualAjuda />}
 
             {/* ABA 6: CONFIGURAÇÕES */}
             {activeTab === 'configuracoes' && (

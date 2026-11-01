@@ -22,3 +22,35 @@
     font-family: var(--font-mono);
   }
 }
+
+/* Impressão do Manual e Ajuda em A4 — oculta toda a navegação/chrome do app e
+   imprime só o conteúdo do manual (ver ManualAjuda.tsx: .no-print / .manual-print-area). */
+@media print {
+  @page {
+    size: A4;
+    margin: 15mm;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .manual-print-area,
+  .manual-print-area * {
+    visibility: visible;
+  }
+
+  .manual-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+}
