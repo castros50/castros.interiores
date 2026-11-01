@@ -483,7 +483,7 @@ export const ManualAjuda: React.FC = () => {
         <section className="space-y-3">
           <SectionHeading id="pendencias">13. O que ainda depende de configuração</SectionHeading>
           <Note kind="warning">
-            O escritório de agentes NÃO deve ser considerado "totalmente automático" até estes dois pontos
+            O escritório de agentes NÃO deve ser considerado "totalmente automático" até estes três pontos
             estarem configurados e comprovados:
           </Note>
           <div className="space-y-3">
