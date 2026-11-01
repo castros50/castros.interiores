@@ -47,6 +47,7 @@ import {
   JuliaSmartAdProject,
   JuliaSocialMediaVersions,
   JuliaTargetChannel,
+  WorkshopSettings,
 } from '../types';
 import { ResilientImage } from './ResilientImage';
 
@@ -55,6 +56,7 @@ interface JuliaMarketingDepartmentProps {
   stationName: string;
   workshopPhone: string;
   externalJuliaData?: JuliaDepartmentData | null;
+  integrations?: WorkshopSettings['integrations'];
 }
 
 interface OfficialIntegrationsStatus {
@@ -637,6 +639,7 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
   stationName,
   workshopPhone,
   externalJuliaData,
+  integrations,
 }) => {
   const [juliaData, setJuliaData] = useState<JuliaDepartmentData | null>(
     externalJuliaData || null
@@ -647,26 +650,47 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
-  // Official external integrations status (Instagram, Facebook, WhatsApp)
-  const [integrationsStatus, setIntegrationsStatus] =
-    useState<OfficialIntegrationsStatus>({
+  // Official external integrations status (Instagram, Facebook, WhatsApp) — derivado
+  // do estado real persistido em settings.integrations. Nunca assumir "conectado" sem
+  // uma verificação real contra o serviço externo (ver IntegrationStatus em types.ts).
+  const deriveIntegrationsStatus = (
+    integ?: WorkshopSettings['integrations']
+  ): OfficialIntegrationsStatus => {
+    const statusMessageFor = (state?: string, errorMessage?: string): string => {
+      if (state === 'conectado') return 'Conectado. Publicação automática disponível.';
+      if (state === 'pendente') return 'Conexão pendente de confirmação.';
+      if (state === 'erro') return `Erro de conexão${errorMessage ? `: ${errorMessage}` : '.'}`;
+      return 'Integração oficial não configurada. Envio manual necessário.';
+    };
+    const ig = integ?.instagram;
+    const fb = integ?.facebook;
+    const wa = integ?.whatsapp;
+    return {
       instagram: {
-        connected: false,
-        autoPublishSupported: false,
-        statusMessage: 'Publicação planejada. Envio manual necessário.',
+        connected: ig?.state === 'conectado',
+        autoPublishSupported: ig?.state === 'conectado',
+        statusMessage: statusMessageFor(ig?.state, ig?.errorMessage),
       },
       facebook: {
-        connected: false,
-        autoPublishSupported: false,
-        statusMessage: 'Publicação planejada. Envio manual necessário.',
+        connected: fb?.state === 'conectado',
+        autoPublishSupported: fb?.state === 'conectado',
+        statusMessage: statusMessageFor(fb?.state, fb?.errorMessage),
       },
       whatsapp: {
-        connected: false,
-        autoPublishSupported: false,
+        connected: wa?.state === 'conectado',
+        autoPublishSupported: wa?.state === 'conectado',
         directShareSupported: true,
-        statusMessage: 'Publicação planejada. Envio manual necessário.',
+        statusMessage: statusMessageFor(wa?.state, wa?.errorMessage),
       },
-    });
+    };
+  };
+
+  const [integrationsStatus, setIntegrationsStatus] =
+    useState<OfficialIntegrationsStatus>(deriveIntegrationsStatus(integrations));
+
+  useEffect(() => {
+    setIntegrationsStatus(deriveIntegrationsStatus(integrations));
+  }, [integrations]);
 
   // Correction mode state for the "Corrigí" button
   const [correctionModeOpen, setCorrectionModeOpen] = useState(false);
@@ -2746,11 +2770,22 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
     await handlePersistJuliaData(nextData, integrationNote);
   };
 
+  // Só permite ao humano escolher estados que NÃO afirmam publicação confirmada.
+  // "Concluída" exige confirmação do serviço externo (ExternalPublicationConfirmation),
+  // nunca um clique direto — ver handleConfirmManualSend para o caso de envio manual.
+  const HUMAN_SELECTABLE_STATUSES: JuliaCampaignStatus[] = [
+    'Planejada',
+    'Agendada',
+    'Com Erro',
+    'Cancelada',
+  ];
+
   const handleUpdateCampaignStatus = async (
     campId: string,
     nextStatus: JuliaCampaignStatus
   ) => {
     if (!juliaData) return;
+    if (!HUMAN_SELECTABLE_STATUSES.includes(nextStatus)) return;
     const nextCampaigns = juliaData.campaigns.map((c) =>
       c.id === campId ? { ...c, status: nextStatus } : c
     );
@@ -2760,6 +2795,27 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
         campaigns: nextCampaigns,
       },
       `Status da publicação atualizado para "${nextStatus}".`
+    );
+  };
+
+  // Humano confirma que enviou manualmente (ex.: mandou pelo WhatsApp Web na mão).
+  // Isso é uma autodeclaração, não uma prova do canal — por isso vira "Enviada
+  // Manualmente", nunca "Concluída".
+  const handleConfirmManualSend = async (campId: string) => {
+    if (!juliaData) return;
+    const now = new Date().toISOString();
+    const nextCampaigns = juliaData.campaigns.map((c) =>
+      c.id === campId
+        ? {
+            ...c,
+            status: 'Enviada Manualmente' as JuliaCampaignStatus,
+            manualSendConfirmation: { confirmedAt: now, confirmedBy: stationName },
+          }
+        : c
+    );
+    await handlePersistJuliaData(
+      { ...juliaData, campaigns: nextCampaigns },
+      'Envio manual confirmado pelo responsável — isso não é uma confirmação do canal externo.'
     );
   };
 
@@ -2933,10 +2989,12 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
 
   const normalizedCampaignStatus = (
     st: JuliaCampaignStatus
-  ): 'Planejada' | 'Agendada' | 'Concluída' | 'Com Erro' => {
+  ): 'Planejada' | 'Agendada' | 'Enviada Manualmente' | 'Concluída' | 'Com Erro' | 'Cancelada' => {
     if (st === 'Programada' || st === 'Planejada') return 'Planejada';
     if (st === 'Agendada') return 'Agendada';
+    if (st === 'Enviada Manualmente') return 'Enviada Manualmente';
     if (st === 'Concluída' || st === 'Publicada') return 'Concluída';
+    if (st === 'Cancelada') return 'Cancelada';
     return 'Com Erro';
   };
 
@@ -6318,31 +6376,57 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                           {camp.integrationNote ||
                             'Publicação planejada. Envio manual necessário.'}
                         </div>
+                        {camp.externalConfirmation && (
+                          <div className="text-[11px] font-semibold text-emerald-800">
+                            ✓ Confirmado pelo canal em {new Date(camp.externalConfirmation.confirmedAt).toLocaleString('pt-BR')}
+                            {camp.externalConfirmation.externalLink && (
+                              <> — <a href={camp.externalConfirmation.externalLink} target="_blank" rel="noreferrer" className="underline">ver publicação</a></>
+                            )}
+                          </div>
+                        )}
+                        {camp.manualSendConfirmation && !camp.externalConfirmation && (
+                          <div className="text-[11px] font-semibold text-blue-800">
+                            ✓ Envio manual confirmado por {camp.manualSendConfirmation.confirmedBy || 'responsável'} em{' '}
+                            {new Date(camp.manualSendConfirmation.confirmedAt).toLocaleString('pt-BR')} — não é confirmação do canal
+                          </div>
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
-                        <select
-                          value={normStatus}
-                          onChange={(e) =>
-                            handleUpdateCampaignStatus(
-                              camp.id,
-                              e.target.value as JuliaCampaignStatus
-                            )
-                          }
-                          className={`px-2.5 py-1 rounded text-[11px] font-semibold border ${
-                            normStatus === 'Concluída'
-                              ? 'bg-emerald-800 text-white border-emerald-900'
-                              : normStatus === 'Com Erro'
-                              ? 'bg-red-100 text-red-900 border-red-300'
-                              : normStatus === 'Agendada'
-                              ? 'bg-blue-100 text-blue-900 border-blue-300'
-                              : 'bg-[#EDE7DC] text-[#181512] border-[#D6CFC5]'
-                          }`}
-                        >
-                          <option value="Planejada">Planejada (Manual)</option>
-                          <option value="Agendada">Agendada</option>
-                          <option value="Concluída">Concluída</option>
-                          <option value="Com Erro">Com Erro</option>
-                        </select>
+                        {normStatus === 'Concluída' || normStatus === 'Enviada Manualmente' ? (
+                          <span
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold border ${
+                              normStatus === 'Concluída'
+                                ? 'bg-emerald-800 text-white border-emerald-900'
+                                : 'bg-blue-100 text-blue-900 border-blue-300'
+                            }`}
+                          >
+                            {normStatus}
+                          </span>
+                        ) : (
+                          <select
+                            value={normStatus}
+                            onChange={(e) =>
+                              handleUpdateCampaignStatus(
+                                camp.id,
+                                e.target.value as JuliaCampaignStatus
+                              )
+                            }
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold border ${
+                              normStatus === 'Com Erro'
+                                ? 'bg-red-100 text-red-900 border-red-300'
+                                : normStatus === 'Agendada'
+                                ? 'bg-blue-100 text-blue-900 border-blue-300'
+                                : normStatus === 'Cancelada'
+                                ? 'bg-[#E5DEC9] text-[#57534E] border-[#D6CFC5] line-through'
+                                : 'bg-[#EDE7DC] text-[#181512] border-[#D6CFC5]'
+                            }`}
+                          >
+                            <option value="Planejada">Planejada (Manual)</option>
+                            <option value="Agendada">Agendada</option>
+                            <option value="Com Erro">Com Erro</option>
+                            <option value="Cancelada">Cancelada</option>
+                          </select>
+                        )}
                         <button
                           type="button"
                           onClick={() =>
@@ -6355,10 +6439,20 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                             )
                           }
                           className="px-2.5 py-1 rounded bg-[#1F5E3B] text-white text-[11px] font-semibold"
-                          title="Enviar agora pelo WhatsApp"
+                          title="Abre o WhatsApp com o texto pronto — envio manual, você quem manda"
                         >
                           Enviar WhatsApp
                         </button>
+                        {!camp.externalConfirmation && !camp.manualSendConfirmation && (
+                          <button
+                            type="button"
+                            onClick={() => handleConfirmManualSend(camp.id)}
+                            className="px-2.5 py-1 rounded border border-blue-300 bg-blue-50 text-blue-900 text-[11px] font-semibold"
+                            title="Confirme só depois de ter enviado de verdade — isso fica registrado como autodeclaração, não como confirmação do canal"
+                          >
+                            Confirmar Envio Manual
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleDeleteCampaign(camp.id)}

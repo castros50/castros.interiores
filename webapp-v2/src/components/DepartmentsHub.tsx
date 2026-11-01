@@ -584,6 +584,7 @@ export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
           stationName={stationName}
           workshopPhone={settings.phoneWhatsapp || '(91) 98556-9841'}
           externalJuliaData={juliaData}
+          integrations={settings.integrations}
         />
       ) : (
       <div className="rounded-xl bg-[#FAF8F5] border border-[#E5DEC9] p-5 space-y-5">

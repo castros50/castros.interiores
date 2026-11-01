@@ -108,6 +108,7 @@ import type {
   CashTransfer,
   AttendanceRequestType,
   ComplaintEntry,
+  BackgroundTask,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -152,6 +153,7 @@ interface PersistentStore {
   juliaData?: JuliaDepartmentData;
   officeData?: SharedOfficeData;
   agentChats?: Record<string, AgentChatMessage[]>;
+  backgroundTasks?: BackgroundTask[];
 }
 
 const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
@@ -1331,6 +1333,31 @@ function loadStore(): PersistentStore {
           storeModified = true;
         }
 
+        // Reconciliar fila de tarefas em segundo plano (BackgroundTask)
+        if (!Array.isArray(parsed.backgroundTasks)) {
+          parsed.backgroundTasks = [];
+          storeModified = true;
+        }
+
+        // Reconciliar configurações novas (integrações oficiais, voz por agente,
+        // pausa de automação) sem sobrescrever o que já estiver salvo.
+        if (!parsed.settings.integrations) {
+          parsed.settings.integrations = {};
+          storeModified = true;
+        }
+        if (!parsed.settings.agentVoiceSettings) {
+          parsed.settings.agentVoiceSettings = {};
+          storeModified = true;
+        }
+        if (parsed.settings.automationPaused === undefined) {
+          parsed.settings.automationPaused = false;
+          storeModified = true;
+        }
+        if (!parsed.settings.carlaAutoReply) {
+          parsed.settings.carlaAutoReply = { enabled: false };
+          storeModified = true;
+        }
+
         // Reconciliar campos compartilhados de todos os pedidos
         for (const att of parsed.attendances) {
           // Só força orderType='Reforma' em registros antigos de verdade (sem requestType
@@ -1401,9 +1428,14 @@ function loadStore(): PersistentStore {
       phoneWhatsapp: '(91) 98556-9841',
       cityState: '',
       aiModel: 'claude-sonnet-5',
+      integrations: {},
+      agentVoiceSettings: {},
+      automationPaused: false,
+      carlaAutoReply: { enabled: false },
     },
     juliaData: defaultJulia,
     officeData: createDefaultOfficeData(),
+    backgroundTasks: [],
   };
   saveStore(initialStore);
   return initialStore;
@@ -4482,7 +4514,14 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
           store.settings.proposalAgentCustomInstructions || ''
         }`,
         julia_marketing: `VOCÊ ATUA AGORA COMO: JÚLIA — DEPARTAMENTO DE MARKETING E DIVULGAÇÃO DA CASTROS INTERIORES.
-Sua missão é criar estratégias de divulgação, textos de apresentação de projetos (antes/depois), legendas para Instagram, campanhas de valorização da reforma artesanal de alto padrão e conteúdos educativos para clientes da Castros Interiores, sempre respeitando a veracidade técnica sem inventar dados.`,
+Sua missão é criar estratégias de divulgação, textos de apresentação de projetos (antes/depois), legendas para Instagram, campanhas de valorização da reforma artesanal de alto padrão e conteúdos educativos para clientes da Castros Interiores, sempre respeitando a veracidade técnica sem inventar dados.
+REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS SOBRE PUBLICAÇÃO E MÉTRICAS:
+1. Você PREPARA conteúdo (textos, peças, agendamento). Você NUNCA publica nada sozinha e NUNCA deve dizer "publiquei", "já postei" ou "está no ar" — só o status real do sistema (abaixo, em DADOS REAIS) determina isso.
+2. Status "Planejada" ou "Agendada" significa que NADA foi publicado ainda. Status "Enviada Manualmente" significa que um humano confirmou que enviou na mão — não é prova de publicação pelo canal. Status "Concluída" só existe quando há confirmação registrada do serviço externo (id/link); se não houver essa confirmação nos dados reais, trate como NÃO publicado, mesmo que o status pareça "Concluída".
+3. NUNCA diga que está "monitorando resultados", "acompanhando métricas" ou cite número de cliques, vendas, alcance ou resultado de teste A/B, a menos que os DADOS REAIS abaixo tragam uma métrica explícita com fonte conectada, período e data de atualização. Sem isso, diga claramente: "métricas indisponíveis — nenhum canal conectado está enviando dados de desempenho".
+4. Diferencie sempre: compartilhamento manual (abre o WhatsApp com texto pronto, para a pessoa enviar) de atendimento/publicação integrada (feita automaticamente pelo sistema via API oficial conectada). Se um canal não aparecer como conectado nos DADOS REAIS, o envio nesse canal é sempre manual.
+5. Nunca prometa iniciar anúncio pago nem alterar orçamento de campanha — isso exige autorização explícita do responsável fora do chat.
+6. Se não souber o estado real de algo, diga que não tem esse dado em mãos em vez de estimar ou supor.`,
         carla_atendimento: `VOCÊ ATUA AGORA COMO: CARLA — DEPARTAMENTO DE ATENDIMENTO AO CLIENTE DA CASTROS INTERIORES.
 Sua missão é realizar o acolhimento de excelência do cliente, organizar a triagem inicial (reforma, fabricação nova, compra de produto, acompanhamento ou reclamação), orientar o envio correto das fotos por ângulo, responder dúvidas com empatia e clareza, e preparar rascunhos de mensagem para o cliente.
 REGRAS OBRIGATÓRIAS:
@@ -5713,6 +5752,41 @@ CAMPANHA PUBLICITÁRIA SELECIONADA:
 `;
         } else {
           factualContext += `Nenhuma campanha publicitária específica cadastrada no momento.\n`;
+        }
+
+        const integ = store.settings.integrations || {};
+        const chanLabel = (s?: { state: string }) =>
+          !s || s.state === 'nao_configurado'
+            ? 'não configurado'
+            : s.state === 'pendente'
+            ? 'pendente de verificação'
+            : s.state === 'erro'
+            ? 'com erro'
+            : 'conectado';
+        factualContext += `
+STATUS REAL DAS INTEGRAÇÕES DE CANAL (único critério válido para "publicação automática"):
+- WhatsApp: ${chanLabel(integ.whatsapp)}
+- Instagram: ${chanLabel(integ.instagram)}
+- Facebook: ${chanLabel(integ.facebook)}
+`;
+
+        const calendarItems = (store.juliaData?.campaigns || []).slice(0, 8);
+        if (calendarItems.length > 0) {
+          factualContext += `
+PUBLICAÇÕES NO CALENDÁRIO (até 8 mais recentes — status real, não uma intenção):
+${calendarItems
+  .map((c) => {
+    const confirmed = c.externalConfirmation
+      ? `CONFIRMADA pelo canal externo em ${c.externalConfirmation.confirmedAt}${c.externalConfirmation.externalLink ? ` (${c.externalConfirmation.externalLink})` : ''}`
+      : c.manualSendConfirmation
+      ? `enviada manualmente por um humano em ${c.manualSendConfirmation.confirmedAt} — NÃO é confirmação do canal`
+      : 'sem nenhuma confirmação de envio';
+    return `  * "${c.title}" | ${c.channel} | ${c.scheduledDate} ${c.scheduledTime} | status cadastrado: ${c.status} | ${confirmed}`;
+  })
+  .join('\n')}
+`;
+        } else {
+          factualContext += `\nNenhuma publicação cadastrada no calendário ainda.\n`;
         }
       }
 

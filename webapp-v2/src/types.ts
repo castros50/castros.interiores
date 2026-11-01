@@ -327,6 +327,13 @@ export interface AttendanceRecord {
   fullAddress?: string; // endereço completo, quando necessário para retirada/entrega
   complaints?: ComplaintEntry[];
 
+  // Origem do contato quando vindo de um canal integrado (ex.: WhatsApp). Só preenchido
+  // quando a origem puder ser identificada de verdade — nunca "chute" a partir de um clique
+  // no anúncio, que não é mensagem enviada pelo cliente.
+  originChannel?: 'whatsapp' | 'manual';
+  originCampaignId?: string;
+  originIdentified?: boolean; // false => exibir "origem não identificada"
+
   // 4. Fotos
   photos: AttendancePhoto[];
 
@@ -606,6 +613,70 @@ export interface AgentChatMessage {
     executedAt: string;
     executedBy: string;
   };
+  // Id da mensagem no canal externo (ex.: WhatsApp Cloud API) — usado só para evitar
+  // processar o mesmo evento de webhook duas vezes, nunca para provar nada por si só.
+  externalMessageId?: string;
+  externalChannel?: 'whatsapp';
+}
+
+// ----------------------------------------------------------------------------
+// TAREFAS EM SEGUNDO PLANO — execução persistente no servidor, independente de
+// qualquer página aberta. Ver processBackgroundTasks() em server.ts.
+// ----------------------------------------------------------------------------
+export type BackgroundTaskType =
+  | 'publicar_campanha'
+  | 'enviar_resposta_whatsapp'
+  | 'verificar_integracao';
+
+export type BackgroundTaskStatus =
+  | 'aguardando_aprovacao'
+  | 'na_fila'
+  | 'executando'
+  | 'concluida'
+  | 'falhou'
+  | 'cancelada';
+
+export interface BackgroundTask {
+  id: string;
+  type: BackgroundTaskType;
+  agentId: DepartmentId;
+  relatedOrderId?: string;
+  relatedCampaignId?: string;
+  action: string; // descrição curta da ação solicitada
+  authorization: string; // quem/o que autorizou (ex.: "Aprovado por Edson em 30/10")
+  scheduledFor: string; // ISO — horário previsto de execução
+  startedAt?: string;
+  completedAt?: string;
+  status: BackgroundTaskStatus;
+  result?: string;
+  errorMessage?: string;
+  attempts: number;
+  maxAttempts: number;
+  idempotencyKey: string; // evita duplicar a mesma tarefa em reprocessamentos
+  createdAt: string;
+  createdBy?: string;
+}
+
+// Voz própria de um agente — uma voz REAL e distinta do sintetizador do navegador
+// (nunca apenas velocidade/tom diferentes de uma voz compartilhada).
+export interface AgentVoiceConfig {
+  voiceURI: string;
+  voiceName: string;
+  lang: string;
+  gender?: 'feminina' | 'masculina';
+  updatedAt: string;
+}
+
+// Status de uma integração oficial externa (WhatsApp Cloud API, Meta Graph API para
+// Instagram/Facebook, etc.). "conectado" só pode ser true depois de uma verificação real
+// contra o serviço — nunca setado manualmente "porque deveria funcionar".
+export type IntegrationConnectionState = 'nao_configurado' | 'pendente' | 'conectado' | 'erro';
+
+export interface IntegrationStatus {
+  state: IntegrationConnectionState;
+  lastCheckedAt?: string;
+  errorMessage?: string;
+  accountLabel?: string; // ex.: número do WhatsApp conectado, sem expor token
 }
 
 export interface WorkshopSettings {
@@ -620,6 +691,27 @@ export interface WorkshopSettings {
   // Identidade Visual dos Agentes
   agentPortraitUpdatedAt?: Partial<Record<DepartmentId, string>>;
   officeCoverImageUpdatedAt?: string;
+  // Voz individual por agente (ver AgentVoiceConfig)
+  agentVoiceSettings?: Partial<Record<DepartmentId, AgentVoiceConfig>>;
+  // Status real das integrações oficiais externas, por canal
+  integrations?: {
+    whatsapp?: IntegrationStatus;
+    instagram?: IntegrationStatus;
+    facebook?: IntegrationStatus;
+  };
+  // Controles globais de automação (pausar/retomar sem reenviar tarefas concluídas)
+  automationPaused?: boolean;
+  automationPausedAt?: string;
+  automationPausedBy?: string;
+  // Atendimento automático da Carla: escopo, autorização e pausa — carla pode estar
+  // pausada mesmo com o resto da automação ativo (e vice-versa).
+  carlaAutoReply?: {
+    enabled: boolean;
+    scopeNote?: string;
+    pausedConversationIds?: string[]; // atendimentos com humano assumindo a conversa
+    updatedAt?: string;
+    updatedBy?: string;
+  };
 }
 
 export type DeviceFormFactor = 'Computador' | 'Tablet' | 'Celular';
@@ -771,10 +863,33 @@ export interface JuliaVoiceTextMessage {
 export type JuliaCampaignStatus =
   | 'Planejada'
   | 'Agendada'
+  | 'Enviada Manualmente'
   | 'Concluída'
   | 'Com Erro'
+  | 'Cancelada'
+  // valores legados — mantidos só para não quebrar dados antigos; normalizedCampaignStatus()
+  // os trata como sinônimos de 'Planejada'/'Concluída' na exibição.
   | 'Programada'
   | 'Publicada';
+
+// Confirmação de que a publicação realmente saiu no canal externo — só preenchido pelo
+// processador de tarefas em segundo plano (BackgroundTask), nunca por um clique humano direto.
+// "Concluída" sem este campo não deveria existir; é o que distingue uma publicação
+// comprovada de uma mensagem de intenção.
+export interface ExternalPublicationConfirmation {
+  confirmedAt: string; // quando o serviço externo confirmou (não quando o humano clicou)
+  externalId?: string; // id do post/mensagem no serviço externo, quando disponível
+  externalLink?: string; // link público do post, quando disponível
+  source: string; // ex.: "Meta Graph API", "WhatsApp Cloud API"
+}
+
+// Confirmação de que um humano enviou manualmente (ex.: abriu o WhatsApp Web e mandou na mão).
+// Distinta de ExternalPublicationConfirmation: é uma autodeclaração do humano, não uma prova
+// do serviço externo — por isso o status correspondente é "Enviada Manualmente", nunca "Concluída".
+export interface ManualSendConfirmation {
+  confirmedAt: string;
+  confirmedBy?: string;
+}
 
 export interface JuliaCampaignScheduleItem {
   id: string;
@@ -795,6 +910,13 @@ export interface JuliaCampaignScheduleItem {
   captionPreview: string;
   photoId?: string;
   createdAt: string;
+  // Código de referência embutido no link/mensagem do anúncio, usado para identificar a
+  // campanha de origem quando o cliente responde (ver AttendanceRecord.originCampaignId).
+  referenceCode?: string;
+  externalConfirmation?: ExternalPublicationConfirmation;
+  manualSendConfirmation?: ManualSendConfirmation;
+  // Tarefa em segundo plano vinculada (quando agendada para publicação automática).
+  backgroundTaskId?: string;
 }
 
 export interface JuliaDailyReport {
