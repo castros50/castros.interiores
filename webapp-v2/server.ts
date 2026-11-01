@@ -109,6 +109,8 @@ import type {
   AttendanceRequestType,
   ComplaintEntry,
   BackgroundTask,
+  BackgroundTaskStatus,
+  IntegrationConnectionState,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -1457,6 +1459,221 @@ function saveStore(store: PersistentStore): void {
   // Sincroniza com o Firestore em segundo plano — não bloqueia a resposta da rota
   // que chamou saveStore(), mas garante que o dado sobreviva a um redeploy sem disco.
   persistStoreToFirestore(store);
+}
+
+// ----------------------------------------------------------------------------
+// TAREFAS EM SEGUNDO PLANO (BackgroundTask) — fila persistida no próprio store,
+// processada por processDueBackgroundTasks(). Não há execução "no cliente": uma
+// tarefa só avança quando algo chama essa função (rota /api/tasks/process-due,
+// tipicamente disparada por um Cloud Scheduler externo — ver documentação).
+// Isso é deliberado: no Cloud Run sem min-instances configurado, uma instância
+// pode ser desligada quando ociosa, então um setInterval() no processo não é
+// confiável para "roda com a página fechada e o servidor também ocioso".
+// ----------------------------------------------------------------------------
+
+function mapChannelToIntegrationKey(
+  channel: string
+): 'whatsapp' | 'instagram' | 'facebook' {
+  if (channel.startsWith('Instagram')) return 'instagram';
+  if (channel === 'Facebook') return 'facebook';
+  return 'whatsapp';
+}
+
+function createBackgroundTask(
+  store: PersistentStore,
+  input: {
+    type: BackgroundTask['type'];
+    agentId: DepartmentId;
+    action: string;
+    authorization: string;
+    scheduledFor: string;
+    relatedOrderId?: string;
+    relatedCampaignId?: string;
+    channel?: BackgroundTask['channel'];
+    idempotencyKey: string;
+    maxAttempts?: number;
+    createdBy?: string;
+  }
+): BackgroundTask {
+  if (!Array.isArray(store.backgroundTasks)) store.backgroundTasks = [];
+
+  // Nunca cria duas tarefas para a mesma idempotencyKey enquanto a anterior não
+  // tiver terminado em estado definitivo de erro ou cancelamento — evita duplicar
+  // a mesma publicação/envio em reprocessamentos repetidos (ex.: webhook reenviado).
+  const existing = store.backgroundTasks.find(
+    (t) => t.idempotencyKey === input.idempotencyKey && t.status !== 'falhou' && t.status !== 'cancelada'
+  );
+  if (existing) return existing;
+
+  const task: BackgroundTask = {
+    id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: input.type,
+    agentId: input.agentId,
+    relatedOrderId: input.relatedOrderId,
+    relatedCampaignId: input.relatedCampaignId,
+    channel: input.channel,
+    action: input.action,
+    authorization: input.authorization,
+    scheduledFor: input.scheduledFor,
+    status: 'na_fila',
+    attempts: 0,
+    maxAttempts: input.maxAttempts ?? 3,
+    idempotencyKey: input.idempotencyKey,
+    createdAt: new Date().toISOString(),
+    createdBy: input.createdBy,
+  };
+  store.backgroundTasks.push(task);
+  return task;
+}
+
+// Verifica uma integração oficial real (Meta Graph API) usando apenas credenciais
+// vindas de variáveis de ambiente do servidor — nunca solicitadas pelo chat nem
+// expostas ao navegador. Sem as variáveis configuradas, o resultado honesto é
+// "não configurado": a tarefa falha com o motivo exato, nunca finge sucesso.
+async function checkIntegrationConnection(
+  channel: 'whatsapp' | 'instagram' | 'facebook'
+): Promise<{ ok: boolean; state: IntegrationConnectionState; message: string; accountLabel?: string }> {
+  const envMap: Record<'whatsapp' | 'instagram' | 'facebook', { token: string; id: string }> = {
+    whatsapp: { token: 'WHATSAPP_ACCESS_TOKEN', id: 'WHATSAPP_PHONE_NUMBER_ID' },
+    instagram: { token: 'META_ACCESS_TOKEN', id: 'META_IG_BUSINESS_ACCOUNT_ID' },
+    facebook: { token: 'META_ACCESS_TOKEN', id: 'META_PAGE_ID' },
+  };
+  const { token: tokenVar, id: idVar } = envMap[channel];
+  const token = process.env[tokenVar];
+  const objectId = process.env[idVar];
+
+  if (!token || !objectId) {
+    const missing = [!token ? tokenVar : null, !objectId ? idVar : null].filter(Boolean);
+    return {
+      ok: false,
+      state: 'nao_configurado',
+      message: `Integração oficial não configurada no ambiente. Variável(is) ausente(s): ${missing.join(', ')}.`,
+    };
+  }
+
+  try {
+    const resp = await fetch(
+      `https://graph.facebook.com/v20.0/${objectId}?fields=id,name&access_token=${encodeURIComponent(token)}`
+    );
+    const data = (await resp.json()) as { id?: string; name?: string; error?: { message?: string } };
+    if (!resp.ok || data.error) {
+      return {
+        ok: false,
+        state: 'erro',
+        message: data.error?.message || `Falha ao verificar integração (HTTP ${resp.status}).`,
+      };
+    }
+    return {
+      ok: true,
+      state: 'conectado',
+      message: 'Integração verificada com sucesso junto ao serviço oficial.',
+      accountLabel: data.name || data.id,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      state: 'erro',
+      message: err instanceof Error ? err.message : 'Falha de rede ao verificar integração.',
+    };
+  }
+}
+
+// Executa UMA tarefa já marcada como 'executando'. Lança erro em caso de falha —
+// quem chama é responsável por capturar e registrar errorMessage/status.
+async function executeBackgroundTask(
+  store: PersistentStore,
+  task: BackgroundTask
+): Promise<string> {
+  switch (task.type) {
+    case 'verificar_integracao': {
+      const channel = task.channel || 'whatsapp';
+      const result = await checkIntegrationConnection(channel);
+      if (!store.settings.integrations) store.settings.integrations = {};
+      store.settings.integrations[channel] = {
+        state: result.state,
+        lastCheckedAt: new Date().toISOString(),
+        errorMessage: result.ok ? undefined : result.message,
+        accountLabel: result.accountLabel,
+      };
+      if (!result.ok) throw new Error(result.message);
+      return result.message;
+    }
+    case 'publicar_campanha': {
+      const channel = task.channel || 'whatsapp';
+      const status = store.settings.integrations?.[channel];
+      if (!status || status.state !== 'conectado') {
+        throw new Error(
+          `Integração oficial do canal "${channel}" não está conectada. Publicação automática não pode ocorrer — envio manual necessário.`
+        );
+      }
+      // Quando uma integração real estiver conectada, a chamada de publicação de
+      // fato (API oficial do canal) entra aqui. Hoje, sem nenhum canal conectado
+      // neste ambiente, este caminho nunca é alcançado — é código preparado, não
+      // uma automação ativa (ver seção de limitações na documentação da tarefa).
+      throw new Error(
+        'Publicação automática ainda não implementada para este canal — apenas a verificação de conexão está pronta. Use o envio manual.'
+      );
+    }
+    case 'enviar_resposta_whatsapp': {
+      const status = store.settings.integrations?.whatsapp;
+      if (!status || status.state !== 'conectado') {
+        throw new Error(
+          'Integração oficial do WhatsApp não está conectada. Não é possível enviar resposta automática — use o compartilhamento manual.'
+        );
+      }
+      throw new Error(
+        'Envio automático de resposta pelo WhatsApp ainda não implementado — apenas a verificação de conexão está pronta.'
+      );
+    }
+    default:
+      throw new Error(`Tipo de tarefa desconhecido: ${task.type}`);
+  }
+}
+
+// Processa todas as tarefas vencidas ('na_fila' com scheduledFor <= agora). Chamado
+// pela rota /api/tasks/process-due, pensada para ser disparada por um gatilho
+// externo (Cloud Scheduler) em intervalos regulares.
+async function processDueBackgroundTasks(
+  store: PersistentStore
+): Promise<Array<{ id: string; status: BackgroundTaskStatus; result?: string; errorMessage?: string }>> {
+  if (!Array.isArray(store.backgroundTasks)) store.backgroundTasks = [];
+  const now = new Date();
+  const due = store.backgroundTasks.filter(
+    (t) => t.status === 'na_fila' && new Date(t.scheduledFor).getTime() <= now.getTime()
+  );
+
+  const outcomes: Array<{ id: string; status: BackgroundTaskStatus; result?: string; errorMessage?: string }> = [];
+
+  for (const task of due) {
+    task.status = 'executando';
+    task.startedAt = new Date().toISOString();
+    task.attempts += 1;
+    try {
+      const result = await executeBackgroundTask(store, task);
+      task.status = 'concluida';
+      task.completedAt = new Date().toISOString();
+      task.result = result;
+      task.errorMessage = undefined;
+      outcomes.push({ id: task.id, status: task.status, result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Falha desconhecida.';
+      task.errorMessage = message;
+      // Nunca reentra em loop de retentativa sem limite: ao esgotar maxAttempts,
+      // a tarefa fica definitivamente 'falhou' — só um humano pode recriá-la.
+      if (task.attempts >= task.maxAttempts) {
+        task.status = 'falhou';
+        task.completedAt = new Date().toISOString();
+      } else {
+        task.status = 'na_fila';
+      }
+      outcomes.push({ id: task.id, status: task.status, errorMessage: message });
+    }
+  }
+
+  if (due.length > 0) {
+    saveStore(store);
+  }
+  return outcomes;
 }
 
 function getAnthropicApiKey(): string {
@@ -4743,6 +4960,34 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       ...current,
       ...incoming,
     };
+
+    // Toda publicação marcada 'Agendada' (modo automático, integração oficial já
+    // conectada no servidor) precisa de uma BackgroundTask real vinculada — nunca
+    // basta o status no calendário. Idempotente: cada item de campanha só recebe
+    // uma tarefa (idempotencyKey = o próprio id do item).
+    if (Array.isArray(store.juliaData.campaigns)) {
+      store.juliaData.campaigns = store.juliaData.campaigns.map((camp) => {
+        if (camp.status === 'Agendada' && !camp.backgroundTaskId) {
+          const channel = mapChannelToIntegrationKey(camp.channel);
+          const task = createBackgroundTask(store, {
+            type: 'publicar_campanha',
+            agentId: 'julia_marketing',
+            action: `Publicar "${camp.title}" em ${camp.channel}`,
+            authorization: `Agendamento automático solicitado via painel por ${
+              (req.headers['x-station-name'] as string) || 'estação não identificada'
+            }`,
+            scheduledFor: `${camp.scheduledDate}T${camp.scheduledTime || '00:00'}:00`,
+            relatedCampaignId: camp.projectId,
+            channel,
+            idempotencyKey: `julia-publicar-${camp.id}`,
+            createdBy: (req.headers['x-station-name'] as string) || undefined,
+          });
+          return { ...camp, backgroundTaskId: task.id };
+        }
+        return camp;
+      });
+    }
+
     saveStore(store);
     broadcastRealtimeEvent({
       type: 'julia:updated',
@@ -4752,6 +4997,86 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       juliaData: store.juliaData,
     });
     res.json({ ok: true, juliaData: store.juliaData });
+  });
+
+  // --------------------------------------------------------------------------
+  // TAREFAS EM SEGUNDO PLANO (BackgroundTask)
+  // --------------------------------------------------------------------------
+
+  app.get('/api/tasks', (req, res) => {
+    const store = loadStore();
+    const { agentId, status } = req.query as { agentId?: string; status?: string };
+    let tasks = store.backgroundTasks || [];
+    if (agentId) tasks = tasks.filter((t) => t.agentId === agentId);
+    if (status) tasks = tasks.filter((t) => t.status === status);
+    res.json({ ok: true, tasks });
+  });
+
+  app.post('/api/tasks', (req, res) => {
+    const store = loadStore();
+    const body = req.body as {
+      type: BackgroundTask['type'];
+      agentId: DepartmentId;
+      action: string;
+      authorization: string;
+      scheduledFor: string;
+      relatedOrderId?: string;
+      relatedCampaignId?: string;
+      channel?: BackgroundTask['channel'];
+      idempotencyKey?: string;
+      maxAttempts?: number;
+    };
+    if (!body.type || !body.agentId || !body.action || !body.authorization || !body.scheduledFor) {
+      res.status(400).json({ error: 'Campos obrigatórios ausentes para criar a tarefa.' });
+      return;
+    }
+    const task = createBackgroundTask(store, {
+      ...body,
+      idempotencyKey: body.idempotencyKey || `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdBy: (req.headers['x-station-name'] as string) || undefined,
+    });
+    saveStore(store);
+    res.json({ ok: true, task });
+  });
+
+  app.post('/api/tasks/:id/cancel', (req, res) => {
+    const store = loadStore();
+    const task = (store.backgroundTasks || []).find((t) => t.id === req.params.id);
+    if (!task) {
+      res.status(404).json({ error: 'Tarefa não encontrada.' });
+      return;
+    }
+    if (task.status === 'concluida' || task.status === 'falhou') {
+      res.status(400).json({ error: `Tarefa já está em estado definitivo (${task.status}) e não pode ser cancelada.` });
+      return;
+    }
+    task.status = 'cancelada';
+    task.completedAt = new Date().toISOString();
+    saveStore(store);
+    res.json({ ok: true, task });
+  });
+
+  // Alvo do gatilho externo (Cloud Scheduler) que mantém a fila avançando mesmo
+  // com o app fechado e sem ninguém olhando a tela. Protegido por um segredo que
+  // só existe como variável de ambiente do servidor — nunca pedido pelo chat nem
+  // enviado pelo navegador. Ver documentação de configuração do Cloud Scheduler.
+  app.post('/api/tasks/process-due', async (req, res) => {
+    const expectedSecret = process.env.BACKGROUND_TASKS_SECRET;
+    if (!expectedSecret) {
+      res.status(503).json({
+        error:
+          'BACKGROUND_TASKS_SECRET não configurado no ambiente do servidor. A fila de tarefas em segundo plano existe, mas não está sendo processada automaticamente até essa variável ser definida e um gatilho externo (ex.: Cloud Scheduler) ser configurado para chamar esta rota periodicamente.',
+      });
+      return;
+    }
+    const providedSecret = req.headers['x-tasks-secret'];
+    if (providedSecret !== expectedSecret) {
+      res.status(403).json({ error: 'Segredo inválido.' });
+      return;
+    }
+    const store = loadStore();
+    const outcomes = await processDueBackgroundTasks(store);
+    res.json({ ok: true, processed: outcomes.length, outcomes });
   });
 
   // Direct mobile photo upload for Júlia Marketing (NO active attendance required!)

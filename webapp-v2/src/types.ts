@@ -642,6 +642,7 @@ export interface BackgroundTask {
   agentId: DepartmentId;
   relatedOrderId?: string;
   relatedCampaignId?: string;
+  channel?: 'whatsapp' | 'instagram' | 'facebook'; // canal afetado, quando aplicável
   action: string; // descrição curta da ação solicitada
   authorization: string; // quem/o que autorizou (ex.: "Aprovado por Edson em 30/10")
   scheduledFor: string; // ISO — horário previsto de execução
