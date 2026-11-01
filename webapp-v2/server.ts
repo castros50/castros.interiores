@@ -113,6 +113,9 @@ import type {
   BackgroundTaskStatus,
   IntegrationConnectionState,
   AgentVoiceConfig,
+  PaidAdBudgetProposal,
+  PaidAdObjective,
+  JuliaCampaignScheduleItem,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -1095,6 +1098,7 @@ function getDefaultJuliaData(): JuliaDepartmentData {
         createdAt: new Date().toISOString(),
       },
     ],
+    paidAdProposals: [],
   };
 }
 
@@ -1582,6 +1586,53 @@ async function checkIntegrationConnection(
   }
 }
 
+// Verifica a conexão com a conta de anúncios da Meta (Marketing API) — distinta
+// da verificação de publicação orgânica acima. Sem as variáveis de ambiente,
+// resultado honesto "não configurado"; a CRIAÇÃO de campanha paga em si ainda
+// não está implementada (ver executeBackgroundTask, case 'iniciar_campanha_paga')
+// — esta função só confirma se a conta de anúncios existe e o token é válido.
+async function checkPaidAdsIntegrationConnection(): Promise<{
+  ok: boolean;
+  message: string;
+  accountLabel?: string;
+}> {
+  const token = process.env.META_ADS_ACCESS_TOKEN;
+  const adAccountId = process.env.META_AD_ACCOUNT_ID;
+
+  if (!token || !adAccountId) {
+    const missing = [!token ? 'META_ADS_ACCESS_TOKEN' : null, !adAccountId ? 'META_AD_ACCOUNT_ID' : null].filter(
+      Boolean
+    );
+    return {
+      ok: false,
+      message: `Integração de anúncios pagos (Meta Marketing API) não configurada no ambiente. Variável(is) ausente(s): ${missing.join(', ')}.`,
+    };
+  }
+
+  try {
+    const resp = await fetch(
+      `https://graph.facebook.com/v20.0/${adAccountId}?fields=id,name&access_token=${encodeURIComponent(token)}`
+    );
+    const data = (await resp.json()) as { id?: string; name?: string; error?: { message?: string } };
+    if (!resp.ok || data.error) {
+      return {
+        ok: false,
+        message: data.error?.message || `Falha ao verificar a conta de anúncios (HTTP ${resp.status}).`,
+      };
+    }
+    return {
+      ok: true,
+      message: 'Conta de anúncios verificada com sucesso junto à Meta.',
+      accountLabel: data.name || data.id,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Falha de rede ao verificar a conta de anúncios.',
+    };
+  }
+}
+
 // Envia uma mensagem de texto REAL via WhatsApp Cloud API oficial da Meta. Exige
 // WHATSAPP_ACCESS_TOKEN e WHATSAPP_PHONE_NUMBER_ID como variáveis de ambiente do
 // servidor — nunca aceita essas credenciais vindas do chat, do corpo da requisição
@@ -1873,6 +1924,26 @@ async function executeBackgroundTask(
         });
       }
       return `Mensagem enviada ao canal oficial do WhatsApp (id externo: ${result.externalId || 'não informado'}).`;
+    }
+    case 'iniciar_campanha_paga': {
+      const proposalId = task.payload?.paidAdProposalId as string | undefined;
+      const proposal = proposalId
+        ? store.juliaData?.paidAdProposals?.find((p) => p.id === proposalId)
+        : undefined;
+
+      const result = await checkPaidAdsIntegrationConnection();
+      if (!result.ok) {
+        if (proposal) proposal.status = 'aguardando_integracao';
+        throw new Error(result.message);
+      }
+      // A verificação da conta de anúncios passou, mas a chamada real de criação
+      // de campanha/conjunto de anúncios/anúncio na Marketing API da Meta ainda
+      // não está implementada — nunca afirmar que o anúncio foi ao ar sem esse
+      // código existir de fato. Isso é código preparado, não uma automação ativa.
+      if (proposal) proposal.status = 'aguardando_integracao';
+      throw new Error(
+        'Conta de anúncios verificada, mas a criação automática da campanha paga ainda não está implementada — crie manualmente na Meta por enquanto.'
+      );
     }
     default:
       throw new Error(`Tipo de tarefa desconhecido: ${task.type}`);
@@ -5030,8 +5101,9 @@ REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS SOBRE PUBLICAÇÃO E MÉTRICAS:
 2. Status "Planejada" ou "Agendada" significa que NADA foi publicado ainda. Status "Enviada Manualmente" significa que um humano confirmou que enviou na mão — não é prova de publicação pelo canal. Status "Concluída" só existe quando há confirmação registrada do serviço externo (id/link); se não houver essa confirmação nos dados reais, trate como NÃO publicado, mesmo que o status pareça "Concluída".
 3. NUNCA diga que está "monitorando resultados", "acompanhando métricas" ou cite número de cliques, vendas, alcance ou resultado de teste A/B, a menos que os DADOS REAIS abaixo tragam uma métrica explícita com fonte conectada, período e data de atualização. Sem isso, diga claramente: "métricas indisponíveis — nenhum canal conectado está enviando dados de desempenho".
 4. Diferencie sempre: compartilhamento manual (abre o WhatsApp com texto pronto, para a pessoa enviar) de atendimento/publicação integrada (feita automaticamente pelo sistema via API oficial conectada). Se um canal não aparecer como conectado nos DADOS REAIS, o envio nesse canal é sempre manual.
-5. Nunca prometa iniciar anúncio pago nem alterar orçamento de campanha — isso exige autorização explícita do responsável fora do chat.
-6. Se não souber o estado real de algo, diga que não tem esse dado em mãos em vez de estimar ou supor.`,
+5. Você pode AJUDAR a montar uma proposta de orçamento de anúncio pago (objetivo, público, valor, duração) quando pedirem, mas essa proposta sempre nasce "Aguardando Aprovação de Orçamento" — você nunca aprova, nunca inicia o anúncio nem altera um orçamento já existente. A aprovação só acontece por um botão humano nas mesas de Helena ou Castro, nunca pelo chat.
+6. Mesmo depois de aprovado, o anúncio só é veiculado de verdade quando houver uma conta de anúncios da Meta conectada (variáveis de ambiente do servidor). Sem isso, diga claramente que a veiculação está pendente de integração — nunca diga que o anúncio está no ar.
+7. Se não souber o estado real de algo, diga que não tem esse dado em mãos em vez de estimar ou supor.`,
         carla_atendimento: `VOCÊ ATUA AGORA COMO: CARLA — DEPARTAMENTO DE ATENDIMENTO AO CLIENTE DA CASTROS INTERIORES.
 Sua missão é realizar o acolhimento de excelência do cliente, organizar a triagem inicial (reforma, fabricação nova, compra de produto, acompanhamento ou reclamação), orientar o envio correto das fotos por ângulo, responder dúvidas com empatia e clareza, e preparar rascunhos de mensagem para o cliente.
 REGRAS OBRIGATÓRIAS:
@@ -5192,7 +5264,10 @@ Sua missão exclusiva é criar e aperfeiçoar campanhas publicitárias, as 12 et
 REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
 1. PROIBIDO incluir avaliação técnica de defeitos, diagnóstico estrutural, lista de materiais de oficina, defeitos ou custos/orçamentos internos.
 2. Foque 100% em valorização estética, design de interiores, conforto, estilo, elegância artesanal, desejo de compra, posicionamento de marca da Castros Interiores e engajamento em redes sociais (Instagram, WhatsApp, Facebook).
-3. Use linguagem publicitária refinada, acolhedora e persuasiva em português do Brasil.`;
+3. Use linguagem publicitária refinada, acolhedora e persuasiva em português do Brasil.
+4. Você PREPARA conteúdo (textos, peças, agendamento). Você NUNCA publica nada sozinha e NUNCA deve dizer "publiquei", "já postei" ou "está no ar" — só o status real do sistema determina isso. "Planejada"/"Agendada" significa que nada foi publicado; "Enviada Manualmente" é só uma autodeclaração humana, não prova de publicação; "Concluída" só existe com confirmação registrada do canal externo.
+5. NUNCA diga que está "monitorando resultados" ou cite cliques/vendas/alcance sem uma métrica real, com fonte conectada, período e data de atualização nos dados fornecidos. Sem isso, diga "métricas indisponíveis".
+6. Você pode AJUDAR a montar uma proposta de orçamento de anúncio pago (objetivo, público, valor, duração), mas essa proposta sempre nasce "Aguardando Aprovação de Orçamento" — você nunca aprova, nunca inicia o anúncio nem altera um orçamento existente; aprovação só acontece por um botão humano nas mesas de Helena ou Castro. Mesmo aprovado, só é veiculado de verdade com uma conta de anúncios da Meta conectada — sem isso, diga que está pendente de integração.`;
 
   app.get('/api/julia', (_req, res) => {
     const store = loadStore();
@@ -5290,6 +5365,162 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       juliaData: store.juliaData,
     });
     res.json({ ok: true, juliaData: store.juliaData });
+  });
+
+  // --------------------------------------------------------------------------
+  // ANÚNCIOS PAGOS — proposta de orçamento sempre nasce travada; só uma rota
+  // separada, acionada por um botão humano (nunca pelo chat da Júlia), pode
+  // aprovar. Ver PaidAdBudgetProposal em types.ts e o plano aprovado desta
+  // funcionalidade.
+  // --------------------------------------------------------------------------
+
+  app.post('/api/julia/paid-ads/propose', (req, res) => {
+    const store = loadStore();
+    if (!store.juliaData) store.juliaData = getDefaultJuliaData();
+    const {
+      projectId,
+      campaignScheduleItemId,
+      objective,
+      targetAudienceDescription,
+      budgetCents,
+      budgetPeriod,
+      durationDays,
+      channel,
+      proposedBy,
+    } = req.body as {
+      projectId: string;
+      campaignScheduleItemId?: string;
+      objective: PaidAdObjective;
+      targetAudienceDescription: string;
+      budgetCents: number;
+      budgetPeriod: 'diario' | 'total';
+      durationDays: number;
+      channel: JuliaCampaignScheduleItem['channel'];
+      proposedBy?: string;
+    };
+
+    if (
+      !projectId ||
+      !objective ||
+      !targetAudienceDescription?.trim() ||
+      !budgetCents ||
+      budgetCents <= 0 ||
+      !budgetPeriod ||
+      !durationDays ||
+      durationDays <= 0 ||
+      !channel
+    ) {
+      res.status(400).json({
+        error:
+          'Campos obrigatórios ausentes ou inválidos para propor um orçamento de anúncio pago (objetivo, público-alvo, orçamento, período, duração e canal).',
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const proposal: PaidAdBudgetProposal = {
+      id: `paidad-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      projectId,
+      campaignScheduleItemId,
+      objective,
+      targetAudienceDescription: targetAudienceDescription.trim(),
+      budgetCents,
+      budgetPeriod,
+      durationDays,
+      channel,
+      status: 'aguardando_aprovacao',
+      proposedBy: proposedBy || (req.headers['x-station-name'] as string) || 'Estação não identificada',
+      proposedAt: now,
+      createdAt: now,
+    };
+
+    if (!store.juliaData.paidAdProposals) store.juliaData.paidAdProposals = [];
+    store.juliaData.paidAdProposals.push(proposal);
+    saveStore(store);
+    res.json({ ok: true, proposal });
+  });
+
+  app.post('/api/julia/paid-ads/:id/approve', (req, res) => {
+    const store = loadStore();
+    const proposal = store.juliaData?.paidAdProposals?.find((p) => p.id === req.params.id);
+    if (!proposal) {
+      res.status(404).json({ error: 'Proposta de anúncio pago não encontrada.' });
+      return;
+    }
+    if (proposal.status !== 'aguardando_aprovacao') {
+      res.status(400).json({
+        error: `Esta proposta já está em estado "${proposal.status}" e não pode ser aprovada novamente.`,
+      });
+      return;
+    }
+
+    const { approvedBy, notes } = req.body as { approvedBy?: string; notes?: string };
+    const approver = approvedBy || (req.headers['x-station-name'] as string);
+    if (!approver || !approver.trim()) {
+      res.status(400).json({
+        error: 'É obrigatório identificar quem está aprovando este orçamento (approvedBy).',
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    proposal.approval = {
+      approved: true,
+      approvedBy: approver,
+      approvedAt: now,
+      notes: notes || '',
+    };
+    proposal.status = 'aprovado';
+
+    const task = createBackgroundTask(store, {
+      type: 'iniciar_campanha_paga',
+      agentId: 'julia_marketing',
+      action: `Iniciar anúncio pago (${proposal.objective}) aprovado por ${approver}`,
+      authorization: `Orçamento de R$ ${(proposal.budgetCents / 100).toFixed(2)} (${proposal.budgetPeriod}) aprovado por ${approver} em ${now}`,
+      scheduledFor: now,
+      relatedCampaignId: proposal.projectId,
+      idempotencyKey: `paidad-iniciar-${proposal.id}`,
+      payload: { paidAdProposalId: proposal.id },
+      createdBy: approver,
+    });
+    proposal.backgroundTaskId = task.id;
+
+    saveStore(store);
+    res.json({ ok: true, proposal });
+  });
+
+  app.post('/api/julia/paid-ads/:id/reject', (req, res) => {
+    const store = loadStore();
+    const proposal = store.juliaData?.paidAdProposals?.find((p) => p.id === req.params.id);
+    if (!proposal) {
+      res.status(404).json({ error: 'Proposta de anúncio pago não encontrada.' });
+      return;
+    }
+    if (proposal.status !== 'aguardando_aprovacao') {
+      res.status(400).json({
+        error: `Esta proposta já está em estado "${proposal.status}" e não pode ser rejeitada.`,
+      });
+      return;
+    }
+
+    const { rejectedBy, notes } = req.body as { rejectedBy?: string; notes?: string };
+    const rejecter = rejectedBy || (req.headers['x-station-name'] as string);
+    if (!rejecter || !rejecter.trim()) {
+      res.status(400).json({ error: 'É obrigatório identificar quem está rejeitando esta proposta (rejectedBy).' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    proposal.approval = {
+      approved: false,
+      approvedBy: rejecter,
+      approvedAt: now,
+      notes: notes || '',
+    };
+    proposal.status = 'rejeitado';
+
+    saveStore(store);
+    res.json({ ok: true, proposal });
   });
 
   // --------------------------------------------------------------------------

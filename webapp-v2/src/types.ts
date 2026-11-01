@@ -626,7 +626,8 @@ export interface AgentChatMessage {
 export type BackgroundTaskType =
   | 'publicar_campanha'
   | 'enviar_resposta_whatsapp'
-  | 'verificar_integracao';
+  | 'verificar_integracao'
+  | 'iniciar_campanha_paga';
 
 export type BackgroundTaskStatus =
   | 'aguardando_aprovacao'
@@ -923,6 +924,53 @@ export interface JuliaCampaignScheduleItem {
   backgroundTaskId?: string;
 }
 
+// ----------------------------------------------------------------------------
+// ANÚNCIOS PAGOS — distintos da publicação orgânica acima. Uma proposta nasce
+// sempre travada ('aguardando_aprovacao'); só uma pessoa, nunca a IA, pode
+// aprovar (ver approval abaixo). Só depois de aprovada nasce uma BackgroundTask
+// do tipo 'iniciar_campanha_paga', e mesmo essa só executa de verdade quando
+// houver uma conta de anúncios da Meta conectada — sem isso, falha honestamente
+// como "aguardando_integracao", nunca finge veiculação nem gasta dinheiro.
+// ----------------------------------------------------------------------------
+export type PaidAdApprovalStatus =
+  | 'aguardando_aprovacao'
+  | 'aprovado'
+  | 'rejeitado'
+  | 'aguardando_integracao'
+  | 'em_veiculacao'
+  | 'pausado'
+  | 'encerrado'
+  | 'falhou';
+
+export type PaidAdObjective = 'Alcance' | 'Tráfego' | 'Mensagens' | 'Conversões';
+
+export interface PaidAdBudgetApproval {
+  approved: boolean;
+  approvedBy: string;
+  approvedAt: string;
+  notes: string;
+}
+
+export interface PaidAdBudgetProposal {
+  id: string;
+  projectId: string;
+  campaignScheduleItemId?: string;
+  objective: PaidAdObjective;
+  targetAudienceDescription: string;
+  budgetCents: number;
+  budgetPeriod: 'diario' | 'total';
+  durationDays: number;
+  channel: JuliaCampaignScheduleItem['channel'];
+  status: PaidAdApprovalStatus;
+  proposedBy: string;
+  proposedAt: string;
+  approval?: PaidAdBudgetApproval;
+  backgroundTaskId?: string;
+  // Só preenchido depois de uma confirmação real da Meta — nunca estimado.
+  externalCampaignId?: string;
+  createdAt: string;
+}
+
 export interface JuliaDailyReport {
   id: string;
   date: string;
@@ -948,6 +996,7 @@ export interface JuliaDepartmentData {
   chatHistory: JuliaVoiceTextMessage[];
   campaigns: JuliaCampaignScheduleItem[];
   dailyReports: JuliaDailyReport[];
+  paidAdProposals?: PaidAdBudgetProposal[];
 }
 
 export interface RealtimeSyncEvent {

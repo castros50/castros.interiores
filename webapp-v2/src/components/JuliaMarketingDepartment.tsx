@@ -48,6 +48,8 @@ import {
   JuliaSocialMediaVersions,
   JuliaTargetChannel,
   WorkshopSettings,
+  PaidAdObjective,
+  PaidAdBudgetProposal,
 } from '../types';
 import { ResilientImage } from './ResilientImage';
 
@@ -749,6 +751,16 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
   const [calendarStatusFilter, setCalendarStatusFilter] = useState<
     'TODAS' | 'Planejada' | 'Agendada' | 'Concluída' | 'Com Erro'
   >('TODAS');
+
+  // Proposta de orçamento de anúncio pago — nasce sempre travada, aprovação só
+  // acontece numa mesa de humano (Helena/Castro), nunca aqui. Ver /api/julia/paid-ads/propose.
+  const [paidAdFormOpen, setPaidAdFormOpen] = useState(false);
+  const [paidAdObjective, setPaidAdObjective] = useState<PaidAdObjective>('Alcance');
+  const [paidAdAudience, setPaidAdAudience] = useState('');
+  const [paidAdBudgetReais, setPaidAdBudgetReais] = useState('');
+  const [paidAdBudgetPeriod, setPaidAdBudgetPeriod] = useState<'diario' | 'total'>('total');
+  const [paidAdDurationDays, setPaidAdDurationDays] = useState('7');
+  const [isProposingPaidAd, setIsProposingPaidAd] = useState(false);
 
   // WhatsApp direct recipient optional input (Correction 4)
   const [whatsappRecipientPhone, setWhatsappRecipientPhone] = useState('');
@@ -2768,6 +2780,56 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
     };
     setNewCampTitle('');
     await handlePersistJuliaData(nextData, integrationNote);
+  };
+
+  // Propõe um orçamento de anúncio pago — nasce sempre "Aguardando Aprovação de
+  // Orçamento" no servidor; esta tela NUNCA aprova, só monta a proposta. A
+  // aprovação só pode acontecer nas mesas de Helena ou Castro.
+  const handleProposePaidAd = async () => {
+    if (!activeProject) return;
+    const budgetReaisNumber = Number(paidAdBudgetReais.replace(',', '.'));
+    const durationNumber = Number(paidAdDurationDays);
+    if (!paidAdAudience.trim() || !budgetReaisNumber || budgetReaisNumber <= 0 || !durationNumber || durationNumber <= 0) {
+      showTemporaryNotice('Preencha público-alvo, orçamento e duração (maiores que zero) antes de propor.');
+      return;
+    }
+    setIsProposingPaidAd(true);
+    try {
+      const res = await fetch('/api/julia/paid-ads/propose', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-station-name': stationName },
+        body: JSON.stringify({
+          projectId: activeProject.id,
+          objective: paidAdObjective,
+          targetAudienceDescription: paidAdAudience.trim(),
+          budgetCents: Math.round(budgetReaisNumber * 100),
+          budgetPeriod: paidAdBudgetPeriod,
+          durationDays: durationNumber,
+          channel: newCampChannel,
+          proposedBy: stationName,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        const nextData: JuliaDepartmentData = {
+          ...juliaData!,
+          paidAdProposals: [data.proposal as PaidAdBudgetProposal, ...(juliaData!.paidAdProposals || [])],
+        };
+        setJuliaData(nextData);
+        setPaidAdAudience('');
+        setPaidAdBudgetReais('');
+        setPaidAdFormOpen(false);
+        showTemporaryNotice(
+          'Proposta de anúncio pago registrada como "Aguardando Aprovação de Orçamento" — só Helena ou Castro podem aprovar, nunca esta tela.'
+        );
+      } else {
+        showTemporaryNotice(data.error || 'Não foi possível registrar a proposta agora.');
+      }
+    } catch {
+      showTemporaryNotice('Falha de conexão ao propor o anúncio pago.');
+    } finally {
+      setIsProposingPaidAd(false);
+    }
   };
 
   // Só permite ao humano escolher estados que NÃO afirmam publicação confirmada.
@@ -5568,8 +5630,8 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                 </div>
               </div>
 
-              {/* Duas Funções Claramente Separadas: 1. Planejar Publicação | 2. Agendar Publicação Automática */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* Três Funções Claramente Separadas: 1. Planejar Publicação | 2. Agendar Publicação Automática | 3. Propor Anúncio Pago */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="p-4 rounded-xl bg-white border border-[#E5DEC9] flex flex-col justify-between gap-3">
                   <div className="space-y-1">
                     <div className="text-xs font-bold text-[#181512]">
@@ -5613,7 +5675,131 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                     </span>
                   </button>
                 </div>
+
+                <div className="p-4 rounded-xl bg-white border border-[#E5DEC9] flex flex-col justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="text-xs font-bold text-[#181512]">
+                      Opção 3 — Propor Anúncio Pago
+                    </div>
+                    <p className="text-[11px] text-[#57534E]">
+                      Monta uma proposta de orçamento para impulsionar a campanha. Nunca inicia nada sozinha — a
+                      proposta nasce "Aguardando Aprovação de Orçamento" e só Helena ou Castro podem aprovar.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPaidAdFormOpen((prev) => !prev)}
+                    className="w-full py-2.5 px-4 rounded-lg bg-[#FAF8F5] hover:bg-[#F3EFE6] border border-[#D6CFC5] text-[#181512] text-xs font-semibold flex items-center justify-center gap-2"
+                  >
+                    <Megaphone className="w-4 h-4 text-[#9A7138]" />
+                    <span>3. Propor Anúncio Pago (Requer Aprovação de Orçamento)</span>
+                  </button>
+                </div>
               </div>
+
+              {paidAdFormOpen && (
+                <div className="p-4 rounded-xl border-2 border-dashed border-[#9A7138] bg-[#FAF8F5] space-y-3 text-xs">
+                  <p className="font-bold text-[#9A7138] uppercase tracking-wider text-[10px]">
+                    Proposta de orçamento — ainda não aprovada, nada será veiculado agora
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[#57534E] font-medium mb-1">Objetivo</label>
+                      <select
+                        value={paidAdObjective}
+                        onChange={(e) => setPaidAdObjective(e.target.value as PaidAdObjective)}
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      >
+                        <option value="Alcance">Alcance</option>
+                        <option value="Tráfego">Tráfego</option>
+                        <option value="Mensagens">Mensagens</option>
+                        <option value="Conversões">Conversões</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[#57534E] font-medium mb-1">Duração (dias)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={paidAdDurationDays}
+                        onChange={(e) => setPaidAdDurationDays(e.target.value)}
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[#57534E] font-medium mb-1">Público-alvo</label>
+                      <input
+                        type="text"
+                        value={paidAdAudience}
+                        onChange={(e) => setPaidAdAudience(e.target.value)}
+                        placeholder="Ex: mulheres 30-55 anos, interesse em decoração, raio de 15km"
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[#57534E] font-medium mb-1">Orçamento (R$)</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={paidAdBudgetReais}
+                        onChange={(e) => setPaidAdBudgetReais(e.target.value)}
+                        placeholder="Ex: 150,00"
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[#57534E] font-medium mb-1">Período do Orçamento</label>
+                      <select
+                        value={paidAdBudgetPeriod}
+                        onChange={(e) => setPaidAdBudgetPeriod(e.target.value as 'diario' | 'total')}
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      >
+                        <option value="total">Total da campanha</option>
+                        <option value="diario">Diário</option>
+                      </select>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleProposePaidAd}
+                    disabled={isProposingPaidAd}
+                    className="px-4 py-2 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] text-white text-xs font-semibold disabled:opacity-50"
+                  >
+                    {isProposingPaidAd ? 'Enviando proposta...' : 'Enviar Proposta para Aprovação'}
+                  </button>
+                </div>
+              )}
+
+              {(juliaData?.paidAdProposals || []).length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="font-bold text-xs text-[#181512] uppercase tracking-wider">
+                    Propostas de Anúncio Pago desta Campanha
+                  </h4>
+                  {(juliaData?.paidAdProposals || [])
+                    .filter((p) => p.projectId === activeProject.id)
+                    .map((p) => (
+                      <div key={p.id} className="p-3 rounded-lg border border-[#E5DEC9] bg-white text-xs flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-[#181512]">
+                            {p.objective} · R$ {(p.budgetCents / 100).toFixed(2)} ({p.budgetPeriod}) · {p.durationDays} dia(s)
+                          </p>
+                          <p className="text-[11px] text-[#57534E]">{p.targetAudienceDescription}</p>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase shrink-0 ${
+                            p.status === 'aprovado' || p.status === 'em_veiculacao'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : p.status === 'rejeitado' || p.status === 'falhou'
+                              ? 'bg-red-100 text-red-900'
+                              : 'bg-amber-100 text-amber-900'
+                          }`}
+                        >
+                          {p.status.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
             </div>
           )}
 

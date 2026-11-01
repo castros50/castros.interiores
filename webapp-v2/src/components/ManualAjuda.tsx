@@ -11,16 +11,17 @@ import { Printer, AlertTriangle, CheckCircle2, Info } from 'lucide-react';
 const SECTIONS = [
   { id: 'config-inicial', label: '1. Configuração inicial e conexão de canais' },
   { id: 'anuncio-julia', label: '2. Criar, aprovar e agendar um anúncio (Júlia)' },
-  { id: 'carla-atendimento', label: '3. Como a Carla recebe e conduz um atendimento' },
-  { id: 'fotos-pedro-lucas', label: '4. Como fotos e dados chegam a Pedro ou Lucas' },
-  { id: 'nove-agentes', label: '5. Como usar cada um dos 9 agentes' },
-  { id: 'automatico-vs-manual', label: '6. O que é automático e o que exige sua ação' },
-  { id: 'aprovar-tarefas', label: '7. Aprovar, corrigir, pausar e retomar tarefas' },
-  { id: 'painel-resumo', label: '8. Painel de supervisão e resumo diário' },
-  { id: 'vozes', label: '9. Como escolher a voz de cada agente' },
-  { id: 'falhas-comuns', label: '10. Reconhecer e resolver falhas comuns' },
-  { id: 'exemplo-demo', label: '11. Exemplo completo de atendimento (demonstração)' },
-  { id: 'pendencias', label: '12. O que ainda depende de configuração' },
+  { id: 'anuncios-pagos', label: '3. Anúncios pagos com aprovação de orçamento' },
+  { id: 'carla-atendimento', label: '4. Como a Carla recebe e conduz um atendimento' },
+  { id: 'fotos-pedro-lucas', label: '5. Como fotos e dados chegam a Pedro ou Lucas' },
+  { id: 'nove-agentes', label: '6. Como usar cada um dos 9 agentes' },
+  { id: 'automatico-vs-manual', label: '7. O que é automático e o que exige sua ação' },
+  { id: 'aprovar-tarefas', label: '8. Aprovar, corrigir, pausar e retomar tarefas' },
+  { id: 'painel-resumo', label: '9. Painel de supervisão e resumo diário' },
+  { id: 'vozes', label: '10. Como escolher a voz de cada agente' },
+  { id: 'falhas-comuns', label: '11. Reconhecer e resolver falhas comuns' },
+  { id: 'exemplo-demo', label: '12. Exemplo completo de atendimento (demonstração)' },
+  { id: 'pendencias', label: '13. O que ainda depende de configuração' },
 ];
 
 const SectionHeading: React.FC<{ id: string; children: React.ReactNode }> = ({ id, children }) => (
@@ -124,11 +125,11 @@ export const ManualAjuda: React.FC = () => {
               cada um dos 9 agentes.
             </li>
             <li>
-              <strong>Integração oficial do WhatsApp:</strong> veja a seção 12 — exige credenciais reais da Meta
+              <strong>Integração oficial do WhatsApp:</strong> veja a seção 13 — exige credenciais reais da Meta
               que só o responsável pode fornecer, nunca pelo chat.
             </li>
             <li>
-              <strong>Execução de tarefas em segundo plano:</strong> veja a seção 12 — exige um gatilho externo
+              <strong>Execução de tarefas em segundo plano:</strong> veja a seção 13 — exige um gatilho externo
               (Google Cloud Scheduler) configurado fora do app.
             </li>
           </ul>
@@ -143,9 +144,9 @@ export const ManualAjuda: React.FC = () => {
         <section className="space-y-3">
           <SectionHeading id="anuncio-julia">2. Criar, aprovar e agendar um anúncio (Júlia)</SectionHeading>
           <p>
-            Abra a mesa de <strong>Júlia</strong> (em Painel → cartão "Júlia Marketing e Divulgação", botão{' '}
-            <strong>Abrir mesa</strong>, ou em Escritório de Mesas → Mesa 7). O Anúncio Inteligente segue 12
-            etapas, da escolha das fotos até a programação da publicação. Pontos importantes:
+            Abra a mesa de <strong>Júlia</strong> (clique no cartão "Júlia Marketing e Divulgação" no Painel, ou
+            em Escritório de Mesas → Mesa 7). O Anúncio Inteligente segue 12 etapas, da escolha das fotos até a
+            programação da publicação. Pontos importantes:
           </p>
           <ul className="list-disc pl-5 space-y-1">
             <li>A Júlia nunca inventa fotos — ela usa as fotos reais já cadastradas ou enviadas pelo celular.</li>
@@ -158,7 +159,7 @@ export const ManualAjuda: React.FC = () => {
             </li>
             <li>
               O status <strong>"Concluída"</strong> só aparece quando o próprio canal oficial confirmar a
-              publicação de verdade (ver seção 12) — nunca aparece por um clique humano.
+              publicação de verdade (ver seção 13) — nunca aparece por um clique humano.
             </li>
             <li>
               No chat da Júlia (<strong>Conversar</strong>), pergunte sobre o status real de qualquer campanha —
@@ -167,13 +168,46 @@ export const ManualAjuda: React.FC = () => {
           </ul>
         </section>
 
-        {/* 3. CARLA */}
+        {/* 3. ANÚNCIOS PAGOS */}
         <section className="space-y-3">
-          <SectionHeading id="carla-atendimento">3. Como a Carla recebe e conduz um atendimento</SectionHeading>
+          <SectionHeading id="anuncios-pagos">3. Anúncios pagos com aprovação de orçamento</SectionHeading>
+          <p>
+            Diferente da publicação orgânica (grátis) da seção anterior, um anúncio pago envolve dinheiro real —
+            por isso nunca é iniciado sozinho, nem pela Júlia, nem por nenhuma automação.
+          </p>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>
+              Na Etapa 11 do Anúncio Inteligente, ao lado de "1. Planejar Publicação" e "2. Agendar Publicação
+              Automática", existe a <strong>"3. Propor Anúncio Pago"</strong>. Ela abre um formulário curto:
+              objetivo (Alcance, Tráfego, Mensagens ou Conversões), público-alvo, orçamento (total ou diário) e
+              duração em dias.
+            </li>
+            <li>
+              Ao enviar, a proposta nasce sempre como <strong>"Aguardando Aprovação de Orçamento"</strong> —
+              nenhum anúncio é criado, nenhum valor é reservado, nada é enviado à Meta nesse momento.
+            </li>
+            <li>
+              A proposta aparece nas mesas de <strong>Helena</strong> (aba "5. Automação & Tarefas" → "Anúncios
+              Pagos Aguardando Aprovação") e de <strong>Castro</strong> (aba "4. Anúncios Pagos"). Qualquer uma
+              das duas mesas pode <strong>Aprovar Orçamento</strong> ou <strong>Rejeitar</strong>, mas sempre
+              pedindo o nome de quem decidiu — nunca uma aprovação anônima.
+            </li>
+            <li>
+              Aprovar não publica o anúncio na hora: cria uma tarefa real na fila de tarefas em segundo plano
+              (mesma fila da seção 8), que só avança de verdade quando houver uma conta de anúncios da Meta
+              conectada (ver seção 13). Sem isso, a tarefa falha com o motivo exato e a proposta passa para
+              "Aguardando Integração" — nunca é marcada como veiculada sem essa prova.
+            </li>
+          </ul>
+        </section>
+
+        {/* 4. CARLA */}
+        <section className="space-y-3">
+          <SectionHeading id="carla-atendimento">4. Como a Carla recebe e conduz um atendimento</SectionHeading>
           <p>
             A mesa da <strong>Carla</strong> (Mesa 1) é o ponto de entrada de qualquer cliente novo, seja um
             contato manual (telefone, WhatsApp tradicional, presencial) ou — quando configurado — uma mensagem
-            recebida pelo canal oficial do WhatsApp (seção 12).
+            recebida pelo canal oficial do WhatsApp (seção 13).
           </p>
           <ul className="list-disc pl-5 space-y-1">
             <li>
@@ -202,7 +236,7 @@ export const ManualAjuda: React.FC = () => {
 
         {/* 4. FOTOS PEDRO/LUCAS */}
         <section className="space-y-3">
-          <SectionHeading id="fotos-pedro-lucas">4. Como fotos e dados chegam a Pedro ou Lucas</SectionHeading>
+          <SectionHeading id="fotos-pedro-lucas">5. Como fotos e dados chegam a Pedro ou Lucas</SectionHeading>
           <p>
             As fotos anexadas por Carla (ou enviadas direto pelo celular do cliente/oficina) ficam vinculadas ao
             mesmo atendimento em todas as etapas — nunca são duplicadas quando o pedido passa de mesa em mesa.
@@ -226,7 +260,7 @@ export const ManualAjuda: React.FC = () => {
 
         {/* 5. NOVE AGENTES */}
         <section className="space-y-3">
-          <SectionHeading id="nove-agentes">5. Como usar cada um dos 9 agentes</SectionHeading>
+          <SectionHeading id="nove-agentes">6. Como usar cada um dos 9 agentes</SectionHeading>
           <p>
             Todas as mesas ficam em <strong>Escritório de Mesas</strong> (nove cartões) ou no bloco
             "Departamentos Operacionais" do Painel. Cada uma tem um botão <strong>Conversar</strong> (chat de
@@ -258,7 +292,7 @@ export const ManualAjuda: React.FC = () => {
 
         {/* 6. AUTOMÁTICO VS MANUAL */}
         <section className="space-y-3">
-          <SectionHeading id="automatico-vs-manual">6. O que é automático e o que exige sua ação</SectionHeading>
+          <SectionHeading id="automatico-vs-manual">7. O que é automático e o que exige sua ação</SectionHeading>
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="bg-[#181512] text-[#F9F6F0]">
@@ -280,7 +314,7 @@ export const ManualAjuda: React.FC = () => {
               <tr className="bg-white">
                 <td className="py-2 px-3 align-top">
                   Verificação de uma integração (WhatsApp/Instagram/Facebook) quando o gatilho externo estiver
-                  configurado (seção 12).
+                  configurado (seção 13).
                 </td>
                 <td className="py-2 px-3 align-top">
                   Publicar um anúncio de fato — só sai automaticamente quando o canal estiver com status{' '}
@@ -312,7 +346,7 @@ export const ManualAjuda: React.FC = () => {
 
         {/* 7. APROVAR/PAUSAR TAREFAS */}
         <section className="space-y-3">
-          <SectionHeading id="aprovar-tarefas">7. Aprovar, corrigir, pausar e retomar tarefas</SectionHeading>
+          <SectionHeading id="aprovar-tarefas">8. Aprovar, corrigir, pausar e retomar tarefas</SectionHeading>
           <p>
             Abra a mesa de <strong>Helena</strong> e vá até a aba <strong>5. Automação &amp; Tarefas</strong>.
           </p>
@@ -339,7 +373,7 @@ export const ManualAjuda: React.FC = () => {
 
         {/* 8. PAINEL E RESUMO */}
         <section className="space-y-3">
-          <SectionHeading id="painel-resumo">8. Painel de supervisão e resumo diário</SectionHeading>
+          <SectionHeading id="painel-resumo">9. Painel de supervisão e resumo diário</SectionHeading>
           <p>
             Ainda na mesa de Helena, a aba 5 também mostra, com dados reais:
           </p>
@@ -359,7 +393,7 @@ export const ManualAjuda: React.FC = () => {
 
         {/* 9. VOZES */}
         <section className="space-y-3">
-          <SectionHeading id="vozes">9. Como escolher a voz de cada agente</SectionHeading>
+          <SectionHeading id="vozes">10. Como escolher a voz de cada agente</SectionHeading>
           <p>
             Dentro do chat de qualquer agente, clique em <strong>Voz da mesa</strong> (ao lado do botão de
             mudo/ativar voz).
@@ -381,11 +415,11 @@ export const ManualAjuda: React.FC = () => {
 
         {/* 10. FALHAS COMUNS */}
         <section className="space-y-3">
-          <SectionHeading id="falhas-comuns">10. Reconhecer e resolver falhas comuns</SectionHeading>
+          <SectionHeading id="falhas-comuns">11. Reconhecer e resolver falhas comuns</SectionHeading>
           <ul className="list-disc pl-5 space-y-2">
             <li>
               <strong>Canal mostra "Não Configurado":</strong> normal até você conectar as credenciais reais
-              (seção 12) — use o envio manual enquanto isso.
+              (seção 13) — use o envio manual enquanto isso.
             </li>
             <li>
               <strong>Canal mostra "Erro":</strong> a credencial configurada não está funcionando — confira a
@@ -403,14 +437,14 @@ export const ManualAjuda: React.FC = () => {
             <li>
               <strong>A fila de tarefas não está avançando sozinha:</strong> confira se o gatilho externo
               (Cloud Scheduler) está configurado — sem ele, as tarefas ficam na fila até alguém processar
-              manualmente ou o gatilho ser configurado (seção 12).
+              manualmente ou o gatilho ser configurado (seção 13).
             </li>
           </ul>
         </section>
 
         {/* 11. EXEMPLO DEMONSTRAÇÃO */}
         <section className="space-y-3">
-          <SectionHeading id="exemplo-demo">11. Exemplo completo de atendimento (demonstração)</SectionHeading>
+          <SectionHeading id="exemplo-demo">12. Exemplo completo de atendimento (demonstração)</SectionHeading>
           <div className="p-4 rounded-xl border-2 border-dashed border-[#9A7138] bg-[#FAF8F5] space-y-2 text-xs">
             <p className="font-bold text-[#9A7138] uppercase tracking-wider text-[10px]">
               Exemplo demonstrativo — não é um atendimento real
@@ -447,7 +481,7 @@ export const ManualAjuda: React.FC = () => {
 
         {/* 12. PENDÊNCIAS */}
         <section className="space-y-3">
-          <SectionHeading id="pendencias">12. O que ainda depende de configuração</SectionHeading>
+          <SectionHeading id="pendencias">13. O que ainda depende de configuração</SectionHeading>
           <Note kind="warning">
             O escritório de agentes NÃO deve ser considerado "totalmente automático" até estes dois pontos
             estarem configurados e comprovados:
@@ -474,6 +508,17 @@ export const ManualAjuda: React.FC = () => {
                 sozinho o dia inteiro" depende de configurar um Google Cloud Scheduler externo para chamar essa
                 rota em intervalos regulares — isso precisa ser feito pelo responsável no Console do Google
                 Cloud, fora deste app.
+              </p>
+            </div>
+            <div className="p-3 rounded-lg border border-amber-200 bg-amber-50">
+              <p className="text-xs font-bold text-amber-900">3. Veiculação real de anúncios pagos</p>
+              <p className="text-[11px] text-amber-900 mt-1">
+                O fluxo de proposta e aprovação de orçamento (seção 3) já funciona de ponta a ponta. Mas a
+                veiculação em si — a Meta de fato colocar o anúncio no ar e cobrar — exige uma conta de anúncios
+                da Meta com permissão <code>ads_management</code> e um método de pagamento, configurada como{' '}
+                <code>META_ADS_ACCESS_TOKEN</code> e <code>META_AD_ACCOUNT_ID</code> nas variáveis de ambiente do
+                servidor. Mesmo com a conta conectada, a chamada de criação da campanha na Meta ainda não foi
+                implementada — por enquanto, aprove o orçamento aqui e crie o anúncio manualmente na Meta.
               </p>
             </div>
           </div>
