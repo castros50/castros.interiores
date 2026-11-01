@@ -112,6 +112,7 @@ import type {
   BackgroundTask,
   BackgroundTaskStatus,
   IntegrationConnectionState,
+  AgentVoiceConfig,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -2975,6 +2976,40 @@ async function startServer() {
       settings: store.settings,
     });
     res.json({ ok: true, settings: store.settings });
+  });
+
+  // Voz individual por agente — lida/salva separado de /api/settings para que
+  // qualquer mesa possa ler sua própria voz sem precisar buscar as configurações
+  // inteiras da oficina.
+  app.get('/api/agent-voice-settings', (_req, res) => {
+    const store = loadStore();
+    res.json({ ok: true, agentVoiceSettings: store.settings.agentVoiceSettings || {} });
+  });
+
+  app.put('/api/agent-voice-settings/:deskId', (req, res) => {
+    const store = loadStore();
+    const deskId = req.params.deskId as DepartmentId;
+    const { voiceURI, voiceName, lang, gender } = req.body as {
+      voiceURI: string;
+      voiceName: string;
+      lang: string;
+      gender?: 'feminina' | 'masculina';
+    };
+    if (!voiceURI || !voiceName) {
+      res.status(400).json({ error: 'voiceURI e voiceName são obrigatórios.' });
+      return;
+    }
+    if (!store.settings.agentVoiceSettings) store.settings.agentVoiceSettings = {};
+    const config: AgentVoiceConfig = {
+      voiceURI,
+      voiceName,
+      lang: lang || 'pt-BR',
+      gender,
+      updatedAt: new Date().toISOString(),
+    };
+    store.settings.agentVoiceSettings[deskId] = config;
+    saveStore(store);
+    res.json({ ok: true, config });
   });
 
   // Identidade Visual dos Agentes — retrato por mesa/agente, arquivo fixo e durável

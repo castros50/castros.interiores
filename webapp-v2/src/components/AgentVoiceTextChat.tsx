@@ -16,9 +16,26 @@ import {
   MessageSquare,
   User,
   Bot,
+  Settings2,
 } from 'lucide-react';
-import { DepartmentId, AgentChatMessage, AgentActionProposal } from '../types';
+import { DepartmentId, AgentChatMessage, AgentActionProposal, AgentVoiceConfig } from '../types';
 import { AgentPortrait } from './AgentPortrait';
+
+// Sugestão de gênero por mesa — usada só para pré-selecionar uma aba na escolha
+// de voz (feminino/masculino conforme o personagem); quem decide de fato é o
+// humano ao ouvir a amostra e salvar, nunca uma inferência automática a partir
+// do nome da SpeechSynthesisVoice (a Web Speech API não informa gênero).
+const DESK_SUGGESTED_GENDER: Partial<Record<DepartmentId, 'feminina' | 'masculina'>> = {
+  carla_atendimento: 'feminina',
+  mila_financeiro: 'feminina',
+  julia_marketing: 'feminina',
+  ana_compras: 'feminina',
+  supervisora_geral: 'feminina',
+  pedro_avaliacao: 'masculina',
+  lucas_projetos: 'masculina',
+  castro_estrategia: 'masculina',
+  tapeceiro_tecnico: 'masculina',
+};
 
 interface AgentVoiceTextChatProps {
   deskId: DepartmentId;
@@ -61,6 +78,15 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceSpeechEnabled, setVoiceSpeechEnabled] = useState(true);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+
+  // Voz individual por agente (ver AgentVoiceConfig) — distinta de voiceSpeechEnabled
+  // (que só liga/desliga a fala), e distinta de rate/pitch (que nunca mudam aqui:
+  // a diferenciação é a voz em si, não velocidade/tom de uma voz compartilhada).
+  const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [savedVoiceConfig, setSavedVoiceConfig] = useState<AgentVoiceConfig | null>(null);
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
+  const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>('');
+  const [isSavingVoice, setIsSavingVoice] = useState(false);
 
   // Execução de ação estruturada
   const [executingActionId, setExecutingActionId] = useState<string | null>(null);
@@ -124,6 +150,52 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
     loadChatHistory();
   }, [deskId, attendanceId, campaignId]);
 
+  // Lista de vozes do navegador — getVoices() costuma vir vazia na primeira
+  // chamada; o evento 'voiceschanged' avisa quando a lista real fica pronta.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    const loadVoices = () => setBrowserVoices(window.speechSynthesis.getVoices());
+    loadVoices();
+    window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+  }, []);
+
+  // Carrega a voz salva para esta mesa (persistida no servidor, não no navegador)
+  // e avisa se ela não estiver disponível no dispositivo/navegador atual.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/agent-voice-settings');
+        if (!res.ok) return;
+        const data = await res.json();
+        const config: AgentVoiceConfig | undefined = data?.agentVoiceSettings?.[deskId];
+        if (!active) return;
+        if (config) {
+          setSavedVoiceConfig(config);
+          setSelectedVoiceURI(config.voiceURI);
+        }
+      } catch {
+        // sem servidor disponível — segue com a voz padrão do navegador
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [deskId]);
+
+  // Avisa (sem travar a fala) quando a voz salva não existe mais neste
+  // navegador/dispositivo — nunca finge que a voz escolhida está sendo usada.
+  useEffect(() => {
+    if (!savedVoiceConfig || browserVoices.length === 0) return;
+    const stillAvailable = browserVoices.some((v) => v.voiceURI === savedVoiceConfig.voiceURI);
+    if (!stillAvailable) {
+      setVoiceNotice(
+        `A voz salva para ${agentName} ("${savedVoiceConfig.voiceName}") não está disponível neste navegador/dispositivo. Usando uma voz em português padrão por enquanto — escolha outra em "Voz da mesa" se quiser.`
+      );
+    }
+  }, [savedVoiceConfig, browserVoices, agentName]);
+
   // Sair do modo "Conversa Contínua" encerra o ciclo de escuta/fala imediatamente,
   // para que trocar de modo funcione como um "encerrar" explícito do loop de voz.
   useEffect(() => {
@@ -182,11 +254,17 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
       utterance.rate = 1.05;
       utterance.pitch = 1.0;
 
-      // Selecionar voz em português se disponível
+      // Usa a voz individual salva para esta mesa quando ela existir de fato
+      // neste navegador; só cai para uma voz pt-BR genérica quando não há voz
+      // salva ou quando a salva não está disponível aqui (ver aviso acima).
       const voices = window.speechSynthesis.getVoices();
-      const ptVoice = voices.find((v) => v.lang.includes('pt-BR') || v.lang.includes('pt'));
-      if (ptVoice) {
-        utterance.voice = ptVoice;
+      const savedVoice = savedVoiceConfig
+        ? voices.find((v) => v.voiceURI === savedVoiceConfig.voiceURI)
+        : undefined;
+      const fallbackVoice = voices.find((v) => v.lang.includes('pt-BR') || v.lang.includes('pt'));
+      const chosenVoice = savedVoice || fallbackVoice;
+      if (chosenVoice) {
+        utterance.voice = chosenVoice;
       }
 
       utterance.onstart = () => {
@@ -222,6 +300,65 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
       setIsSpeaking(false);
     }
   };
+
+  // Toca uma amostra com a voz selecionada no seletor (antes de salvar), para o
+  // humano ouvir e decidir — nunca inferimos o gênero da voz automaticamente.
+  const handleTestVoice = () => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    const voice = browserVoices.find((v) => v.voiceURI === selectedVoiceURI);
+    if (!voice) return;
+    stopSpeaking();
+    const utterance = new SpeechSynthesisUtterance(
+      `Olá! Eu sou ${agentName}, da Castros Interiores. Esta é a minha voz.`
+    );
+    utterance.voice = voice;
+    utterance.lang = voice.lang || 'pt-BR';
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Salva a voz escolhida para esta mesa no servidor (persiste entre
+  // recarregamentos/reaberturas — nunca só no navegador local).
+  const handleSaveVoice = async () => {
+    const voice = browserVoices.find((v) => v.voiceURI === selectedVoiceURI);
+    if (!voice) return;
+    setIsSavingVoice(true);
+    try {
+      const res = await fetch(`/api/agent-voice-settings/${deskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          voiceURI: voice.voiceURI,
+          voiceName: voice.name,
+          lang: voice.lang,
+          gender: DESK_SUGGESTED_GENDER[deskId],
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setSavedVoiceConfig(data.config);
+        setVoiceNotice(`Voz de ${agentName} salva: "${voice.name}".`);
+        setVoicePickerOpen(false);
+      } else {
+        setVoiceNotice('Não foi possível salvar a voz agora. Tente novamente.');
+      }
+    } catch {
+      setVoiceNotice('Não foi possível salvar a voz agora (sem conexão com o servidor).');
+    } finally {
+      setIsSavingVoice(false);
+    }
+  };
+
+  // Vozes em português primeiro (mais relevantes aqui), depois as demais —
+  // nunca filtra as outras fora da lista, pois o dispositivo pode não ter
+  // nenhuma voz pt-BR e o humano precisa poder escolher mesmo assim.
+  const sortedVoiceOptions = [...browserVoices].sort((a, b) => {
+    const aPt = a.lang.toLowerCase().startsWith('pt') ? 0 : 1;
+    const bPt = b.lang.toLowerCase().startsWith('pt') ? 0 : 1;
+    if (aPt !== bPt) return aPt - bPt;
+    return a.name.localeCompare(b.name);
+  });
 
   // Iniciar captura de voz via SpeechRecognition
   const startListening = () => {
@@ -577,6 +714,17 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
             {voiceSpeechEnabled ? <Volume2 className="w-3.5 h-3.5 text-[#D8C5A3]" /> : <VolumeX className="w-3.5 h-3.5" />}
           </button>
 
+          {/* Voz individual desta mesa */}
+          <button
+            type="button"
+            onClick={() => setVoicePickerOpen((prev) => !prev)}
+            className="p-2 rounded-lg border text-xs flex items-center gap-1.5 transition-colors bg-[#2E2722] border-[#57534E] text-[#E5DEC9] hover:border-[#9A7138]"
+            title={`Escolher a voz de ${agentName}`}
+          >
+            <Settings2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Voz da mesa</span>
+          </button>
+
           {/* Botão Parar Reprodução */}
           {isSpeaking && (
             <button
@@ -591,6 +739,73 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
           )}
         </div>
       </div>
+
+      {/* Seletor de voz individual da mesa */}
+      {voicePickerOpen && (
+        <div className="bg-[#FAF8F5] border-b border-[#E5DEC9] px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-[#181512]">
+              Voz de {agentName}
+              {DESK_SUGGESTED_GENDER[deskId] && (
+                <span className="ml-2 text-[10px] font-normal text-[#78716C]">
+                  (sugestão: voz {DESK_SUGGESTED_GENDER[deskId]})
+                </span>
+              )}
+            </p>
+            <button type="button" onClick={() => setVoicePickerOpen(false)} className="text-[#78716C] hover:text-[#181512] text-xs">
+              ✕
+            </button>
+          </div>
+          {browserVoices.length === 0 ? (
+            <p className="text-[11px] text-[#78716C]">
+              Este navegador ainda não informou nenhuma voz disponível (ou não tem suporte a síntese de voz).
+            </p>
+          ) : (
+            <>
+              <select
+                value={selectedVoiceURI}
+                onChange={(e) => setSelectedVoiceURI(e.target.value)}
+                className="w-full text-xs border border-[#D9CBAE] rounded-lg px-2 py-1.5 bg-white"
+              >
+                <option value="">Selecione uma voz...</option>
+                {sortedVoiceOptions.map((v) => (
+                  <option key={v.voiceURI} value={v.voiceURI}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
+              <p className="text-[10px] text-[#78716C]">
+                {sortedVoiceOptions.filter((v) => v.lang.toLowerCase().startsWith('pt')).length} voz(es) em português
+                disponível(is) neste navegador, de {sortedVoiceOptions.length} no total. A lista depende do
+                navegador/dispositivo — pode ser diferente em outro aparelho.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleTestVoice}
+                  disabled={!selectedVoiceURI}
+                  className="px-3 py-1.5 rounded-lg border border-[#9A7138] text-[#9A7138] text-xs font-semibold hover:bg-[#9A7138]/10 disabled:opacity-40"
+                >
+                  Testar voz
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveVoice}
+                  disabled={!selectedVoiceURI || isSavingVoice}
+                  className="px-3 py-1.5 rounded-lg bg-[#9A7138] text-white text-xs font-semibold hover:bg-[#86632F] disabled:opacity-40"
+                >
+                  {isSavingVoice ? 'Salvando...' : 'Salvar voz desta mesa'}
+                </button>
+              </div>
+              {savedVoiceConfig && (
+                <p className="text-[10px] text-[#78716C]">
+                  Voz salva atualmente: <strong>{savedVoiceConfig.voiceName}</strong> ({savedVoiceConfig.lang})
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Aviso de voz / Microfone */}
       {voiceNotice && (
