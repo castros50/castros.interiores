@@ -2254,12 +2254,35 @@ async function ensurePhotoFileAvailable(fileName: string): Promise<boolean> {
   }
 }
 
+// Detecta o tipo real da imagem pelos bytes iniciais (assinatura do formato), em vez de
+// confiar na extensão do arquivo em disco — alguns arquivos foram salvos com extensão
+// .jpg mesmo contendo PNG (ex.: retrato de agente e capa, que sempre gravam ".jpg"), e a
+// API da Anthropic recusa a requisição se o mimeType declarado não bater com os bytes.
+function detectImageMimeFromBuffer(buffer: Buffer, extFallback: string): string {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png';
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return extFallback === '.png' ? 'image/png' : extFallback === '.webp' ? 'image/webp' : 'image/jpeg';
+}
+
 function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string } | null {
   try {
     if (imageUrl.startsWith('data:')) {
       const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
       if (match) {
-        return { mimeType: match[1], data: match[2] };
+        const buffer = Buffer.from(match[2], 'base64');
+        const mimeType = detectImageMimeFromBuffer(buffer, '');
+        return { mimeType, data: match[2] };
       }
     }
     if (imageUrl.startsWith('/api/photos/')) {
@@ -2268,9 +2291,7 @@ function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string 
       const filePath = path.join(PHOTOS_DIR, safeId);
       if (fs.existsSync(filePath)) {
         const buffer = fs.readFileSync(filePath);
-        const ext = path.extname(safeId).toLowerCase();
-        const mimeType =
-          ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+        const mimeType = detectImageMimeFromBuffer(buffer, path.extname(safeId).toLowerCase());
         return { mimeType, data: buffer.toString('base64') };
       }
     }
@@ -2279,9 +2300,7 @@ function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string 
       const fullPath = path.join(__dirname, relPath);
       if (fs.existsSync(fullPath)) {
         const buffer = fs.readFileSync(fullPath);
-        const ext = path.extname(fullPath).toLowerCase();
-        const mimeType =
-          ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+        const mimeType = detectImageMimeFromBuffer(buffer, path.extname(fullPath).toLowerCase());
         return { mimeType, data: buffer.toString('base64') };
       }
     }
