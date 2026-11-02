@@ -949,13 +949,13 @@ function generateSocialMediaVersionsServer(
 
 function createDefaultJuliaProject(id = 'proj-julia-01'): JuliaSmartAdProject {
   const today = new Date().toISOString().slice(0, 10);
-  const defaultHeadline = 'A Arte de Renovar o Seu Estofado com Acabamento de Atelier';
+  const defaultHeadline = 'Renove Seu Estofado com Qualidade Profissional — Para Casa e Empresa';
   const defaultCopy =
-    'Transforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.';
-  const defaultCta = 'Solicite Atendimento Exclusivo';
+    'Renovamos sofás, poltronas e cadeiras com cuidado em cada detalhe, para a sua casa ou para o seu negócio. Na Castros Interiores, cada costura, alinhamento e textura recebe atenção e qualidade do início ao fim.';
+  const defaultCta = 'Peça Seu Orçamento';
   const defaultPhone = '(91) 98556-9841';
   const defaultHashtags =
-    '#CastrosInteriores #EstofadosDeAltoPadrao #DesignDeInteriores #DecoracaoElegante #SalaDeEstar #AtelierDeEstofados';
+    '#CastrosInteriores #RenovacaoDeEstofados #EstofadosResidenciaisEComerciais #DecoracaoDeInteriores #SalaDeEstar #ConfortoENovaVida';
 
   const socialVersions = generateSocialMediaVersionsServer(
     defaultHeadline,
@@ -967,13 +967,13 @@ function createDefaultJuliaProject(id = 'proj-julia-01'): JuliaSmartAdProject {
 
   return {
     id,
-    name: 'Campanha Alta Estofaria Artesanal — Castros Interiores',
+    name: 'Campanha Renovação de Estofados — Castros Interiores',
     currentStep: 1,
     selectedPhotoIds: [],
     campaignObjective:
-      'Divulgar a excelência estética, conforto sob medida e renovação de alto padrão em sofás, poltronas e cadeiras da Castros Interiores.',
+      'Divulgar a qualidade, o cuidado e a confiança na renovação de sofás, poltronas e cadeiras da Castros Interiores, para clientes residenciais e comerciais.',
     targetAudience:
-      'Clientes residenciais exigentes, arquitetos e apaixonados por decoração de interiores.',
+      'Famílias, escritórios, comércios e qualquer cliente que queira renovar o estofado em vez de comprar um novo.',
     pieceFormat: 'Anúncio',
     headline: defaultHeadline,
     copyText: defaultCopy,
@@ -985,9 +985,9 @@ function createDefaultJuliaProject(id = 'proj-julia-01'): JuliaSmartAdProject {
     socialMediaVersions: socialVersions,
     posterConfig: {
       headline: defaultHeadline,
-      subheadline: 'Alta Estofaria & Design Artesanal Sob Medida — Castros Interiores',
-      badgeText: 'COLEÇÃO & RENOVAÇÃO DE ALTO PADRÃO',
-      ctaText: 'Solicite Atendimento Exclusivo pelo WhatsApp',
+      subheadline: 'Reforma e Renovação de Estofados — Residencial e Comercial',
+      badgeText: 'QUALIDADE E CONFIANÇA NA RENOVAÇÃO DO SEU ESTOFADO',
+      ctaText: 'Peça Seu Orçamento pelo WhatsApp',
       contactLine: '(91) 98556-9841',
       theme: 'noite_ouro',
     },
@@ -1000,7 +1000,7 @@ function createDefaultJuliaProject(id = 'proj-julia-01'): JuliaSmartAdProject {
       },
       {
         slideNumber: 2,
-        title: 'Acabamento Artesanal de Atelier',
+        title: 'Qualidade Profissional em Cada Detalhe',
         body: 'Costuras alinhadas, caimento impecável e seleção criteriosa de texturas contemporâneas.',
         theme: 'noite_ouro',
       },
