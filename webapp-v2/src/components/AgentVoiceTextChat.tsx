@@ -503,10 +503,10 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           deskId,
-          text: messageContent,
+          userText: messageContent,
           modality,
-          attendanceId,
-          campaignId,
+          orderId: attendanceId,
+          projectId: campaignId,
           history: messages.slice(-8).map((m) => ({
             sender: m.sender,
             text: m.text,
