@@ -34,6 +34,7 @@ import {
   Archive,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
+import { drawCastrosLogoMark } from '../utils/pdfGenerator';
 import JSZip from 'jszip';
 import {
   JuliaCampaignScheduleItem,
@@ -2223,6 +2224,8 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
       doc.setLineWidth(0.3);
       doc.rect(15, 15, 180, 267);
 
+      drawCastrosLogoMark(doc, 105, 22, 8);
+
       doc.setTextColor(216, 197, 163);
       doc.setFontSize(11);
       doc.text(
@@ -2239,7 +2242,7 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
       doc.setTextColor(154, 113, 56);
       doc.setFontSize(12);
       doc.text(
-        'Alta Estofaria Artesanal · Design, Conforto e Acabamento de Atelier',
+        'Qualidade Profissional · Renovação de Estofados Residencial e Comercial',
         105,
         60,
         { align: 'center' }

@@ -57,6 +57,7 @@ import {
   generateShoppingListPdf,
 } from './utils/pdfGenerator';
 import { ResilientImage } from './components/ResilientImage';
+import { CastrosLogo } from './components/CastrosLogo';
 import { CorporateSyncModal, PWAInstallButton } from './components/CorporateSyncModal';
 import { AgentsControlPanel } from './components/AgentsControlPanel';
 import { DepartmentsHub } from './components/DepartmentsHub';
@@ -1234,9 +1235,9 @@ export default function App() {
             e.preventDefault();
             setActiveTab('painel');
           }}
-          className="text-xl font-serif-display font-bold tracking-wide text-[#181512] whitespace-nowrap shrink-0"
+          className="shrink-0"
         >
-          CASTROS INTERIORES
+          <CastrosLogo variant="header" size={38} />
         </a>
 
         {/* Zone 2: Concise single-line navigation links */}
@@ -1548,9 +1549,12 @@ export default function App() {
                   }
                 >
                   <div className="px-6 py-8 sm:px-10 sm:py-10">
-                    <h1 className="text-2xl sm:text-3xl font-serif-display font-bold text-white">
-                      Castros Interiores — Escritório de Agentes
-                    </h1>
+                    <div className="flex items-center gap-4 sm:gap-5">
+                      <CastrosLogo variant="mark" size={56} className="hidden sm:flex" />
+                      <h1 className="text-2xl sm:text-3xl font-serif-display font-bold text-white">
+                        Castros Interiores — Escritório de Agentes
+                      </h1>
+                    </div>
                     <p className="text-sm text-[#E5DEC9] mt-2 max-w-xl">
                       Oito assistentes virtuais cuidam do atendimento, da avaliação técnica, das compras, do financeiro, da fabricação, do marketing, da estratégia e da supervisão — cada um na sua mesa.
                     </p>

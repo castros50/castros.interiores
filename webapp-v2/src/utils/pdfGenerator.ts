@@ -68,6 +68,21 @@ async function loadProportionalImage(url: string): Promise<LoadedImageInfo | nul
 const PRELIMINARY_DISCLAIMER =
   'Avaliação preliminar por fotos. Serviços e orçamento sujeitos à confirmação pelo responsável da Castros Interiores.';
 
+// Marca/logo da Castros Interiores (mesmo selo do favicon e do cabeçalho do
+// site): anel dourado duplo com o monograma "C" em serifa itálica no centro,
+// desenhado em cima dos cabeçalhos escuros (#181512) dos relatórios em PDF.
+export function drawCastrosLogoMark(doc: jsPDF, cx: number, cy: number, r: number) {
+  doc.setDrawColor(154, 113, 56);
+  doc.setLineWidth(0.4);
+  doc.circle(cx, cy, r, 'S');
+  doc.setLineWidth(0.15);
+  doc.circle(cx, cy, r * 0.8, 'S');
+  doc.setFont('times', 'bolditalic');
+  doc.setFontSize(r * 3.6);
+  doc.setTextColor(249, 246, 240);
+  doc.text('C', cx, cy + r * 0.38, { align: 'center' });
+}
+
 function addPageNumbersAndFooter(doc: jsPDF, isConfirmed: boolean, attendanceNumber: string) {
   const pageCount = doc.getNumberOfPages();
   for (let i = 1; i <= pageCount; i++) {
@@ -109,12 +124,13 @@ export async function generateInternalReportPdf(
   // Header Banner
   doc.setFillColor(24, 21, 18);
   doc.rect(15, 14, 180, 22, 'F');
+  drawCastrosLogoMark(doc, 23.5, 25, 6);
   doc.setTextColor(249, 246, 240);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   doc.text(
     `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — RELATÓRIO TÉCNICO INTERNO`,
-    20,
+    34,
     23
   );
   doc.setFont('helvetica', 'normal');
@@ -122,7 +138,7 @@ export async function generateInternalReportPdf(
   doc.setTextColor(212, 185, 140);
   doc.text(
     `Atendimento: ${attendance.attendanceNumber}   |   Estado: ${attendance.status}   |   Emissão: ${new Date().toLocaleDateString('pt-BR')}`,
-    20,
+    34,
     30
   );
 
@@ -637,12 +653,13 @@ export async function generateClientReportPdf(
   // Header Banner
   doc.setFillColor(24, 21, 18);
   doc.rect(15, 14, 180, 24, 'F');
+  drawCastrosLogoMark(doc, 23.5, 26, 6.5);
   doc.setTextColor(249, 246, 240);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(14);
   doc.text(
     `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — AVALIAÇÃO E PROPOSTA`,
-    20,
+    34,
     24
   );
   doc.setFont('helvetica', 'normal');
@@ -652,7 +669,7 @@ export async function generateClientReportPdf(
     `Atendimento: ${attendance.attendanceNumber}   |   Cliente: ${formatMissingText(
       attendance.clientName
     )}   |   Data: ${new Date().toLocaleDateString('pt-BR')}`,
-    20,
+    34,
     31.5
   );
 
@@ -970,12 +987,13 @@ export async function generateShoppingListPdf(
   // Header Banner
   doc.setFillColor(24, 21, 18);
   doc.rect(15, 14, 180, 24, 'F');
+  drawCastrosLogoMark(doc, 23.5, 26, 6.5);
   doc.setTextColor(249, 246, 240);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   doc.text(
     `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — LISTA DE COMPRAS`,
-    20,
+    34,
     23
   );
   doc.setFont('helvetica', 'normal');
@@ -983,12 +1001,12 @@ export async function generateShoppingListPdf(
   doc.setTextColor(212, 185, 140);
   doc.text(
     `Atendimento: ${attendance.attendanceNumber}   |   Lista: ${materialsList.listCode} (rev. ${materialsList.revision})   |   Emissão: ${new Date().toLocaleDateString('pt-BR')}`,
-    20,
+    34,
     30
   );
   doc.text(
     `Comprador responsável: ${formatMissingText(buyerName || materialsList.preparedByName)}`,
-    20,
+    34,
     35
   );
 
@@ -1209,12 +1227,13 @@ export async function generateManufacturingInternalPdf(
   // Banner Cabeçalho
   doc.setFillColor(24, 21, 18);
   doc.rect(15, 14, 180, 24, 'F');
+  drawCastrosLogoMark(doc, 23.5, 26, 6.5);
   doc.setTextColor(249, 246, 240);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   doc.text(
     `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — FICHA TÉCNICA E MANUAL DE MONTAGEM`,
-    20,
+    34,
     23
   );
   doc.setFont('helvetica', 'normal');
@@ -1224,7 +1243,7 @@ export async function generateManufacturingInternalPdf(
     `Pedido: ${attendance.attendanceNumber} (${attendance.orderType || 'Fabricação'})   |   ${
       proj.unitsCount ? `Lote: ${proj.unitsCount} un   |   ` : ''
     }Versão: ${proj.version}   |   ${new Date().toLocaleDateString('pt-BR')}`,
-    20,
+    34,
     30.5
   );
 
@@ -1578,12 +1597,13 @@ export async function generateManufacturingClientPdf(
   // Banner Cabeçalho
   doc.setFillColor(24, 21, 18);
   doc.rect(15, 14, 180, 24, 'F');
+  drawCastrosLogoMark(doc, 23.5, 26, 6.5);
   doc.setTextColor(249, 246, 240);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(14);
   doc.text(
     `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — PROPOSTA DE FABRICAÇÃO SOB MEDIDA`,
-    20,
+    34,
     24
   );
   doc.setFont('helvetica', 'normal');
@@ -1591,7 +1611,7 @@ export async function generateManufacturingClientPdf(
   doc.setTextColor(212, 185, 140);
   doc.text(
     `Proposta: ${attendance.attendanceNumber}   |   Cliente: ${formatMissingText(attendance.clientName)}   |   Data: ${new Date().toLocaleDateString('pt-BR')}`,
-    20,
+    34,
     31.5
   );
 
@@ -1800,16 +1820,17 @@ export async function generateMonthlyFinancialReportPdf(
   // Header Banner
   doc.setFillColor(24, 21, 18);
   doc.rect(15, 14, 180, 22, 'F');
+  drawCastrosLogoMark(doc, 23.5, 25, 6);
   doc.setTextColor(249, 246, 240);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
-  doc.text(`${workshopName.toUpperCase()} — RELATÓRIO FINANCEIRO MENSAL`, 20, 23);
+  doc.text(`${workshopName.toUpperCase()} — RELATÓRIO FINANCEIRO MENSAL`, 34, 23);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(212, 185, 140);
   doc.text(
     `Competência: ${monthLabel}   |   Emissão: ${new Date().toLocaleDateString('pt-BR')}`,
-    20,
+    34,
     30
   );
 
