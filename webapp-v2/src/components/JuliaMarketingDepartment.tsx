@@ -5140,7 +5140,7 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                               <ResilientImage
                                 src={ph.imageUrl || ph.thumbnailDataUrl || ''}
                                 alt={ph.title}
-                                className="w-full h-full object-cover"
+                                className="w-full h-full object-contain"
                               />
                             </div>
                             <div className="text-[10px] font-semibold truncate">
