@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Plus,
   Search,
@@ -158,6 +158,15 @@ export default function App() {
 
   // Persistent Data State
   const [attendances, setAttendances] = useState<AttendanceRecord[]>([]);
+  // Espelha `attendances` em uma ref para leitura síncrona dentro de handlers
+  // assíncronos (ex.: upload de várias fotos em sequência) — sem isso, cada
+  // chamada de handleUploadPhotoFile leria um `activeAttendance.photos`
+  // desatualizado (capturado no fechamento da função) e sobrescreveria as
+  // fotos já salvas pelas chamadas anteriores do mesmo lote.
+  const attendancesRef = useRef<AttendanceRecord[]>(attendances);
+  useEffect(() => {
+    attendancesRef.current = attendances;
+  }, [attendances]);
   const [activeAttendanceId, setActiveAttendanceId] = useState<string | null>(
     () => localStorage.getItem('active_attendance_id')
   );
@@ -688,9 +697,18 @@ export default function App() {
     existingFailedPhotoId?: string
   ) => {
     if (!activeAttendance) return;
+    const attendanceId = activeAttendance.id;
 
+    // Sempre lê o atendimento mais atual da ref (não o `activeAttendance` fechado
+    // nesta função) — essencial quando várias fotos são enviadas em sequência:
+    // sem isso, cada chamada ignoraria as fotos já salvas pelas chamadas
+    // anteriores do mesmo lote e as sobrescreveria ao gravar no servidor.
+    const readCurrentAttendance = (): AttendanceRecord =>
+      attendancesRef.current.find((a) => a.id === attendanceId) || activeAttendance;
+
+    const baseAttendance = readCurrentAttendance();
     const photoId = existingFailedPhotoId || `photo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const nextPhotoNumber = activeAttendance.photos.length + 1;
+    const nextPhotoNumber = baseAttendance.photos.length + 1;
     const code = `F-${String(nextPhotoNumber).padStart(2, '0')}`;
 
     const { fullDataUrl, thumbnailDataUrl, mimeType } =
@@ -699,7 +717,7 @@ export default function App() {
     const optimisticPhoto: AttendancePhoto = {
       id: photoId,
       code,
-      attendanceId: activeAttendance.id,
+      attendanceId,
       furnitureLabel,
       category,
       caption,
@@ -710,26 +728,29 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
 
+    // Reler aqui (depois do await de compressão da miniatura) para incluir
+    // qualquer foto que outra chamada já tenha salvo nesse meio-tempo.
+    const preUploadAttendance = readCurrentAttendance();
     const updatedPhotosUploading = existingFailedPhotoId
-      ? activeAttendance.photos.map((p) =>
+      ? preUploadAttendance.photos.map((p) =>
           p.id === existingFailedPhotoId
             ? { ...p, uploadStatus: 'uploading' as const, errorMessage: undefined }
             : p
         )
-      : [...activeAttendance.photos, optimisticPhoto];
+      : [...preUploadAttendance.photos, optimisticPhoto];
 
     const hasExistingAnalysis =
-      activeAttendance.defectFindings.length > 0 || activeAttendance.reviewCompleted;
+      preUploadAttendance.defectFindings.length > 0 || preUploadAttendance.reviewCompleted;
 
     const draftUploading: AttendanceRecord = {
-      ...activeAttendance,
+      ...preUploadAttendance,
       photos: updatedPhotosUploading,
       status:
-        activeAttendance.status === 'Rascunho' ||
-        activeAttendance.status === 'Aguardando fotos'
+        preUploadAttendance.status === 'Rascunho' ||
+        preUploadAttendance.status === 'Aguardando fotos'
           ? 'Pronto para análise'
-          : activeAttendance.status,
-      reviewCompleted: hasExistingAnalysis ? false : activeAttendance.reviewCompleted,
+          : preUploadAttendance.status,
+      reviewCompleted: hasExistingAnalysis ? false : preUploadAttendance.reviewCompleted,
       staleness: hasExistingAnalysis
         ? {
             defectsAnalysisNeedsReview: true,
@@ -740,7 +761,7 @@ export default function App() {
             staleReason:
               'Novas fotos foram adicionadas ao atendimento. Reexecute ou revise a análise técnica.',
           }
-        : activeAttendance.staleness,
+        : preUploadAttendance.staleness,
     };
 
     setAttendances((prev) =>
@@ -752,7 +773,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          attendanceId: activeAttendance.id,
+          attendanceId,
           photoId,
           dataUrl: fullDataUrl,
           mimeType,
@@ -763,7 +784,13 @@ export default function App() {
         throw new Error(uploadData.error || 'Falha no envio da imagem.');
       }
 
-      const finalPhotos = draftUploading.photos.map((p) =>
+      // Lê de novo após o upload: outras fotos do mesmo lote podem ter
+      // terminado de salvar enquanto esta estava sendo enviada ao servidor.
+      const postUploadAttendance = readCurrentAttendance();
+      const photosForFinalSave = postUploadAttendance.photos.some((p) => p.id === photoId)
+        ? postUploadAttendance.photos
+        : draftUploading.photos;
+      const finalPhotos = photosForFinalSave.map((p) =>
         p.id === photoId
           ? {
               ...p,
@@ -774,7 +801,7 @@ export default function App() {
       );
 
       const finalRecord: AttendanceRecord = {
-        ...draftUploading,
+        ...postUploadAttendance,
         photos: finalPhotos,
       };
 
@@ -784,7 +811,11 @@ export default function App() {
         'Fotos'
       );
     } catch (err) {
-      const failedPhotos = draftUploading.photos.map((p) =>
+      const errorAttendance = readCurrentAttendance();
+      const photosForErrorSave = errorAttendance.photos.some((p) => p.id === photoId)
+        ? errorAttendance.photos
+        : draftUploading.photos;
+      const failedPhotos = photosForErrorSave.map((p) =>
         p.id === photoId
           ? {
               ...p,
@@ -796,7 +827,7 @@ export default function App() {
       );
       setAttendances((prev) =>
         prev.map((a) =>
-          a.id === draftUploading.id ? { ...draftUploading, photos: failedPhotos } : a
+          a.id === errorAttendance.id ? { ...errorAttendance, photos: failedPhotos } : a
         )
       );
     }
