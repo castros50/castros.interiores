@@ -196,6 +196,31 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     createdAt: '2026-10-20T10:00:00.000Z',
     updatedAt: '2026-10-20T10:00:00.000Z',
   },
+  ...([1, 2, 3, 5, 7].map((thicknessCm) => ({
+    id: `mat-espuma-d28-${thicknessCm}cm`,
+    ownerId: 'system',
+    code: `ESP-D28-${String(thicknessCm).padStart(2, '0')}`,
+    name: `Espuma D28 Certificada (Lâmina ${thicknessCm}cm)`,
+    specification: 'Densidade 28 kg/m³ real certificada',
+    category: 'Material' as const,
+    rawCategory: 'espumas' as const,
+    unit: 'm²',
+    consumptionUnit: 'm²',
+    purchaseUnit: 'lâmina',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
+    lossMarginPercent: 10,
+    foamDensity: 'D28 Certificada',
+    foamType: 'Lâmina' as const,
+    dimensionsMm: { length: 2000, width: 1500, thickness: thicknessCm * 10 },
+    physicalStock: 0,
+    reservedStock: 0,
+    supplier: '',
+    priceOrigin: 'Estimativa pendente' as const,
+    isActive: true,
+    createdAt: '2026-11-04T00:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
+  }))),
   {
     id: 'mat-espuma-d33',
     ownerId: 'system',
@@ -326,6 +351,30 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     createdAt: '2026-10-20T10:00:00.000Z',
     updatedAt: '2026-10-20T10:00:00.000Z',
   },
+  {
+    id: 'mat-acrilon',
+    ownerId: 'system',
+    code: 'TEC-ACR-01',
+    name: 'Tecido Acrilon',
+    specification: 'Tecido usado na oficina para revestimento',
+    category: 'Material',
+    rawCategory: 'tecidos_revestimentos',
+    unit: 'm',
+    consumptionUnit: 'm',
+    purchaseUnit: 'rolo',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
+    lossMarginPercent: 15,
+    fabricType: 'Acrilon',
+    patternDirection: 'Sentido do rolo',
+    physicalStock: 0,
+    reservedStock: 0,
+    supplier: '',
+    priceOrigin: 'Estimativa pendente',
+    isActive: true,
+    createdAt: '2026-11-04T00:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
+  },
 
   // 3. MADEIRAS E CHAPAS
   {
@@ -424,6 +473,30 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     updatedAt: '2026-10-20T10:00:00.000Z',
   },
   {
+    id: 'mat-grampo-8014',
+    ownerId: 'system',
+    code: 'GRA-8014',
+    name: 'Grampo Pneumático 80/14',
+    specification: 'Grampo galvanizado coroa 12,8mm x perna 14mm, intermediário entre o 80/10 e o estrutural 14/50',
+    category: 'Material',
+    rawCategory: 'grampos_fixadores',
+    unit: 'unidade',
+    consumptionUnit: 'unidade',
+    purchaseUnit: 'caixa',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
+    lossMarginPercent: 5,
+    stapleType: '80/14',
+    stapleSize: '14mm',
+    physicalStock: 0,
+    reservedStock: 0,
+    supplier: '',
+    priceOrigin: 'Estimativa pendente',
+    isActive: true,
+    createdAt: '2026-11-04T00:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
+  },
+  {
     id: 'mat-grampo-1450',
     ownerId: 'system',
     code: 'GRA-1450',
@@ -461,8 +534,9 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     id: 'mat-cola-contato',
     ownerId: 'system',
     code: 'COL-CON-14',
-    name: 'Adesivo de Contato Especial sem Toluol (Lata 14kg)',
-    specification: 'Cola de contato de alta aderência para colagem de espumas e madeira sem odor tóxico',
+    name: 'Cola de Contato Expley (Lata 14kg)',
+    specification: 'Cola de contato de alta aderência para colagem de espumas e madeira, marca usada na oficina',
+    brand: 'Expley',
     category: 'Material',
     rawCategory: 'colas_auxiliares',
     unit: 'kg',
@@ -548,6 +622,28 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
 
   // 9. OUTROS MATERIAIS
   {
+    id: 'mat-ziper',
+    ownerId: 'system',
+    code: 'ZIP-METRO',
+    name: 'Zíper em Metro (Cadarço)',
+    specification: 'Zíper vendido em metro, para abertura de almofadas e revestimentos removíveis',
+    category: 'Material',
+    rawCategory: 'outros_materiais',
+    unit: 'm',
+    consumptionUnit: 'm',
+    purchaseUnit: 'm',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
+    lossMarginPercent: 5,
+    physicalStock: 0,
+    reservedStock: 0,
+    supplier: '',
+    priceOrigin: 'Estimativa pendente',
+    isActive: true,
+    createdAt: '2026-11-04T00:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
+  },
+  {
     id: 'mat-forro-tnt',
     ownerId: 'system',
     code: 'TNT-100',
@@ -578,30 +674,24 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
   {
     id: 'mat-linha-costura',
     ownerId: 'system',
-    code: 'LIN-NYL-5000',
-    name: 'Linha de Costura Industrial Náilon Robusta (Cone 5.000m)',
-    specification: 'Linha náilon de alta resistência para máquina industrial de tapeçaria, bitola 0,8mm',
+    code: 'LIN-040-060',
+    name: 'Linha de Costura Industrial Bitola 040-060',
+    specification: 'Linha para máquina industrial de tapeçaria, bitola 040-060 (a mais usada na oficina)',
     category: 'Material',
     rawCategory: 'outros_materiais',
     unit: 'm',
     consumptionUnit: 'm',
-    purchaseUnit: 'cone (5.000m)',
-    purchasePackageQuantity: 5000,
-    conversionFactor: 5000,
-    purchasePriceCents: 3500,
-    freightCents: 0,
-    discountCents: 0,
-    unitCostCents: 1, // Cone de 5.000m a R$ 35,00 = R$ 0,007/m arredondado para 1 centavo
-    calculationMemory: 'Cone de 5.000m a R$ 35,00 = R$ 0,007 por metro',
+    purchaseUnit: 'cone',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
     lossMarginPercent: 5,
-    physicalStock: 20000,
+    physicalStock: 0,
     reservedStock: 0,
-    supplier: 'Casa do Tapeceiro',
-    priceDate: '2026-10-20',
-    priceOrigin: 'Fornecedor cadastrado',
+    supplier: '',
+    priceOrigin: 'Estimativa pendente',
     isActive: true,
     createdAt: '2026-10-20T10:00:00.000Z',
-    updatedAt: '2026-10-20T10:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
   },
 
   // SERVIÇOS & LOGÍSTICA
@@ -1440,6 +1530,17 @@ function loadStore(): PersistentStore {
               storeModified = true;
             }
           }
+        }
+
+        // Adicionar ao catálogo persistido os itens padrão novos que ainda não existem nele
+        // (ex.: um material novo cadastrado em uma atualização do código) — sem isso, um
+        // item adicionado aqui só apareceria em instalações novas, nunca na já existente.
+        // Nunca sobrescreve nem remove um item já salvo, só acrescenta os que faltam.
+        const existingMaterialIds = new Set(parsed.materials.map((m) => m.id));
+        const missingDefaults = DEFAULT_MATERIALS.filter((m) => !existingMaterialIds.has(m.id));
+        if (missingDefaults.length > 0) {
+          parsed.materials = [...parsed.materials, ...missingDefaults];
+          storeModified = true;
         }
 
         if (storeModified) {
