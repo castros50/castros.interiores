@@ -575,6 +575,34 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     createdAt: '2026-10-20T10:00:00.000Z',
     updatedAt: '2026-10-20T10:00:00.000Z',
   },
+  {
+    id: 'mat-linha-costura',
+    ownerId: 'system',
+    code: 'LIN-NYL-5000',
+    name: 'Linha de Costura Industrial Náilon Robusta (Cone 5.000m)',
+    specification: 'Linha náilon de alta resistência para máquina industrial de tapeçaria, bitola 0,8mm',
+    category: 'Material',
+    rawCategory: 'outros_materiais',
+    unit: 'm',
+    consumptionUnit: 'm',
+    purchaseUnit: 'cone (5.000m)',
+    purchasePackageQuantity: 5000,
+    conversionFactor: 5000,
+    purchasePriceCents: 3500,
+    freightCents: 0,
+    discountCents: 0,
+    unitCostCents: 1, // Cone de 5.000m a R$ 35,00 = R$ 0,007/m arredondado para 1 centavo
+    calculationMemory: 'Cone de 5.000m a R$ 35,00 = R$ 0,007 por metro',
+    lossMarginPercent: 5,
+    physicalStock: 20000,
+    reservedStock: 0,
+    supplier: 'Casa do Tapeceiro',
+    priceDate: '2026-10-20',
+    priceOrigin: 'Fornecedor cadastrado',
+    isActive: true,
+    createdAt: '2026-10-20T10:00:00.000Z',
+    updatedAt: '2026-10-20T10:00:00.000Z',
+  },
 
   // SERVIÇOS & LOGÍSTICA
   {
@@ -2401,6 +2429,70 @@ function deriveMaterialsListItems(
         createdAt: now,
         updatedAt: now,
       });
+    });
+  }
+
+  // Insumos de bancada: praticamente toda reforma de estofado consome grampo, forro TNT,
+  // linha de costura e cola de contato, mesmo quando nada disso aparece na avaliação de
+  // reaproveitamento (que registra peças/componentes, não consumíveis de oficina). Sem essa
+  // sugestão automática, o responsável tinha que lembrar e digitar cada um manualmente toda
+  // vez. A quantidade continua sempre pendente de medição/confirmação — nunca inventada — e o
+  // preço continua "A cotar", como todo o resto desta função; só o ITEM em si é sugerido.
+  const STANDARD_CONSUMABLE_ITEMS: Array<{
+    key: string;
+    materialCatalogItemId: string;
+    materialName: string;
+    unit: string;
+    justification: string;
+  }> = [
+    {
+      key: 'grampo',
+      materialCatalogItemId: 'mat-grampo-8010',
+      materialName: 'Grampo Pneumático 80/10 (Caixa 5.000 un)',
+      unit: 'unidade',
+      justification:
+        'Insumo padrão de bancada sugerido automaticamente (confirme a quantidade conforme a peça; se a armação precisar de travamento mais pesado, use o Grampo Estrutural 14/50 do catálogo em vez deste).',
+    },
+    {
+      key: 'tnt',
+      materialCatalogItemId: 'mat-forro-tnt',
+      materialName: 'Forro Inferior TNT Gramatura 100g Preto',
+      unit: 'm',
+      justification: 'Insumo padrão de bancada sugerido automaticamente (confirme a metragem conforme a peça).',
+    },
+    {
+      key: 'linha',
+      materialCatalogItemId: 'mat-linha-costura',
+      materialName: 'Linha de Costura Industrial Náilon Robusta (Cone 5.000m)',
+      unit: 'm',
+      justification: 'Insumo padrão de bancada sugerido automaticamente (confirme a metragem conforme a peça).',
+    },
+    {
+      key: 'cola',
+      materialCatalogItemId: 'mat-cola-contato',
+      materialName: 'Adesivo de Contato Especial sem Toluol (Lata 14kg)',
+      unit: 'kg',
+      justification: 'Insumo padrão de bancada sugerido automaticamente (confirme a quantidade conforme a peça).',
+    },
+  ];
+
+  for (const consumable of STANDARD_CONSUMABLE_ITEMS) {
+    items.push({
+      id: `matitem-${tier}-consumivel-${consumable.key}`,
+      component: 'Insumo de bancada',
+      materialCatalogItemId: consumable.materialCatalogItemId,
+      materialName: consumable.materialName,
+      justification: consumable.justification,
+      componentStatus: 'Substituído',
+      unit: consumable.unit,
+      consumptionQuantity: null,
+      purchaseQuantity: null,
+      quantitySource: 'proposta_pendente',
+      quantityStatus: 'Pendente de medição',
+      unitCostCents: null,
+      priceStatus: 'A cotar',
+      createdAt: now,
+      updatedAt: now,
     });
   }
 
