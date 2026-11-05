@@ -108,6 +108,11 @@ import type {
   CashTransfer,
   AttendanceRequestType,
   ComplaintEntry,
+  ReceiptDocument,
+  ReceiptExtractedData,
+  ReceiptKind,
+  ReceiptDirection,
+  MaterialReceiptEntry,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -134,6 +139,7 @@ const __dirname = path.dirname(__filename);
 
 const DATA_DIR = path.join(__dirname, 'data');
 const PHOTOS_DIR = path.join(DATA_DIR, 'photos');
+const RECEIPTS_DIR = path.join(DATA_DIR, 'receipts');
 const STORE_PATH = path.join(DATA_DIR, 'store.json');
 const JULIA_STORE_PATH = path.join(DATA_DIR, 'julia_store.json');
 
@@ -142,6 +148,9 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 if (!fs.existsSync(PHOTOS_DIR)) {
   fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+}
+if (!fs.existsSync(RECEIPTS_DIR)) {
+  fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
 }
 
 interface PersistentStore {
@@ -1302,6 +1311,14 @@ function loadStore(): PersistentStore {
           parsed.officeData.cashTransfers = [];
           storeModified = true;
         }
+        if (!Array.isArray(parsed.officeData.receiptDocuments)) {
+          parsed.officeData.receiptDocuments = [];
+          storeModified = true;
+        }
+        if (!Array.isArray(parsed.officeData.materialReceiptEntries)) {
+          parsed.officeData.materialReceiptEntries = [];
+          storeModified = true;
+        }
         if (!Array.isArray(parsed.officeData.cashAccounts) || parsed.officeData.cashAccounts.length === 0) {
           const now = new Date().toISOString();
           parsed.officeData.cashAccounts = [
@@ -1522,7 +1539,11 @@ function formatGeminiErrorMessage(err: unknown): string {
 
 async function generateContentWithRetryAndFallback(params: {
   preferredModel: string;
-  parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }>;
+  parts: Array<
+    | { text: string }
+    | { inlineData: { mimeType: string; data: string } }
+    | { documentData: { mimeType: string; data: string } }
+  >;
   systemInstruction: string;
   responseSchema: Record<string, unknown>;
   lockKey?: string;
@@ -1542,18 +1563,27 @@ async function generateContentWithRetryAndFallback(params: {
     const maxAttempts = 3;
     let lastError: unknown = null;
 
-    const content = params.parts.map((part) =>
-      'text' in part
-        ? { type: 'text', text: part.text }
-        : {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: part.inlineData.mimeType,
-              data: part.inlineData.data,
-            },
-          }
-    );
+    const content = params.parts.map((part) => {
+      if ('text' in part) return { type: 'text', text: part.text };
+      if ('documentData' in part) {
+        return {
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: part.documentData.mimeType,
+            data: part.documentData.data,
+          },
+        };
+      }
+      return {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: part.inlineData.mimeType,
+          data: part.inlineData.data,
+        },
+      };
+    });
     const toolSchema = convertSchemaToJsonSchema(params.responseSchema as AiSchema);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -1683,6 +1713,64 @@ async function ensurePhotoFileAvailable(fileName: string): Promise<boolean> {
     );
     return false;
   }
+}
+
+// Documentos de "Comprovantes e Lançamentos" (Mesa da Mila): mesmo padrão de
+// persistência das fotos (disco local rápido + espelho no Firebase Storage), mas em
+// pasta própria porque aqui também trafegam PDFs, não só imagens.
+function saveReceiptFile(fileName: string, buffer: Buffer, mimeType: string): void {
+  fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(RECEIPTS_DIR, fileName), buffer);
+  try {
+    storageBucket
+      .file(`receipts/${fileName}`)
+      .save(buffer, { contentType: mimeType, resumable: false })
+      .catch((err) => {
+        console.error(
+          `[Storage Sync] Falha ao enviar o documento ${fileName} para o Firebase Storage:`,
+          err instanceof Error ? err.message : err
+        );
+      });
+  } catch (err) {
+    console.error(
+      `[Storage Sync] Falha síncrona ao preparar o envio do documento ${fileName}:`,
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+async function ensureReceiptFileAvailable(fileName: string): Promise<boolean> {
+  const filePath = path.join(RECEIPTS_DIR, fileName);
+  if (fs.existsSync(filePath)) return true;
+  try {
+    const remoteFile = storageBucket.file(`receipts/${fileName}`);
+    const [exists] = await remoteFile.exists();
+    if (!exists) return false;
+    fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
+    await remoteFile.download({ destination: filePath });
+    return true;
+  } catch (err) {
+    console.error(
+      `[Storage Sync] Falha ao recuperar o documento ${fileName} do Firebase Storage:`,
+      err instanceof Error ? err.message : err
+    );
+    return false;
+  }
+}
+
+function resolveReceiptFileBase64(doc: { fileUrl: string; mimeType: string }): { mimeType: string; data: string } | null {
+  try {
+    const fileName = doc.fileUrl.replace('/api/receipts/file/', '').split('?')[0];
+    const safeId = fileName.replace(/[^a-zA-Z0-9._-]/g, '');
+    const filePath = path.join(RECEIPTS_DIR, safeId);
+    if (fs.existsSync(filePath)) {
+      const buffer = fs.readFileSync(filePath);
+      return { mimeType: doc.mimeType, data: buffer.toString('base64') };
+    }
+  } catch (err) {
+    console.error('Erro ao ler bytes do documento para análise com IA:', err);
+  }
+  return null;
 }
 
 function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string } | null {
@@ -2013,6 +2101,162 @@ function getRealizedCashEvents(t: FinancialTransaction): Array<{ amountCents: nu
     return [{ amountCents: t.amountCents, date: t.paidDate || t.dueDate }];
   }
   return [];
+}
+
+// Recalcula o preço sugerido e o total recebido/saldo a pagar de UM pedido a partir dos
+// seus próprios lançamentos (fin.transactions) — mesma fórmula usada em
+// POST /api/orders/financial, extraída para ser reaproveitada pelas rotas de
+// confirmação/estorno de Comprovantes e Lançamentos sem duplicar a lógica.
+function recalculateOrderFinancialTotals(fin: OrderFinancialData): void {
+  const direct = Number(fin.costDirectCents) || 0;
+  const overhead = Number(fin.overheadShareCents) || 0;
+  const owner = Number(fin.ownerLaborCents) || 0;
+  const freight = Number(fin.logisticsFreightCents) || 0;
+  fin.totalCalculatedCostCents = direct + overhead + owner + freight;
+
+  const cost = fin.totalCalculatedCostCents;
+  const taxRate = (Number(fin.taxesPercent) || 0) / 100;
+
+  if (fin.pricingMethod === 'markup_sobre_custo') {
+    const markupRate = (Number(fin.markupPercent) || 35) / 100;
+    fin.suggestedSellingPriceCents = Math.round(cost * (1 + markupRate) * (1 + taxRate));
+  } else {
+    const marginRate = (Number(fin.targetMarginPercent) || 25) / 100;
+    const denominator = 1 - (marginRate + taxRate);
+    fin.suggestedSellingPriceCents =
+      denominator > 0.05 ? Math.round(cost / denominator) : Math.round(cost * 1.4);
+  }
+
+  const activeSellingPrice =
+    fin.approvedSellingPriceCents !== null && fin.approvedSellingPriceCents !== undefined
+      ? fin.approvedSellingPriceCents
+      : fin.suggestedSellingPriceCents;
+
+  const totalPaid = fin.transactions
+    .filter((t) => t.type === 'receita_cliente' && t.status === 'realizado')
+    .reduce((sum, t) => sum + (Number(t.amountCents) || 0), 0);
+
+  fin.totalPaidCents = totalPaid;
+  fin.remainingBalanceCents = Math.max(0, activeSellingPrice - totalPaid);
+}
+
+// Duplicidade de lançamentos financeiros (Comprovantes e Lançamentos): mesmo tipo +
+// mesmo valor lançado nos últimos N dias, com descrição ou pagador/favorecido
+// parecidos — OU mesmo identificador de documento/transação (nota fiscal, Pix, etc.),
+// que sozinho já basta para sinalizar, mesmo fora da janela de dias. Varre tanto os
+// lançamentos gerais da fábrica quanto os lançamentos de todos os pedidos, porque o
+// mesmo comprovante pode acabar sendo lançado nos dois lugares por engano.
+function findPossibleDuplicateTransactions(
+  store: PersistentStore,
+  candidate: {
+    type?: string;
+    amountCents: number;
+    documentNumber?: string;
+    payerOrPayee?: string;
+    description?: string;
+  },
+  excludeTransactionId?: string,
+  windowDays = 10
+): FinancialTransaction[] {
+  const normalize = (s?: string | null) => (s || '').trim().toLowerCase();
+  const windowStart = new Date(Date.now() - windowDays * 86400000).toISOString();
+  const all: FinancialTransaction[] = [
+    ...((store.officeData?.generalTransactions || [])),
+    ...store.attendances.flatMap((a) => a.financialData?.transactions || []),
+  ];
+  return all.filter((t) => {
+    if (excludeTransactionId && t.id === excludeTransactionId) return false;
+    if (t.status === 'cancelado') return false;
+    if (
+      candidate.documentNumber &&
+      t.sourceDocumentId &&
+      normalize(t.sourceDocumentId) === normalize(candidate.documentNumber)
+    ) {
+      return true;
+    }
+    if (candidate.type && t.type !== candidate.type) return false;
+    if (t.amountCents !== Number(candidate.amountCents)) return false;
+    if ((t.createdAt || '') < windowStart) return false;
+    return (
+      normalize(t.description) === normalize(candidate.description) ||
+      (Boolean(candidate.payerOrPayee) && normalize(t.payerOrPayee) === normalize(candidate.payerOrPayee))
+    );
+  });
+}
+
+// Duplicidade entre documentos recém-enviados (antes mesmo de qualquer lançamento
+// existir) — mesmo identificador de documento, OU mesmo valor e mesma data lidos pela IA.
+function findPossibleDuplicateReceipts(
+  store: PersistentStore,
+  candidate: { documentNumber?: string | null; amountCents?: number | null; date?: string | null },
+  excludeId?: string
+): ReceiptDocument[] {
+  const docs = store.officeData?.receiptDocuments || [];
+  const normalize = (s?: string | null) => (s || '').trim().toLowerCase();
+  return docs.filter((d) => {
+    if (d.id === excludeId) return false;
+    if (d.status === 'ignorado') return false;
+    const ext = d.reviewed || d.extracted;
+    if (!ext) return false;
+    if (candidate.documentNumber && ext.documentNumber && normalize(ext.documentNumber) === normalize(candidate.documentNumber)) {
+      return true;
+    }
+    if (
+      candidate.amountCents != null &&
+      candidate.date &&
+      ext.amountCents === candidate.amountCents &&
+      ext.date === candidate.date
+    ) {
+      return true;
+    }
+    return false;
+  });
+}
+
+const RECEIPT_EXTRACTION_SYSTEM_INSTRUCTION = `Você é um leitor de documentos financeiros (comprovantes de pagamento, recibos e notas fiscais) da Castros Interiores.
+Sua única função é EXTRAIR os dados que estão literalmente escritos ou visíveis no documento enviado.
+
+REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS:
+1. NUNCA invente, estime ou complete um valor, data, nome ou identificador que não esteja legível no documento. Se um campo não estiver visível ou estiver ilegível, devolva null nesse campo e inclua o nome do campo em "missingFields".
+2. NUNCA decida se o documento representa uma entrada (recebimento) ou saída (pagamento) com base no nome do arquivo — decida apenas pelo CONTEÚDO do documento (ex.: "recibo de sinal recebido de [cliente]" é entrada; "nota fiscal de compra de espuma" é saída). Se não houver como ter certeza, devolva "indefinido".
+3. A leitura do documento NUNCA é uma confirmação bancária ou de recebimento — você está apenas transcrevendo o que está escrito, não validando que o dinheiro realmente mudou de mãos.
+4. Se o documento listar itens comprados (nota fiscal, por exemplo), extraia cada item com quantidade, unidade e custo quando disponíveis; itens sem essas informações ficam com os campos ausentes como null.
+5. Um comprovante de AGENDAMENTO de pagamento (ex.: "pagamento agendado para dia X") não é um pagamento confirmado — registre isso em "notes" e marque confidence como "baixa".
+6. Nunca presuma o pagador/recebedor a partir do nome do arquivo ou de suposições — apenas do texto/dados visíveis no próprio documento.`;
+
+function buildReceiptExtractionSchema() {
+  return {
+    type: Type.OBJECT,
+    properties: {
+      amountCents: { type: Type.INTEGER, description: 'Valor total do documento em centavos, ou null se ilegível/ausente.' },
+      date: { type: Type.STRING, description: 'Data do documento/pagamento no formato YYYY-MM-DD, ou null.' },
+      payer: { type: Type.STRING, description: 'Nome de quem pagou/enviou o valor, ou null.' },
+      payee: { type: Type.STRING, description: 'Nome de quem recebeu o valor, ou null.' },
+      paymentMethod: { type: Type.STRING, description: 'Forma de pagamento (Pix, dinheiro, cartão, boleto, transferência), ou null.' },
+      documentNumber: { type: Type.STRING, description: 'Identificador da transação, número da nota fiscal ou do documento, ou null.' },
+      description: { type: Type.STRING, description: 'Descrição livre do que o documento representa, ou null.' },
+      suggestedDirection: { type: Type.STRING, description: '"entrada", "saida" ou "indefinido" — nunca decidido pelo nome do arquivo.' },
+      suggestedKind: { type: Type.STRING, description: '"comprovante_pagamento", "nota_fiscal", "recibo" ou "outro".' },
+      items: {
+        type: Type.ARRAY,
+        description: 'Itens comprados/listados no documento, quando houver (ex.: nota fiscal).',
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            description: { type: Type.STRING },
+            quantity: { type: Type.NUMBER },
+            unit: { type: Type.STRING },
+            unitCostCents: { type: Type.INTEGER },
+            totalCents: { type: Type.INTEGER },
+          },
+        },
+      },
+      confidence: { type: Type.STRING, description: '"alta", "media" ou "baixa".' },
+      missingFields: { type: Type.ARRAY, description: 'Nomes dos campos que não puderam ser lidos.', items: { type: Type.STRING } },
+      notes: { type: Type.STRING, description: 'Observações relevantes, ex.: "parece ser apenas um agendamento, não uma confirmação".' },
+    },
+    required: ['confidence'],
+  };
 }
 
 function computeFactoryFinancialSummary(
@@ -5682,8 +5926,37 @@ ${store.materials
 
       if (deskId === 'mila_financeiro') {
         const fin = computeFactoryFinancialSummary(store);
+        const todayStr = now.slice(0, 10);
+        const sumTodayCents = (txs: FinancialTransaction[]) =>
+          txs.reduce(
+            (s, t) => s + getRealizedCashEvents(t).filter((ev) => ev.date === todayStr).reduce((es, ev) => es + ev.amountCents, 0),
+            0
+          );
+        const entradasHojeCents = sumTodayCents(fin.allTransactions.filter((t) => t.type === 'receita_cliente'));
+        const saidasHojeCents = sumTodayCents(
+          fin.allTransactions.filter((t) => t.type !== 'receita_cliente' && t.type !== 'saldo_inicial' && t.type !== 'estorno_cliente')
+        );
+
+        const receipts = store.officeData?.receiptDocuments || [];
+        const pendingReceipts = receipts.filter((d) => d.status === 'pendente_analise' || d.status === 'pendente_revisao');
+        const materialEntriesThisMonth = (store.officeData?.materialReceiptEntries || []).filter(
+          (e) => (e.receivedAt || '').slice(0, 7) === fin.month
+        );
+        const despesaMaterialMes = fin.allTransactions.filter(
+          (t) => t.type === 'despesa_material' && monthKeyFromDateStr(t.paidDate || t.dueDate) === fin.month
+        );
+        const gastoPorMaterial: Record<string, number> = {};
+        for (const tx of despesaMaterialMes) {
+          const label = tx.payerOrPayee || tx.description;
+          gastoPorMaterial[label] = (gastoPorMaterial[label] || 0) + (tx.amountPaidCents || (tx.status === 'realizado' ? tx.amountCents : 0));
+        }
+        const topGastosMateriais = Object.entries(gastoPorMaterial)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 6);
+
         factualContext += `
 FINANCEIRO GERAL DA FÁBRICA — ${fin.month} (dados reais, atualizados agora):
+- Entradas de hoje (${todayStr}): R$ ${(entradasHojeCents / 100).toFixed(2)} | Saídas de hoje: R$ ${(saidasHojeCents / 100).toFixed(2)}
 - Entradas realizadas no mês: R$ ${(fin.entradasRealizadoMesCents / 100).toFixed(2)}
 - Saídas realizadas no mês: R$ ${(fin.saidasRealizadoMesCents / 100).toFixed(2)}
 - Saldo operacional do mês: R$ ${(fin.saldoOperacionalMesCents / 100).toFixed(2)}
@@ -5692,7 +5965,27 @@ FINANCEIRO GERAL DA FÁBRICA — ${fin.month} (dados reais, atualizados agora):
 - Valores a receber pendentes: ${fin.contasAReceber.length} (soma R$ ${(fin.contasAReceber.reduce((s, t) => s + (t.amountCents - (t.amountPaidCents || 0)), 0) / 100).toFixed(2)})
 - Reserva do Edson no mês (10% dos recebimentos realizados): R$ ${(fin.edsonReserve.reserveCents / 100).toFixed(2)} | já retirado: R$ ${(fin.edsonReserve.withdrawnCents / 100).toFixed(2)} | restante: R$ ${(fin.edsonReserve.remainingCents / 100).toFixed(2)}
 - Saldo inicial registrado: ${fin.initialBalance ? `R$ ${(fin.initialBalance.amountCents / 100).toFixed(2)} em ${fin.initialBalance.referenceDate}` : 'ainda não registrado'}
-REGRA CRÍTICA: distinga sempre valores REALIZADOS (já recebidos/pagos) de PREVISTOS (ainda pendentes) — nunca trate orçamento aprovado como dinheiro recebido. Se a pergunta exigir um dado que não está nesta lista, diga explicitamente que não tem esse dado em mãos em vez de estimar. Você pode sugerir um lançamento, uma retirada ou uma transferência, mas NUNCA registre, confirme ou quite nada sozinha — toda ação financeira real exige confirmação explícita do responsável pelos botões da mesa.
+
+COMPROVANTES E LANÇAMENTOS (Mesa da Mila):
+- Comprovantes/documentos pendentes de revisão ou vínculo: ${pendingReceipts.length}${
+          pendingReceipts.length > 0
+            ? ' — ' + pendingReceipts.slice(0, 5).map((d) => `"${d.fileName || d.id}" (${d.kind}, recebido ${d.uploadedAt.slice(0, 10)})`).join('; ')
+            : ''
+        }
+- Gasto com materiais registrado este mês (${fin.month}), por fornecedor/descrição: ${
+          topGastosMateriais.length > 0
+            ? topGastosMateriais.map(([label, cents]) => `${label}: R$ ${(cents / 100).toFixed(2)}`).join(' | ')
+            : 'nenhum gasto de material registrado neste mês'
+        }
+- Recebimentos de material registrados este mês: ${materialEntriesThisMonth.length} (inclui compras ainda aguardando entrega parcial)
+
+ESTOQUE DE MATÉRIAS-PRIMAS (TOTAL DE ${store.materials.length} ITENS CADASTRADOS):
+${store.materials
+  .slice(0, 10)
+  .map((m) => `  * ${m.name} | Estoque físico: ${m.physicalStock ?? 'N/D'} ${m.unit} | Reservado: ${m.reservedStock ?? 0} ${m.unit}`)
+  .join('\n')}
+
+REGRA CRÍTICA: distinga sempre valores REALIZADOS (já recebidos/pagos) de PREVISTOS (ainda pendentes) — nunca trate orçamento aprovado como dinheiro recebido, e nunca trate a leitura automática de um comprovante como confirmação bancária. Se a pergunta exigir um dado que não está nesta lista, diga explicitamente que não tem esse dado em mãos em vez de estimar. Você pode sugerir um lançamento, uma retirada ou uma transferência, mas NUNCA registre, confirme ou quite nada sozinha — toda ação financeira real exige confirmação explícita do responsável pelos botões da mesa.
 `;
       }
 
@@ -6382,45 +6675,9 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         fin.transactions.push(trans);
       }
 
-      // Recalcular totais financeiros
-      const direct = Number(fin.costDirectCents) || 0;
-      const overhead = Number(fin.overheadShareCents) || 0;
-      const owner = Number(fin.ownerLaborCents) || 0;
-      const freight = Number(fin.logisticsFreightCents) || 0;
-      fin.totalCalculatedCostCents = direct + overhead + owner + freight;
-
-      // Cálculo de Preço de Venda
-      // 1. Margem sobre Venda: PV = Custo / (1 - (Margem% + Impostos%) / 100)
-      // 2. Markup sobre Custo: PV = Custo * (1 + Markup% / 100)
-      const cost = fin.totalCalculatedCostCents;
-      const taxRate = (Number(fin.taxesPercent) || 0) / 100;
-
-      if (fin.pricingMethod === 'markup_sobre_custo') {
-        const markupRate = (Number(fin.markupPercent) || 35) / 100;
-        fin.suggestedSellingPriceCents = Math.round(cost * (1 + markupRate) * (1 + taxRate));
-      } else {
-        // Margem sobre venda
-        const marginRate = (Number(fin.targetMarginPercent) || 25) / 100;
-        const denominator = 1 - (marginRate + taxRate);
-        if (denominator > 0.05) {
-          fin.suggestedSellingPriceCents = Math.round(cost / denominator);
-        } else {
-          fin.suggestedSellingPriceCents = Math.round(cost * 1.4);
-        }
-      }
-
-      // Se o responsável aprovou um preço explícito
-      const activeSellingPrice = fin.approvedSellingPriceCents !== null && fin.approvedSellingPriceCents !== undefined
-        ? fin.approvedSellingPriceCents
-        : fin.suggestedSellingPriceCents;
-
-      // Calcular realizados vs pendentes
-      const totalPaid = fin.transactions
-        .filter((t) => t.type === 'receita_cliente' && t.status === 'realizado')
-        .reduce((sum, t) => sum + (Number(t.amountCents) || 0), 0);
-
-      fin.totalPaidCents = totalPaid;
-      fin.remainingBalanceCents = Math.max(0, activeSellingPrice - totalPaid);
+      // Recalcular totais financeiros (custo, preço sugerido, total pago/saldo)
+      recalculateOrderFinancialTotals(fin);
+      const activeSellingPrice: number = fin.approvedSellingPriceCents ?? fin.suggestedSellingPriceCents ?? 0;
 
       // Sincronizar com budget do atendimento para retrocompatibilidade
       if (order.budget) {
@@ -6437,7 +6694,7 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         actor: 'Mila (Administração Financeira)',
         stage: 'Mesa Financeira',
         action: 'Atualização financeira do pedido calculada',
-        details: `Custo total: R$ ${(cost / 100).toFixed(2)} | Preço: R$ ${(activeSellingPrice / 100).toFixed(2)} (${fin.pricingMethod === 'margem_sobre_venda' ? 'Margem s/ Venda' : 'Markup s/ Custo'}) | Pago: R$ ${(totalPaid / 100).toFixed(2)}`,
+        details: `Custo total: R$ ${((fin.totalCalculatedCostCents || 0) / 100).toFixed(2)} | Preço: R$ ${(activeSellingPrice / 100).toFixed(2)} (${fin.pricingMethod === 'margem_sobre_venda' ? 'Margem s/ Venda' : 'Markup s/ Custo'}) | Pago: R$ ${((fin.totalPaidCents || 0) / 100).toFixed(2)}`,
       });
 
       saveStore(store);
@@ -6706,15 +6963,16 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       // com descrição ou pagador/favorecido parecidos. Nunca bloqueia — só avisa, e só
       // efetivamente registra se o pedido vier com confirmDespiteDuplicate=true.
       const now = new Date().toISOString();
-      const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
-      const normalize = (s?: string) => (s || '').trim().toLowerCase();
-      const possibleDuplicates = store.officeData.generalTransactions.filter(
-        (t) =>
-          t.type === newTransaction.type &&
-          t.amountCents === Number(newTransaction.amountCents) &&
-          (t.createdAt || '') >= threeDaysAgo &&
-          (normalize(t.description) === normalize(newTransaction.description) ||
-            (newTransaction.payerOrPayee && normalize(t.payerOrPayee) === normalize(newTransaction.payerOrPayee)))
+      const possibleDuplicates = findPossibleDuplicateTransactions(
+        store,
+        {
+          type: newTransaction.type,
+          amountCents: Number(newTransaction.amountCents),
+          description: newTransaction.description,
+          payerOrPayee: newTransaction.payerOrPayee,
+        },
+        undefined,
+        3
       );
       if (possibleDuplicates.length > 0 && !confirmDespiteDuplicate) {
         res.json({
@@ -6741,6 +6999,7 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         accountId: newTransaction.accountId,
         receiptImageUrl: newTransaction.receiptImageUrl,
         receiptMimeType: newTransaction.receiptMimeType,
+        sourceDocumentId: newTransaction.sourceDocumentId,
         createdAt: now,
         source: 'fabrica',
         amountPaidCents: newTransaction.status === 'realizado' ? Number(newTransaction.amountCents) || 0 : 0,
@@ -7730,6 +7989,902 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     } catch (error) {
       console.error('Erro ao anexar comprovante:', error);
       res.status(500).json({ error: 'Erro ao anexar comprovante.' });
+    }
+  });
+
+  // ===================== Comprovantes e Lançamentos (Mesa da Mila) =====================
+  // Intake de comprovantes/notas/recibos por foto ou PDF (individual ou em lote), com
+  // leitura automática por IA (nunca uma confirmação) e vínculo explícito — feito por uma
+  // pessoa — a um recebimento de cliente (Carla) ou a uma compra de material (estoque de
+  // Ana). Ver RECEIPT_EXTRACTION_SYSTEM_INSTRUCTION acima para as regras de extração.
+
+  app.post('/api/receipts/upload', async (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      if (!store.officeData.receiptDocuments) store.officeData.receiptDocuments = [];
+      const { files, uploadedBy } = req.body as {
+        files: Array<{ dataUrl: string; fileName?: string; kindHint?: ReceiptKind }>;
+        uploadedBy?: string;
+      };
+      if (!Array.isArray(files) || files.length === 0) {
+        res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+        return;
+      }
+
+      const createdDocuments: ReceiptDocument[] = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const match = (file.dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+        if (!match) continue; // entrada mal formada: ignora, nunca derruba o lote inteiro
+        const detectedMime = match[1] || 'application/octet-stream';
+        const base64Data = match[2];
+        const ext = detectedMime.includes('pdf')
+          ? '.pdf'
+          : detectedMime.includes('png')
+          ? '.png'
+          : detectedMime.includes('webp')
+          ? '.webp'
+          : '.jpg';
+        const safeFileName = `receipt_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 7)}${ext}`;
+        saveReceiptFile(safeFileName, Buffer.from(base64Data, 'base64'), detectedMime);
+
+        const now = new Date().toISOString();
+        const doc: ReceiptDocument = {
+          id: `rcpt-${Date.now()}-${i}`,
+          kind: file.kindHint || 'outro',
+          direction: 'indefinido',
+          fileUrl: `/api/receipts/file/${safeFileName}`,
+          mimeType: detectedMime,
+          fileName: file.fileName,
+          uploadedAt: now,
+          uploadedBy,
+          status: 'pendente_analise',
+          history: [{ action: 'Documento recebido para análise', timestamp: now }],
+        };
+
+        try {
+          const parts: Array<
+            | { text: string }
+            | { inlineData: { mimeType: string; data: string } }
+            | { documentData: { mimeType: string; data: string } }
+          > = [
+            { text: 'Leia este documento financeiro e extraia os dados conforme as regras do sistema.' },
+            detectedMime.includes('pdf')
+              ? { documentData: { mimeType: detectedMime, data: base64Data } }
+              : { inlineData: { mimeType: detectedMime, data: base64Data } },
+          ];
+          const { response } = await generateContentWithRetryAndFallback({
+            preferredModel: store.settings.aiModel || 'claude-sonnet-5',
+            parts,
+            systemInstruction: RECEIPT_EXTRACTION_SYSTEM_INSTRUCTION,
+            responseSchema: buildReceiptExtractionSchema(),
+          });
+          const parsed = JSON.parse(response.text || '{}') as ReceiptExtractedData;
+          doc.extracted = parsed;
+          if (parsed.suggestedKind) doc.kind = parsed.suggestedKind;
+          if (parsed.suggestedDirection) doc.direction = parsed.suggestedDirection;
+          doc.status = 'pendente_revisao';
+          doc.history.push({
+            action: 'Leitura automática concluída — aguardando conferência',
+            timestamp: new Date().toISOString(),
+          });
+
+          const duplicates = findPossibleDuplicateReceipts(
+            store,
+            { documentNumber: parsed.documentNumber, amountCents: parsed.amountCents, date: parsed.date },
+            doc.id
+          );
+          if (duplicates.length > 0) {
+            doc.possibleDuplicateOf = duplicates.map((d) => d.id);
+            doc.history.push({
+              action: 'Possível duplicidade sinalizada para revisão',
+              timestamp: new Date().toISOString(),
+              notes: `Parecido com ${duplicates.length} documento(s) já enviado(s).`,
+            });
+          }
+        } catch (err) {
+          doc.extractionError =
+            err instanceof Error ? err.message : 'Falha desconhecida na leitura automática.';
+          doc.status = 'pendente_revisao';
+          doc.history.push({
+            action: 'Falha na leitura automática — preencha os dados manualmente',
+            timestamp: new Date().toISOString(),
+            notes: doc.extractionError,
+          });
+        }
+
+        store.officeData.receiptDocuments.unshift(doc);
+        createdDocuments.push(doc);
+      }
+
+      saveStore(store);
+      res.json({ ok: true, documents: createdDocuments });
+    } catch (error) {
+      console.error('Erro ao enviar comprovantes:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao enviar comprovantes.',
+      });
+    }
+  });
+
+  // Servir o arquivo (imagem OU PDF) de um documento de Comprovantes e Lançamentos
+  app.get('/api/receipts/file/:fileName', async (req, res) => {
+    const safeFileName = req.params.fileName.replace(/[^a-zA-Z0-9._-]/g, '');
+    const filePath = path.join(RECEIPTS_DIR, safeFileName);
+    const available = fs.existsSync(filePath) || (await ensureReceiptFileAvailable(safeFileName));
+    if (!available) {
+      res.status(404).json({ error: 'Documento não encontrado.' });
+      return;
+    }
+    const ext = path.extname(safeFileName).toLowerCase();
+    const mimeType =
+      ext === '.pdf'
+        ? 'application/pdf'
+        : ext === '.png'
+        ? 'image/png'
+        : ext === '.webp'
+        ? 'image/webp'
+        : 'image/jpeg';
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    fs.createReadStream(filePath).pipe(res);
+  });
+
+  app.get('/api/receipts', (req, res) => {
+    const store = loadStore();
+    const { status } = req.query as { status?: string };
+    let docs = store.officeData?.receiptDocuments || [];
+    if (status) docs = docs.filter((d) => d.status === status);
+    res.json({ ok: true, documents: docs });
+  });
+
+  // Conferir/corrigir manualmente os dados lidos de um documento, antes de vincular
+  app.put('/api/receipts/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const doc = (store.officeData?.receiptDocuments || []).find((d) => d.id === id);
+      if (!doc) {
+        res.status(404).json({ error: 'Documento não encontrado.' });
+        return;
+      }
+      const { reviewed, kind, direction, actor } = req.body as {
+        reviewed?: ReceiptExtractedData;
+        kind?: ReceiptKind;
+        direction?: ReceiptDirection;
+        actor?: string;
+      };
+      const now = new Date().toISOString();
+      if (reviewed) doc.reviewed = { ...(doc.reviewed || doc.extracted || {}), ...reviewed };
+      if (kind) doc.kind = kind;
+      if (direction) doc.direction = direction;
+      if (doc.status === 'pendente_analise') doc.status = 'pendente_revisao';
+      doc.history.push({ action: 'Dados conferidos/corrigidos manualmente', timestamp: now, actor });
+      saveStore(store);
+      res.json({ ok: true, document: doc });
+    } catch (error) {
+      console.error('Erro ao atualizar documento:', error);
+      res.status(500).json({ error: 'Erro ao atualizar documento.' });
+    }
+  });
+
+  app.post('/api/receipts/:id/discard', (req, res) => {
+    const store = loadStore();
+    const { id } = req.params;
+    const doc = (store.officeData?.receiptDocuments || []).find((d) => d.id === id);
+    if (!doc) {
+      res.status(404).json({ error: 'Documento não encontrado.' });
+      return;
+    }
+    const { reason, actor } = req.body as { reason?: string; actor?: string };
+    const now = new Date().toISOString();
+    doc.status = 'ignorado';
+    doc.discardReason = reason;
+    doc.history.push({ action: 'Documento descartado', timestamp: now, actor, notes: reason });
+    saveStore(store);
+    res.json({ ok: true, document: doc });
+  });
+
+  // Anexar um documento adicional (ex.: nota fiscal) a um lançamento JÁ existente,
+  // sem criar um novo lançamento nem contabilizar o valor de novo.
+  app.post('/api/receipts/:id/attach-additional', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const doc = (store.officeData?.receiptDocuments || []).find((d) => d.id === id);
+      if (!doc) {
+        res.status(404).json({ error: 'Documento não encontrado.' });
+        return;
+      }
+      if (doc.status === 'vinculado') {
+        res.status(400).json({ error: 'Este documento já está vinculado.' });
+        return;
+      }
+
+      const { targetTransactionId, actor } = req.body as { targetTransactionId: string; actor?: string };
+      if (!targetTransactionId) {
+        res.status(400).json({ error: 'Informe o lançamento ao qual anexar este documento.' });
+        return;
+      }
+
+      let targetTrans: FinancialTransaction | undefined = (store.officeData?.generalTransactions || []).find(
+        (t) => t.id === targetTransactionId
+      );
+      let targetOrder: AttendanceRecord | undefined;
+      if (!targetTrans) {
+        for (const a of store.attendances) {
+          const found = a.financialData?.transactions.find((t) => t.id === targetTransactionId);
+          if (found) {
+            targetTrans = found;
+            targetOrder = a;
+            break;
+          }
+        }
+      }
+      if (!targetTrans) {
+        res.status(404).json({ error: 'Lançamento não encontrado.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      targetTrans.receiptImageUrl = targetTrans.receiptImageUrl || doc.fileUrl;
+      targetTrans.receiptMimeType = targetTrans.receiptMimeType || doc.mimeType;
+      targetTrans.receiptDocumentIds = Array.from(new Set([...(targetTrans.receiptDocumentIds || []), doc.id]));
+      targetTrans.history.push({
+        action: 'Documento adicional anexado ao lançamento existente (sem duplicar)',
+        timestamp: now,
+        notes: actor,
+      });
+
+      doc.status = 'vinculado';
+      doc.linkedTransactionId = targetTrans.id;
+      doc.linkedOrderId = targetOrder?.id;
+      doc.history.push({ action: 'Anexado a lançamento já existente — não gerou novo lançamento', timestamp: now, actor });
+
+      saveStore(store);
+      if (targetOrder) {
+        broadcastRealtimeEvent({
+          type: 'attendance:updated',
+          timestamp: now,
+          sourceStationName: 'Mila (Administração Financeira)',
+          attendance: targetOrder,
+        });
+      }
+      res.json({ ok: true, document: doc, transaction: targetTrans });
+    } catch (error) {
+      console.error('Erro ao anexar documento adicional:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Erro ao anexar documento.' });
+    }
+  });
+
+  // Vincular um comprovante conferido a um recebimento de cliente (pedido existente) —
+  // nunca confirma o pagamento sozinho, só anexa e prepara o lançamento pendente.
+  app.post('/api/receipts/:id/link-client-payment', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const doc = (store.officeData?.receiptDocuments || []).find((d) => d.id === id);
+      if (!doc) {
+        res.status(404).json({ error: 'Documento não encontrado.' });
+        return;
+      }
+      if (doc.status === 'vinculado') {
+        res.status(400).json({ error: 'Este documento já está vinculado a um lançamento.' });
+        return;
+      }
+
+      const {
+        orderId,
+        transactionId,
+        amountCents,
+        description,
+        paymentMethod,
+        documentNumber,
+        paidDate,
+        actor,
+        confirmDespiteDuplicate,
+      } = req.body as {
+        orderId: string;
+        transactionId?: string;
+        amountCents?: number;
+        description?: string;
+        paymentMethod?: string;
+        documentNumber?: string;
+        paidDate?: string;
+        actor?: string;
+        confirmDespiteDuplicate?: boolean;
+      };
+      const order = store.attendances.find((a) => a.id === orderId);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      if (!order.financialData) {
+        res.status(400).json({ error: 'Este pedido ainda não tem dados financeiros iniciados.' });
+        return;
+      }
+      const fin = order.financialData;
+      const now = new Date().toISOString();
+      const ext = doc.reviewed || doc.extracted;
+      const effectiveAmount = amountCents != null ? Number(amountCents) : ext?.amountCents || undefined;
+      if (!effectiveAmount || effectiveAmount <= 0) {
+        res.status(400).json({ error: 'Informe o valor do comprovante.' });
+        return;
+      }
+
+      let trans: FinancialTransaction | undefined;
+      if (transactionId) {
+        trans = fin.transactions.find((t) => t.id === transactionId);
+        if (!trans) {
+          res.status(404).json({ error: 'Lançamento pendente não encontrado neste pedido.' });
+          return;
+        }
+        if (trans.status === 'realizado') {
+          res.status(400).json({ error: 'Este lançamento já está totalmente confirmado.' });
+          return;
+        }
+      } else {
+        const duplicates = findPossibleDuplicateTransactions(
+          store,
+          {
+            type: 'receita_cliente',
+            amountCents: effectiveAmount,
+            documentNumber: documentNumber || ext?.documentNumber || undefined,
+            description: description || ext?.description || undefined,
+            payerOrPayee: ext?.payer || undefined,
+          },
+          undefined,
+          10
+        );
+        if (duplicates.length > 0 && !confirmDespiteDuplicate) {
+          res.json({ ok: false, possibleDuplicate: true, duplicates });
+          return;
+        }
+        trans = {
+          id: `tx-${Date.now()}`,
+          orderId,
+          type: 'receita_cliente',
+          amountCents: effectiveAmount,
+          status: 'previsto',
+          dueDate: paidDate || now.slice(0, 10),
+          description: description || ext?.description || 'Recebimento de cliente (via Comprovantes e Lançamentos)',
+          sourceDocumentId: documentNumber || ext?.documentNumber || undefined,
+          payerOrPayee: ext?.payer || undefined,
+          paymentMethod: paymentMethod || ext?.paymentMethod || undefined,
+          createdAt: now,
+          history: [],
+        };
+        fin.transactions.push(trans);
+      }
+
+      trans.receiptImageUrl = trans.receiptImageUrl || doc.fileUrl;
+      trans.receiptMimeType = trans.receiptMimeType || doc.mimeType;
+      trans.receiptDocumentIds = Array.from(new Set([...(trans.receiptDocumentIds || []), doc.id]));
+      if (documentNumber || ext?.documentNumber) {
+        trans.sourceDocumentId = documentNumber || ext?.documentNumber || trans.sourceDocumentId;
+      }
+      trans.history.push({
+        action: 'Comprovante conferido e vinculado via Comprovantes e Lançamentos — aguardando confirmação do recebimento',
+        timestamp: now,
+        notes: actor,
+      });
+
+      recalculateOrderFinancialTotals(fin);
+
+      doc.status = 'vinculado';
+      doc.linkedTransactionId = trans.id;
+      doc.linkedOrderId = order.id;
+      doc.reviewed = {
+        ...(doc.reviewed || ext || {}),
+        amountCents: effectiveAmount,
+        documentNumber: documentNumber || ext?.documentNumber,
+        paymentMethod: paymentMethod || ext?.paymentMethod,
+      };
+      doc.history.push({ action: `Vinculado ao pedido ${order.attendanceNumber}`, timestamp: now, actor });
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: actor || 'Mila (Administração Financeira)',
+        stage: 'Comprovantes e Lançamentos',
+        action: 'Comprovante de cliente conferido e vinculado',
+        details: 'Vínculo feito — ainda não confirma o recebimento, só a conferência do documento.',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Mila (Administração Financeira)',
+        attendance: order,
+      });
+      res.json({ ok: true, order, transaction: trans, document: doc });
+    } catch (error) {
+      console.error('Erro ao vincular comprovante de cliente:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Erro ao vincular comprovante.' });
+    }
+  });
+
+  // Confirmar efetivamente o recebimento (total ou parcial) de um lançamento de cliente
+  // já existente — a leitura/vínculo do comprovante NUNCA confirma isso sozinha.
+  app.post('/api/orders/:id/transactions/:txId/confirm-payment', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, txId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order || !order.financialData) {
+        res.status(404).json({ error: 'Pedido ou dados financeiros não encontrados.' });
+        return;
+      }
+      const fin = order.financialData;
+      const trans = fin.transactions.find((t) => t.id === txId);
+      if (!trans) {
+        res.status(404).json({ error: 'Lançamento não encontrado.' });
+        return;
+      }
+      if (trans.status === 'realizado') {
+        res.status(400).json({ error: 'Este lançamento já está confirmado.' });
+        return;
+      }
+      if (trans.status === 'cancelado') {
+        res.status(400).json({ error: 'Este lançamento foi estornado e não pode ser confirmado.' });
+        return;
+      }
+
+      const { amountCents, paidDate, paymentMethod, notes, actor } = req.body as {
+        amountCents?: number;
+        paidDate?: string;
+        paymentMethod?: string;
+        notes?: string;
+        actor?: string;
+      };
+      const now = new Date().toISOString();
+      const alreadyPaid = trans.amountPaidCents || 0;
+      const remaining = Math.max(0, trans.amountCents - alreadyPaid);
+      const payAmount = amountCents != null ? Number(amountCents) : remaining;
+      if (!payAmount || payAmount <= 0) {
+        res.status(400).json({ error: 'Informe um valor de recebimento válido.' });
+        return;
+      }
+      if (payAmount > remaining) {
+        res.status(400).json({
+          error: `Valor informado (R$ ${(payAmount / 100).toFixed(2)}) excede o saldo pendente (R$ ${(remaining / 100).toFixed(2)}).`,
+        });
+        return;
+      }
+
+      if (!trans.payments) trans.payments = [];
+      trans.payments.push({
+        id: `pay-${Date.now()}`,
+        amountCents: payAmount,
+        paidDate: paidDate || now.slice(0, 10),
+        paymentMethod,
+        notes,
+      });
+      trans.amountPaidCents = alreadyPaid + payAmount;
+      trans.status = trans.amountPaidCents >= trans.amountCents ? 'realizado' : 'parcial';
+      trans.paidDate = paidDate || now.slice(0, 10);
+      if (paymentMethod) trans.paymentMethod = paymentMethod;
+      trans.history.push({
+        action: trans.status === 'realizado' ? 'Recebimento confirmado pela Mila' : 'Recebimento parcial confirmado pela Mila',
+        timestamp: now,
+        notes: `R$ ${(payAmount / 100).toFixed(2)}${notes ? ' — ' + notes : ''}${actor ? ' (' + actor + ')' : ''}`,
+      });
+
+      recalculateOrderFinancialTotals(fin);
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: actor || 'Mila (Administração Financeira)',
+        stage: 'Comprovantes e Lançamentos',
+        action: trans.status === 'realizado' ? 'Recebimento de cliente confirmado' : 'Recebimento parcial de cliente confirmado',
+        details: `R$ ${(payAmount / 100).toFixed(2)} referente a "${trans.description}".`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Mila (Administração Financeira)',
+        attendance: order,
+      });
+      res.json({ ok: true, order, transaction: trans, financialData: fin });
+    } catch (error) {
+      console.error('Erro ao confirmar recebimento:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Erro ao confirmar recebimento.' });
+    }
+  });
+
+  // Estornar um lançamento de cliente já confirmado — nunca apaga o original, cria um
+  // movimento de estorno próprio e vinculado (reversalOfTransactionId).
+  app.post('/api/orders/:id/transactions/:txId/reverse', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, txId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order || !order.financialData) {
+        res.status(404).json({ error: 'Pedido ou dados financeiros não encontrados.' });
+        return;
+      }
+      const fin = order.financialData;
+      const trans = fin.transactions.find((t) => t.id === txId);
+      if (!trans) {
+        res.status(404).json({ error: 'Lançamento não encontrado.' });
+        return;
+      }
+      if (trans.status === 'cancelado') {
+        res.status(400).json({ error: 'Este lançamento já foi estornado.' });
+        return;
+      }
+
+      const { reason, actor } = req.body as { reason?: string; actor?: string };
+      if (!reason || !reason.trim()) {
+        res.status(400).json({ error: 'Informe o motivo do estorno.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const reversedAmount = trans.amountPaidCents && trans.amountPaidCents > 0 ? trans.amountPaidCents : trans.amountCents;
+      trans.status = 'cancelado';
+      trans.history.push({ action: 'Lançamento estornado', timestamp: now, notes: `${reason}${actor ? ' — ' + actor : ''}` });
+
+      const reversal: FinancialTransaction = {
+        id: `tx-${Date.now()}`,
+        orderId: id,
+        type: 'estorno_cliente',
+        amountCents: reversedAmount,
+        status: 'realizado',
+        dueDate: now.slice(0, 10),
+        paidDate: now.slice(0, 10),
+        description: `Estorno de: ${trans.description}`,
+        reversalOfTransactionId: trans.id,
+        createdAt: now,
+        history: [{ action: 'Estorno registrado', timestamp: now, notes: reason }],
+      };
+      fin.transactions.push(reversal);
+
+      recalculateOrderFinancialTotals(fin);
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: actor || 'Mila (Administração Financeira)',
+        stage: 'Comprovantes e Lançamentos',
+        action: 'Estorno de recebimento de cliente',
+        details: `${reason} — R$ ${(reversedAmount / 100).toFixed(2)} referente a "${trans.description}".`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Mila (Administração Financeira)',
+        attendance: order,
+      });
+      res.json({ ok: true, order, transaction: trans, reversal, financialData: fin });
+    } catch (error) {
+      console.error('Erro ao estornar lançamento:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Erro ao estornar lançamento.' });
+    }
+  });
+
+  // Vincular um comprovante conferido a uma compra de material — registra a saída
+  // financeira e, só pela quantidade EFETIVAMENTE recebida, a entrada no estoque.
+  app.post('/api/receipts/:id/link-material-purchase', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      if (!store.officeData.generalTransactions) store.officeData.generalTransactions = [];
+      if (!store.officeData.materialReceiptEntries) store.officeData.materialReceiptEntries = [];
+      const { id } = req.params;
+      const doc = (store.officeData.receiptDocuments || []).find((d) => d.id === id);
+      if (!doc) {
+        res.status(404).json({ error: 'Documento não encontrado.' });
+        return;
+      }
+      if (doc.status === 'vinculado') {
+        res.status(400).json({ error: 'Este documento já está vinculado.' });
+        return;
+      }
+
+      const {
+        materialId,
+        quantityReceived,
+        unit,
+        totalCostCents,
+        unitCostOverrideCents,
+        specification,
+        foamDensity,
+        dimensionsMm,
+        supplier,
+        paymentMethod,
+        documentNumber,
+        paidDate,
+        markPaid,
+        pendingQuantity,
+        actor,
+        confirmDespiteDuplicate,
+        accountId,
+      } = req.body as {
+        materialId: string;
+        quantityReceived?: number;
+        unit?: string;
+        totalCostCents: number;
+        unitCostOverrideCents?: number;
+        specification?: string;
+        foamDensity?: string;
+        dimensionsMm?: { length?: number; width?: number; thickness?: number };
+        supplier?: string;
+        paymentMethod?: string;
+        documentNumber?: string;
+        paidDate?: string;
+        markPaid?: boolean;
+        pendingQuantity?: number;
+        actor?: string;
+        confirmDespiteDuplicate?: boolean;
+        accountId?: string;
+      };
+
+      const material = store.materials.find((m) => m.id === materialId);
+      if (!material) {
+        res.status(404).json({ error: 'Material não encontrado no catálogo.' });
+        return;
+      }
+      if (!totalCostCents || totalCostCents <= 0) {
+        res.status(400).json({ error: 'Informe o valor pago na compra.' });
+        return;
+      }
+
+      const ext = doc.reviewed || doc.extracted;
+      const qtyReceived = Number(quantityReceived) || 0;
+      const now = new Date().toISOString();
+
+      const duplicates = findPossibleDuplicateTransactions(
+        store,
+        {
+          type: 'despesa_material',
+          amountCents: Number(totalCostCents),
+          documentNumber: documentNumber || ext?.documentNumber || undefined,
+          description: `Compra de material: ${material.name}`,
+          payerOrPayee: supplier || material.supplier,
+        },
+        undefined,
+        10
+      );
+      if (duplicates.length > 0 && !confirmDespiteDuplicate) {
+        res.json({ ok: false, possibleDuplicate: true, duplicates });
+        return;
+      }
+
+      const trans: FinancialTransaction = {
+        id: `gt-${Date.now()}`,
+        type: 'despesa_material',
+        description: `Compra de material: ${material.name}`,
+        amountCents: Number(totalCostCents),
+        status: markPaid ? 'realizado' : 'previsto',
+        dueDate: paidDate || now.slice(0, 10),
+        paidDate: markPaid ? paidDate || now.slice(0, 10) : undefined,
+        paymentMethod: paymentMethod || ext?.paymentMethod || undefined,
+        category: 'Material',
+        payerOrPayee: supplier || material.supplier,
+        accountId,
+        receiptImageUrl: doc.fileUrl,
+        receiptMimeType: doc.mimeType,
+        sourceDocumentId: documentNumber || ext?.documentNumber || undefined,
+        receiptDocumentIds: [doc.id],
+        createdAt: now,
+        source: 'fabrica',
+        amountPaidCents: markPaid ? Number(totalCostCents) : 0,
+        payments: markPaid
+          ? [
+              {
+                id: `pay-${Date.now()}`,
+                amountCents: Number(totalCostCents),
+                paidDate: paidDate || now.slice(0, 10),
+                paymentMethod: paymentMethod || ext?.paymentMethod || undefined,
+              },
+            ]
+          : [],
+        history: [{ action: 'Compra de material registrada via Comprovantes e Lançamentos', timestamp: now }],
+      };
+      store.officeData.generalTransactions.unshift(trans);
+
+      let receiptEntry: MaterialReceiptEntry;
+      if (qtyReceived > 0) {
+        const unitCost =
+          unitCostOverrideCents != null
+            ? Number(unitCostOverrideCents)
+            : Math.round(Number(totalCostCents) / qtyReceived);
+
+        material.physicalStock = (material.physicalStock || 0) + qtyReceived;
+        material.unitCostCents = unitCost;
+        material.priceOrigin = 'Nota Fiscal';
+        material.priceDate = paidDate || now.slice(0, 10);
+        if (foamDensity) material.foamDensity = foamDensity;
+        if (dimensionsMm) {
+          material.dimensionsMm = {
+            length: dimensionsMm.length ?? material.dimensionsMm?.length ?? 0,
+            width: dimensionsMm.width ?? material.dimensionsMm?.width ?? 0,
+            thickness: dimensionsMm.thickness ?? material.dimensionsMm?.thickness ?? 0,
+          };
+        }
+        material.updatedAt = now;
+
+        receiptEntry = {
+          id: `mre-${Date.now()}`,
+          materialId: material.id,
+          receiptDocumentId: doc.id,
+          transactionId: trans.id,
+          quantityReceived: qtyReceived,
+          unit: unit || material.unit,
+          unitCostCents: unitCost,
+          totalCostCents: unitCost * qtyReceived,
+          specification: specification || material.specification,
+          foamDensity,
+          dimensionsMm,
+          supplier: supplier || material.supplier,
+          receivedAt: now,
+          receivedBy: actor,
+          partial: Boolean(pendingQuantity && pendingQuantity > 0),
+          pendingQuantity: pendingQuantity || 0,
+          movementType: 'recebimento',
+        };
+        store.officeData.materialReceiptEntries.unshift(receiptEntry);
+        broadcastRealtimeEvent({ type: 'materials:updated', timestamp: now, materials: store.materials });
+      } else {
+        receiptEntry = {
+          id: `mre-${Date.now()}`,
+          materialId: material.id,
+          receiptDocumentId: doc.id,
+          transactionId: trans.id,
+          quantityReceived: 0,
+          unit: unit || material.unit,
+          unitCostCents: unitCostOverrideCents || 0,
+          totalCostCents: Number(totalCostCents),
+          specification: specification || material.specification,
+          foamDensity,
+          dimensionsMm,
+          supplier: supplier || material.supplier,
+          receivedAt: now,
+          receivedBy: actor,
+          partial: true,
+          pendingQuantity: pendingQuantity || undefined,
+          movementType: 'recebimento',
+          notes: 'Pago, aguardando entrega — estoque ainda não movimentado.',
+        };
+        store.officeData.materialReceiptEntries.unshift(receiptEntry);
+      }
+
+      doc.status = 'vinculado';
+      doc.linkedTransactionId = trans.id;
+      doc.linkedPurchaseId = receiptEntry.id;
+      doc.reviewed = {
+        ...(doc.reviewed || ext || {}),
+        amountCents: Number(totalCostCents),
+        documentNumber: documentNumber || ext?.documentNumber,
+      };
+      doc.history.push({ action: `Vinculado à compra de material "${material.name}"`, timestamp: now, actor });
+
+      saveStore(store);
+      res.json({ ok: true, transaction: trans, material, receiptEntry, document: doc });
+    } catch (error) {
+      console.error('Erro ao vincular compra de material:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Erro ao vincular compra de material.' });
+    }
+  });
+
+  app.get('/api/material-receipts', (req, res) => {
+    const store = loadStore();
+    res.json({ ok: true, entries: store.officeData?.materialReceiptEntries || [] });
+  });
+
+  // Completar depois a parte que ainda estava "aguardando entrega" de uma compra parcial
+  app.post('/api/material-receipts/:id/complete-delivery', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const entry = (store.officeData?.materialReceiptEntries || []).find((e) => e.id === id);
+      if (!entry) {
+        res.status(404).json({ error: 'Registro de recebimento não encontrado.' });
+        return;
+      }
+      const material = store.materials.find((m) => m.id === entry.materialId);
+      if (!material) {
+        res.status(404).json({ error: 'Material não encontrado no catálogo.' });
+        return;
+      }
+
+      const { quantityReceived, notes } = req.body as { quantityReceived: number; notes?: string };
+      const qty = Number(quantityReceived);
+      if (!qty || qty <= 0) {
+        res.status(400).json({ error: 'Informe a quantidade recebida agora.' });
+        return;
+      }
+      const pending = entry.pendingQuantity || 0;
+      if (qty > pending) {
+        res.status(400).json({ error: `Quantidade informada (${qty}) excede o que ainda estava pendente (${pending}).` });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      material.physicalStock = (material.physicalStock || 0) + qty;
+      material.updatedAt = now;
+
+      entry.quantityReceived += qty;
+      entry.pendingQuantity = pending - qty;
+      entry.partial = entry.pendingQuantity > 0;
+      entry.notes = [entry.notes, notes].filter(Boolean).join(' | ') || entry.notes;
+
+      saveStore(store);
+      broadcastRealtimeEvent({ type: 'materials:updated', timestamp: now, materials: store.materials });
+      res.json({ ok: true, material, receiptEntry: entry });
+    } catch (error) {
+      console.error('Erro ao completar recebimento de material:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Erro ao completar recebimento de material.' });
+    }
+  });
+
+  // Devolução de material ao fornecedor (estorno de estoque) — movimento próprio,
+  // vinculável por referência ao recebimento original, nunca o mesmo registro.
+  app.post('/api/materials/:id/return', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const material = store.materials.find((m) => m.id === id);
+      if (!material) {
+        res.status(404).json({ error: 'Material não encontrado.' });
+        return;
+      }
+      const { quantity, relatedEntryId, notes, actor } = req.body as {
+        quantity: number;
+        relatedEntryId?: string;
+        notes?: string;
+        actor?: string;
+      };
+      const qty = Number(quantity);
+      if (!qty || qty <= 0) {
+        res.status(400).json({ error: 'Informe a quantidade devolvida.' });
+        return;
+      }
+      if ((material.physicalStock || 0) < qty) {
+        res.status(400).json({
+          error: `Estoque físico atual (${material.physicalStock || 0}) é menor que a quantidade a devolver.`,
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      material.physicalStock = (material.physicalStock || 0) - qty;
+      material.updatedAt = now;
+
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      if (!store.officeData.materialReceiptEntries) store.officeData.materialReceiptEntries = [];
+      const entry: MaterialReceiptEntry = {
+        id: `mre-${Date.now()}`,
+        materialId: material.id,
+        quantityReceived: -qty,
+        unit: material.unit,
+        unitCostCents: material.unitCostCents,
+        totalCostCents: material.unitCostCents * qty,
+        receivedAt: now,
+        receivedBy: actor,
+        partial: false,
+        movementType: 'devolucao',
+        relatedEntryId,
+        notes,
+      };
+      store.officeData.materialReceiptEntries.unshift(entry);
+
+      saveStore(store);
+      broadcastRealtimeEvent({ type: 'materials:updated', timestamp: now, materials: store.materials });
+      res.json({ ok: true, material, receiptEntry: entry });
+    } catch (error) {
+      console.error('Erro ao registrar devolução de material:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Erro ao registrar devolução.' });
     }
   });
 

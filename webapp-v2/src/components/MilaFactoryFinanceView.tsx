@@ -16,10 +16,18 @@ import {
   Download,
   Filter,
 } from 'lucide-react';
-import { FinancialTransaction, FinancialTransactionType, FixedExpense, WorkshopSettings } from '../types';
+import {
+  FinancialTransaction,
+  FinancialTransactionType,
+  FixedExpense,
+  WorkshopSettings,
+  AttendanceRecord,
+  MaterialCatalogItem,
+} from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
 import { AgentPortrait } from './AgentPortrait';
 import { generateMonthlyFinancialReportPdf } from '../utils/pdfGenerator';
+import { ComprovantesLancamentos } from './ComprovantesLancamentos';
 
 interface EdsonReserveSummary {
   month: string;
@@ -67,6 +75,8 @@ interface FactoryFinancialSummary {
 
 interface MilaFactoryFinanceViewProps {
   settings: WorkshopSettings;
+  attendances?: AttendanceRecord[];
+  materialsCatalog?: MaterialCatalogItem[];
   onOpenOrder?: (orderId: string) => void;
 }
 
@@ -107,8 +117,15 @@ const TX_TYPE_LABELS: Partial<Record<FinancialTransactionType, string>> = {
   outro: 'Outro',
 };
 
-export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({ settings, onOpenOrder }) => {
-  const [activeTab, setActiveTab] = useState<'resumo' | 'contas_fixas' | 'reserva_edson' | 'saldo_inicial' | 'contas_caixa'>('resumo');
+export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({
+  settings,
+  attendances = [],
+  materialsCatalog = [],
+  onOpenOrder,
+}) => {
+  const [activeTab, setActiveTab] = useState<
+    'resumo' | 'contas_fixas' | 'reserva_edson' | 'saldo_inicial' | 'contas_caixa' | 'comprovantes'
+  >('resumo');
   const [month, setMonth] = useState(currentMonthKey());
   const [categoryFilter, setCategoryFilter] = useState('');
   const [summary, setSummary] = useState<FactoryFinancialSummary | null>(null);
@@ -611,6 +628,7 @@ export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({ 
           { id: 'reserva_edson', label: '3. Reserva do Edson (10%)' },
           { id: 'saldo_inicial', label: '4. Saldo Inicial' },
           { id: 'contas_caixa', label: `5. Contas / Caixa (${summary?.cashAccounts.length ?? 0})` },
+          { id: 'comprovantes', label: '6. Comprovantes e Lançamentos' },
         ].map((t) => (
           <button
             key={t.id}
@@ -1522,6 +1540,16 @@ export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({ 
                   </div>
                 )}
               </div>
+            )}
+
+            {/* ABA 6: COMPROVANTES E LANÇAMENTOS */}
+            {activeTab === 'comprovantes' && (
+              <ComprovantesLancamentos
+                attendances={attendances}
+                materialsCatalog={materialsCatalog}
+                settings={settings}
+                onOpenOrder={onOpenOrder}
+              />
             )}
           </>
         ) : null}

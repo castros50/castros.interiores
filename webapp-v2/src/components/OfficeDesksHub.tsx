@@ -611,6 +611,8 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
         <div className="space-y-4">
           <MilaFactoryFinanceView
             settings={settings}
+            attendances={attendances}
+            materialsCatalog={materialsCatalog}
             onOpenOrder={(orderId) => {
               onSelectAttendance(orderId);
               setForceNoOrderView(false);
@@ -624,10 +626,12 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
             agentRole={selectedDeskMeta.role}
             portraitUpdatedAt={settings.agentPortraitUpdatedAt?.mila_financeiro}
             suggestedQuestions={[
-              'Quanto já entrou e quanto já saiu do caixa este mês?',
+              'Mila, quanto entrou e quanto saiu hoje?',
+              'Quanto gastamos com espuma neste mês?',
+              'Mostre os comprovantes pendentes.',
+              'Quanto material temos disponível?',
               'Quais contas estão pendentes de pagamento ou recebimento?',
               'Qual é a reserva do Edson este mês e quanto já foi retirado?',
-              'Onde está o saldo da fábrica hoje, por conta?',
             ]}
           />
         </div>
