@@ -34,6 +34,7 @@ import {
   RealtimeSyncEvent,
   JuliaDepartmentData,
   DepartmentId,
+  ClientRecord,
 } from './types';
 import {
   auth,
@@ -170,6 +171,7 @@ export default function App() {
   const [activeAttendanceId, setActiveAttendanceId] = useState<string | null>(
     () => localStorage.getItem('active_attendance_id')
   );
+  const [clients, setClients] = useState<ClientRecord[]>([]);
 
   useEffect(() => {
     if (activeAttendanceId) {
@@ -345,6 +347,9 @@ export default function App() {
           }
           if (Array.isArray(storeData.materials)) {
             setMaterials(storeData.materials);
+          }
+          if (Array.isArray(storeData.clients)) {
+            setClients(storeData.clients);
           }
           if (storeData.settings) {
             setSettings(storeData.settings);
@@ -595,6 +600,55 @@ export default function App() {
     }
   };
 
+  // Cadastro de atendimento na mesa da Carla: cria o pedido (reaproveitando ou cadastrando
+  // o cliente no servidor) e, em seguida, envia as fotos selecionadas já direto pro
+  // atendimento recém-criado — tudo num só fluxo, sem precisar abrir a mesa de destino
+  // (Pedro/Lucas) depois para repetir o cadastro ou anexar as fotos.
+  const handleCreateOrderFromCarla = async (
+    payload: Record<string, unknown>,
+    photoFiles: File[]
+  ): Promise<{ ok: true; order: AttendanceRecord } | { ok: false; error: string }> => {
+    try {
+      const res = await fetch('/api/orders/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.order) {
+        return { ok: false, error: data.error || 'Erro ao registrar atendimento.' };
+      }
+      const created: AttendanceRecord = data.order;
+      attendancesRef.current = [created, ...attendancesRef.current];
+      setAttendances((prev) => (prev.some((a) => a.id === created.id) ? prev : [created, ...prev]));
+      if (data.client) {
+        setClients((prev) => {
+          const idx = prev.findIndex((c) => c.id === data.client.id);
+          if (idx === -1) return [data.client, ...prev];
+          const copy = [...prev];
+          copy[idx] = data.client;
+          return copy;
+        });
+      }
+      for (const file of photoFiles) {
+        await handleUploadPhotoFile(
+          file,
+          'Frente',
+          `Foto do atendimento ${created.attendanceNumber}`,
+          created.furnitureType,
+          undefined,
+          created.id
+        );
+      }
+      return { ok: true, order: created };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Erro de comunicação ao registrar atendimento.',
+      };
+    }
+  };
+
   const handleUpdateDraftLocal = (
     updated: AttendanceRecord,
     markStaleReason?: string
@@ -694,19 +748,25 @@ export default function App() {
     category: PhotoCategory,
     caption: string,
     furnitureLabel: string,
-    existingFailedPhotoId?: string
+    existingFailedPhotoId?: string,
+    // Normalmente envia pro atendimento ativo (activeAttendance); um id explícito permite
+    // enviar fotos logo após criar um atendimento novo (ex.: cadastro na mesa da Carla),
+    // antes dele virar o atendimento ativo na tela.
+    targetAttendanceId?: string
   ) => {
-    if (!activeAttendance) return;
-    const attendanceId = activeAttendance.id;
+    const attendanceId = targetAttendanceId || activeAttendance?.id;
+    if (!attendanceId) return;
 
     // Sempre lê o atendimento mais atual da ref (não o `activeAttendance` fechado
     // nesta função) — essencial quando várias fotos são enviadas em sequência:
     // sem isso, cada chamada ignoraria as fotos já salvas pelas chamadas
     // anteriores do mesmo lote e as sobrescreveria ao gravar no servidor.
-    const readCurrentAttendance = (): AttendanceRecord =>
-      attendancesRef.current.find((a) => a.id === attendanceId) || activeAttendance;
+    const readCurrentAttendance = (): AttendanceRecord | undefined =>
+      attendancesRef.current.find((a) => a.id === attendanceId) ||
+      (targetAttendanceId ? undefined : activeAttendance || undefined);
 
     const baseAttendance = readCurrentAttendance();
+    if (!baseAttendance) return;
     const photoId = existingFailedPhotoId || `photo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const nextPhotoNumber = baseAttendance.photos.length + 1;
     const code = `F-${String(nextPhotoNumber).padStart(2, '0')}`;
@@ -730,7 +790,7 @@ export default function App() {
 
     // Reler aqui (depois do await de compressão da miniatura) para incluir
     // qualquer foto que outra chamada já tenha salvo nesse meio-tempo.
-    const preUploadAttendance = readCurrentAttendance();
+    const preUploadAttendance = readCurrentAttendance() || baseAttendance;
     const updatedPhotosUploading = existingFailedPhotoId
       ? preUploadAttendance.photos.map((p) =>
           p.id === existingFailedPhotoId
@@ -786,7 +846,7 @@ export default function App() {
 
       // Lê de novo após o upload: outras fotos do mesmo lote podem ter
       // terminado de salvar enquanto esta estava sendo enviada ao servidor.
-      const postUploadAttendance = readCurrentAttendance();
+      const postUploadAttendance = readCurrentAttendance() || draftUploading;
       const photosForFinalSave = postUploadAttendance.photos.some((p) => p.id === photoId)
         ? postUploadAttendance.photos
         : draftUploading.photos;
@@ -811,7 +871,7 @@ export default function App() {
         'Fotos'
       );
     } catch (err) {
-      const errorAttendance = readCurrentAttendance();
+      const errorAttendance = readCurrentAttendance() || draftUploading;
       const photosForErrorSave = errorAttendance.photos.some((p) => p.id === photoId)
         ? errorAttendance.photos
         : draftUploading.photos;
@@ -1216,21 +1276,47 @@ export default function App() {
     );
   });
 
-  // Group unique clients from attendances
+  // Base de clientes: fonte principal é o cadastro geral (clients, vindo do servidor),
+  // ligado aos atendimentos por clientId — assim o endereço completo cadastrado aparece
+  // aqui também, não só na mesa da Carla. Atendimentos sem clientId (dado antigo que por
+  // algum motivo não foi vinculado) ainda aparecem, agrupados por nome+telefone, pra não
+  // sumir nenhum registro existente da lista.
   const clientsSummary = React.useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        name: string;
-        phone: string;
-        attendancesCount: number;
-        lastUpdate: string;
-        attendances: AttendanceRecord[];
-      }
-    >();
+    type ClientSummaryRow = {
+      id: string;
+      name: string;
+      phone: string;
+      address?: ClientRecord['address'];
+      attendancesCount: number;
+      lastUpdate: string;
+      attendances: AttendanceRecord[];
+    };
+    const byClientId = new Map<string, ClientSummaryRow>();
+    clients.forEach((c) => {
+      byClientId.set(c.id, {
+        id: c.id,
+        name: formatMissingText(c.name),
+        phone: formatMissingText(c.phone),
+        address: c.address,
+        attendancesCount: 0,
+        lastUpdate: c.updatedAt,
+        attendances: [],
+      });
+    });
+
+    const orphansByKey = new Map<string, ClientSummaryRow>();
     attendances.forEach((a) => {
+      const row = a.clientId ? byClientId.get(a.clientId) : undefined;
+      if (row) {
+        row.attendancesCount += 1;
+        row.attendances.push(a);
+        if (new Date(a.updatedAt) > new Date(row.lastUpdate)) {
+          row.lastUpdate = a.updatedAt;
+        }
+        return;
+      }
       const key = `${(a.clientName || '').trim().toLowerCase()}|${(a.clientPhone || '').trim()}`;
-      const existing = map.get(key);
+      const existing = orphansByKey.get(key);
       if (existing) {
         existing.attendancesCount += 1;
         existing.attendances.push(a);
@@ -1238,7 +1324,8 @@ export default function App() {
           existing.lastUpdate = a.updatedAt;
         }
       } else {
-        map.set(key, {
+        orphansByKey.set(key, {
+          id: `orphan-${key}`,
           name: formatMissingText(a.clientName),
           phone: formatMissingText(a.clientPhone),
           attendancesCount: 1,
@@ -1247,13 +1334,15 @@ export default function App() {
         });
       }
     });
-    return Array.from(map.values()).filter((c) =>
+
+    const all = [...byClientId.values(), ...orphansByKey.values()].filter((c) => c.attendancesCount > 0);
+    return all.filter((c) =>
       !clientSearch.trim()
         ? true
         : c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
           c.phone.toLowerCase().includes(clientSearch.toLowerCase())
     );
-  }, [attendances, clientSearch]);
+  }, [attendances, clients, clientSearch]);
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F9F6F0] text-[#1C1917]">
@@ -1836,6 +1925,7 @@ export default function App() {
                   );
                 }}
                 onNavigateTab={(tab) => setActiveTab(tab)}
+                onCreateOrder={handleCreateOrderFromCarla}
                 onJumpToStep={(step) => {
                   if (activeAttendance) {
                     handleUpdateDraftLocal({
@@ -2130,9 +2220,9 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {clientsSummary.map((client, idx) => (
+                  {clientsSummary.map((client) => (
                     <div
-                      key={idx}
+                      key={client.id}
                       className="p-5 rounded-xl bg-[#FAF8F5] border border-[#E5DEC9] flex flex-col justify-between space-y-4"
                     >
                       <div>
@@ -2144,6 +2234,21 @@ export default function App() {
                             {client.phone}
                           </span>
                         </div>
+                        {client.address && (client.address.street || client.address.neighborhood || client.address.city) ? (
+                          <p className="text-[11px] text-[#6B6257] mt-0.5">
+                            {[
+                              [client.address.street, client.address.number].filter(Boolean).join(', '),
+                              client.address.complement,
+                              client.address.neighborhood,
+                              [client.address.city, client.address.state].filter(Boolean).join('/'),
+                              client.address.cep ? `CEP ${client.address.cep}` : undefined,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-amber-700 mt-0.5">Endereço não cadastrado</p>
+                        )}
                         <p className="text-xs text-[#57534E] mt-1">
                           {client.attendancesCount} atendimento(s) registrado(s) · Última atualização em{' '}
                           {new Date(client.lastUpdate).toLocaleDateString('pt-BR')}

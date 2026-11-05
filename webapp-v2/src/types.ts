@@ -284,6 +284,30 @@ export type AttendanceRequestType =
   | 'acompanhamento'
   | 'reclamacao';
 
+// Cadastro geral de clientes (mesa da Carla e área Clientes) — reutilizado em qualquer
+// atendimento novo, para não recadastrar a mesma pessoa a cada pedido.
+export interface ClientAddress {
+  cep?: string;
+  street?: string; // rua
+  number?: string;
+  complement?: string;
+  neighborhood?: string; // bairro
+  city?: string;
+  state?: string; // UF
+  referencePoint?: string; // ponto de referência (opcional)
+}
+
+export interface ClientRecord {
+  id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  address: ClientAddress;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ComplaintEntry {
   id: string;
   createdAt: string;
@@ -322,6 +346,7 @@ export interface AttendanceRecord {
 
   // Cadastro inicial feito pela Carla (Atendimento ao Cliente)
   requestType?: AttendanceRequestType;
+  clientId?: string; // vínculo com o cadastro geral de clientes (ClientRecord), quando houver
   neighborhood?: string; // bairro
   city?: string;
   fullAddress?: string; // endereço completo, quando necessário para retirada/entrega

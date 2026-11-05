@@ -56,6 +56,12 @@ interface OfficeDesksHubProps {
   // Consumida uma única vez e depois limpa via onDeskIdConsumed.
   initialDeskId?: DepartmentId | null;
   onDeskIdConsumed?: () => void;
+  // Cadastro de atendimento na mesa da Carla (busca/seleciona cliente existente,
+  // cria o pedido já encaminhado para a mesa certa, e envia as fotos selecionadas).
+  onCreateOrder?: (
+    payload: Record<string, unknown>,
+    photoFiles: File[]
+  ) => Promise<{ ok: true; order: AttendanceRecord } | { ok: false; error: string }>;
 }
 
 export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
@@ -69,10 +75,11 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   onJumpToStep,
   initialDeskId,
   onDeskIdConsumed,
+  onCreateOrder,
 }) => {
   const [selectedDeskId, setSelectedDeskId] = useState<DepartmentId>('lucas_projetos');
   const [deskFilter, setDeskFilter] = useState<'all' | DepartmentId>('all');
-  const [typeFilter, setTypeFilter] = useState<'all' | 'Reforma' | 'Fabricação'>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'Reforma' | 'Fabricação' | 'nao_informado'>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
   // Dados do Escritório
@@ -309,7 +316,9 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   // Filtragem de Pedidos
   const filteredOrders = attendances.filter((att) => {
     const matchesDesk = deskFilter === 'all' || att.currentDesk === deskFilter;
-    const matchesType = typeFilter === 'all' || att.orderType === typeFilter;
+    const matchesType =
+      typeFilter === 'all' ||
+      (typeFilter === 'nao_informado' ? !att.orderType : att.orderType === typeFilter);
     const matchesSearch =
       !searchTerm ||
       att.attendanceNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -465,7 +474,18 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                   : 'text-[#6B6257] hover:text-[#181512]'
               }`}
             >
-              Reforma ({attendances.filter((a) => a.orderType !== 'Fabricação').length})
+              Reforma ({attendances.filter((a) => a.orderType === 'Reforma').length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setTypeFilter('nao_informado')}
+              className={`px-2.5 py-1 rounded font-medium ${
+                typeFilter === 'nao_informado'
+                  ? 'bg-amber-700 text-white'
+                  : 'text-[#6B6257] hover:text-[#181512]'
+              }`}
+            >
+              Não informado ({attendances.filter((a) => !a.orderType).length})
             </button>
           </div>
 
@@ -562,10 +582,12 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                       className={`ml-1.5 px-2 py-0.2 rounded text-[10px] font-semibold ${
                         ord.orderType === 'Fabricação'
                           ? 'bg-amber-100 text-amber-900'
-                          : 'bg-purple-100 text-purple-900'
+                          : ord.orderType === 'Reforma'
+                          ? 'bg-purple-100 text-purple-900'
+                          : 'bg-stone-200 text-stone-700'
                       }`}
                     >
-                      {ord.orderType}
+                      {ord.orderType || 'Tipo não informado'}
                     </span>
                   </div>
 
@@ -643,6 +665,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
               onSelectAttendance(id);
               setForceNoOrderView(false);
             }}
+            onCreateOrder={onCreateOrder}
           />
 
           {/* Central de Conversa Funcional por Voz e Texto com a Carla */}

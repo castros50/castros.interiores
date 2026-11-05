@@ -116,6 +116,8 @@ import type {
   PaidAdBudgetProposal,
   PaidAdObjective,
   JuliaCampaignScheduleItem,
+  ClientRecord,
+  ClientAddress,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -161,6 +163,28 @@ interface PersistentStore {
   officeData?: SharedOfficeData;
   agentChats?: Record<string, AgentChatMessage[]>;
   backgroundTasks?: BackgroundTask[];
+  clients?: ClientRecord[];
+}
+
+// Normaliza telefone para comparação (só dígitos) — usado para não cadastrar o mesmo
+// cliente duas vezes só porque o telefone foi digitado com formatação diferente.
+function normalizePhoneDigits(phone: string | undefined | null): string {
+  return (phone || '').replace(/\D/g, '');
+}
+
+function findClientByPhoneOrName(
+  clients: ClientRecord[],
+  phone: string | undefined,
+  name: string | undefined
+): ClientRecord | undefined {
+  const phoneDigits = normalizePhoneDigits(phone);
+  if (phoneDigits) {
+    const byPhone = clients.find((c) => normalizePhoneDigits(c.phone) === phoneDigits);
+    if (byPhone) return byPhone;
+  }
+  const nameLower = (name || '').trim().toLowerCase();
+  if (!nameLower) return undefined;
+  return clients.find((c) => c.name.trim().toLowerCase() === nameLower);
 }
 
 const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
@@ -1543,6 +1567,59 @@ function loadStore(): PersistentStore {
           storeModified = true;
         }
 
+        // Cadastro geral de clientes: deriva/completa a partir dos atendimentos já
+        // existentes, sem apagar nada. Toda vez que um atendimento tem nome/telefone de
+        // cliente mas ainda não está vinculado a um ClientRecord (dados antigos, de antes
+        // dessa funcionalidade existir, ou criados por outro caminho), vincula ao cliente
+        // já cadastrado com o mesmo telefone/nome, ou cria um novo registro — nunca duplica.
+        if (!parsed.clients) {
+          parsed.clients = [];
+          storeModified = true;
+        }
+        const clientReconcileNow = new Date().toISOString();
+        for (const att of parsed.attendances) {
+          if (att.clientId) continue;
+          if (!att.clientName || att.clientName === 'não informado' || att.clientName === 'Cliente não informado') {
+            continue;
+          }
+          const existingClient = findClientByPhoneOrName(parsed.clients, att.clientPhone, att.clientName);
+          if (existingClient) {
+            att.clientId = existingClient.id;
+            // Completa o endereço do cadastro se o atendimento tiver dado que falta nele
+            // (nunca sobrescreve um dado já preenchido, só completa o que está vazio).
+            if (!existingClient.address.neighborhood && att.neighborhood) {
+              existingClient.address.neighborhood = att.neighborhood;
+            }
+            if (!existingClient.address.city && att.city) {
+              existingClient.address.city = att.city;
+            }
+            if (!existingClient.address.street && att.fullAddress) {
+              existingClient.address.street = att.fullAddress;
+            }
+            if (!existingClient.phone && att.clientPhone) {
+              existingClient.phone = att.clientPhone;
+            }
+            existingClient.updatedAt = att.updatedAt || existingClient.updatedAt;
+          } else {
+            const newClient: ClientRecord = {
+              id: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              name: att.clientName,
+              phone: att.clientPhone || '',
+              email: att.clientEmail || undefined,
+              address: {
+                neighborhood: att.neighborhood || undefined,
+                city: att.city || undefined,
+                street: att.fullAddress || undefined,
+              },
+              createdAt: att.createdAt || clientReconcileNow,
+              updatedAt: clientReconcileNow,
+            };
+            parsed.clients.push(newClient);
+            att.clientId = newClient.id;
+          }
+          storeModified = true;
+        }
+
         if (storeModified) {
           saveStore(parsed);
         }
@@ -1559,6 +1636,7 @@ function loadStore(): PersistentStore {
     nextSequence: 3,
     attendances: [createDemoSofa2Places(), createDemoPoltronas4Un()],
     materials: DEFAULT_MATERIALS,
+    clients: [],
     settings: {
       workshopName: 'Castros Interiores',
       responsibleDefaultName: '',
@@ -3242,6 +3320,99 @@ async function startServer() {
       ...store,
       devices: getActiveDevicesList(),
     });
+  });
+
+  // Cadastro geral de clientes — reutilizado na mesa da Carla (busca ao abrir um
+  // atendimento novo, para não recadastrar a mesma pessoa) e na área Clientes.
+  app.get('/api/clients', (req, res) => {
+    const store = loadStore();
+    const q = ((req.query.q as string) || '').trim().toLowerCase();
+    const qDigits = normalizePhoneDigits(q);
+    const clients = store.clients || [];
+    const matches = q
+      ? clients.filter(
+          (c) =>
+            c.name.toLowerCase().includes(q) ||
+            (qDigits && normalizePhoneDigits(c.phone).includes(qDigits)) ||
+            (c.address.city || '').toLowerCase().includes(q)
+        )
+      : clients;
+    res.json({ ok: true, clients: matches.slice(0, 50) });
+  });
+
+  app.post('/api/clients', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.clients) store.clients = [];
+      const { name, phone, email, address, notes } = req.body as {
+        name: string;
+        phone?: string;
+        email?: string;
+        address?: ClientAddress;
+        notes?: string;
+      };
+      if (!name || !name.trim()) {
+        res.status(400).json({ error: 'Informe o nome do cliente.' });
+        return;
+      }
+      // Evita duplicar: se já existe alguém com esse telefone (ou, sem telefone, esse
+      // nome exato), reaproveita o cadastro existente e só completa o que estiver vazio,
+      // em vez de criar um registro novo para a mesma pessoa.
+      const existing = findClientByPhoneOrName(store.clients, phone, name);
+      const now = new Date().toISOString();
+      if (existing) {
+        existing.name = name.trim() || existing.name;
+        if (phone && !existing.phone) existing.phone = phone;
+        if (email && !existing.email) existing.email = email;
+        if (address) {
+          existing.address = { ...existing.address, ...Object.fromEntries(Object.entries(address).filter(([, v]) => v)) };
+        }
+        if (notes && !existing.notes) existing.notes = notes;
+        existing.updatedAt = now;
+        saveStore(store);
+        res.json({ ok: true, client: existing, reused: true });
+        return;
+      }
+      const newClient: ClientRecord = {
+        id: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: name.trim(),
+        phone: phone || '',
+        email: email || undefined,
+        address: address || {},
+        notes: notes || undefined,
+        createdAt: now,
+        updatedAt: now,
+      };
+      store.clients.push(newClient);
+      saveStore(store);
+      res.json({ ok: true, client: newClient, reused: false });
+    } catch (err) {
+      console.error('Erro ao cadastrar cliente:', err);
+      res.status(500).json({ error: 'Erro ao cadastrar cliente.' });
+    }
+  });
+
+  app.put('/api/clients/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      const client = (store.clients || []).find((c) => c.id === req.params.id);
+      if (!client) {
+        res.status(404).json({ error: 'Cliente não encontrado.' });
+        return;
+      }
+      const { name, phone, email, address, notes } = req.body as Partial<ClientRecord>;
+      if (name !== undefined) client.name = name;
+      if (phone !== undefined) client.phone = phone;
+      if (email !== undefined) client.email = email;
+      if (address !== undefined) client.address = { ...client.address, ...address };
+      if (notes !== undefined) client.notes = notes;
+      client.updatedAt = new Date().toISOString();
+      saveStore(store);
+      res.json({ ok: true, client });
+    } catch (err) {
+      console.error('Erro ao atualizar cliente:', err);
+      res.status(500).json({ error: 'Erro ao atualizar cliente.' });
+    }
   });
 
   // Update workshop settings
@@ -8496,9 +8667,11 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
   app.post('/api/orders/create-order', (req, res) => {
     try {
       const store = loadStore();
+      if (!store.clients) store.clients = [];
       const {
         requestType,
         orderType: incomingOrderType,
+        clientId: incomingClientId,
         clientName,
         clientPhone,
         clientEmail,
@@ -8510,11 +8683,13 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         neighborhood,
         city,
         fullAddress,
+        address,
         notes,
         assignedDesk,
       } = req.body as {
         requestType?: AttendanceRequestType;
         orderType?: OrderType;
+        clientId?: string;
         clientName: string;
         clientPhone?: string;
         clientEmail?: string;
@@ -8526,6 +8701,7 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         neighborhood?: string;
         city?: string;
         fullAddress?: string;
+        address?: ClientAddress;
         notes?: string;
         assignedDesk?: DepartmentId;
       };
@@ -8541,6 +8717,21 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       // requestType é a classificação da Carla no atendimento; orderType só existe para
       // pedidos operacionais reais (reforma/fabricação) que seguem o fluxo de mesas.
       const effectiveRequestType: AttendanceRequestType = requestType || (incomingOrderType === 'Fabricação' ? 'fabricacao_nova' : 'reforma');
+
+      // Para um pedido operacional (reforma/fabricação), a escolha do tipo é obrigatória —
+      // o formulário tem que mandar o orderType explicitamente, nunca um valor adivinhado
+      // aqui no servidor. Só não se aplica a solicitações que não são um pedido (compra de
+      // produto, acompanhamento, reclamação), que não têm orderType mesmo.
+      if (
+        (effectiveRequestType === 'reforma' || effectiveRequestType === 'fabricacao_nova') &&
+        incomingOrderType !== 'Reforma' &&
+        incomingOrderType !== 'Fabricação'
+      ) {
+        res.status(400).json({
+          error: 'Escolha o tipo do atendimento (Reforma de estofado ou Fabricação de móvel novo) antes de concluir.',
+        });
+        return;
+      }
       const orderType: OrderType | undefined =
         incomingOrderType ||
         (effectiveRequestType === 'fabricacao_nova'
@@ -8548,6 +8739,58 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
           : effectiveRequestType === 'reforma'
           ? 'Reforma'
           : undefined);
+
+      // Cadastro de clientes: reaproveita o cliente indicado (por id, ou por telefone/nome
+      // já cadastrado) em vez de duplicar a pessoa a cada atendimento novo.
+      let linkedClient = incomingClientId ? store.clients.find((c) => c.id === incomingClientId) : undefined;
+      if (!linkedClient) {
+        linkedClient = findClientByPhoneOrName(store.clients, clientPhone, clientName);
+      }
+      const clientNowTs = new Date().toISOString();
+      if (linkedClient) {
+        // Completa (nunca sobrescreve) o cadastro existente com dado novo informado agora.
+        if (clientPhone && !linkedClient.phone) linkedClient.phone = clientPhone;
+        if (clientEmail && !linkedClient.email) linkedClient.email = clientEmail;
+        if (address) {
+          linkedClient.address = {
+            ...linkedClient.address,
+            ...Object.fromEntries(Object.entries(address).filter(([, v]) => v)),
+          };
+        }
+        if (neighborhood && !linkedClient.address.neighborhood) linkedClient.address.neighborhood = neighborhood;
+        if (city && !linkedClient.address.city) linkedClient.address.city = city;
+        if (fullAddress && !linkedClient.address.street) linkedClient.address.street = fullAddress;
+        linkedClient.updatedAt = clientNowTs;
+      } else {
+        linkedClient = {
+          id: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: clientName.trim(),
+          phone: clientPhone || '',
+          email: clientEmail || undefined,
+          address: {
+            ...(address || {}),
+            neighborhood: address?.neighborhood || neighborhood || undefined,
+            city: address?.city || city || undefined,
+            street: address?.street || fullAddress || undefined,
+          },
+          createdAt: clientNowTs,
+          updatedAt: clientNowTs,
+        };
+        store.clients.push(linkedClient);
+      }
+      // Endereço efetivo deste atendimento: o do cadastro do cliente (já mesclado acima),
+      // com prioridade para o que foi digitado agora especificamente neste atendimento.
+      const effectiveNeighborhood = neighborhood || linkedClient.address.neighborhood;
+      const effectiveCity = city || linkedClient.address.city;
+      const effectiveFullAddress =
+        fullAddress ||
+        [
+          linkedClient.address.street,
+          linkedClient.address.number,
+          linkedClient.address.complement,
+        ]
+          .filter(Boolean)
+          .join(', ') || undefined;
 
       const now = new Date().toISOString();
       const count = store.attendances.length + 1;
@@ -8557,11 +8800,14 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
           ? `FAB-2026-${formattedSeq}`
           : `CI-2026-${formattedSeq}`;
 
-      // Para solicitações que não são um pedido operacional de reforma/fabricação, a Carla
-      // continua sendo a responsável direta — não existe uma mesa técnica para "rotear".
+      // Encaminhamento automático: Reforma vai direto para a avaliação técnica do Pedro,
+      // Fabricação vai direto para projetos do Lucas — sem precisar abrir a mesa de destino
+      // para repetir o cadastro. Para solicitações que não são um pedido operacional
+      // (compra de produto, acompanhamento, reclamação), a Carla continua responsável
+      // direta, já que não existe mesa técnica para rotear.
       const desk =
         assignedDesk ||
-        (orderType === 'Fabricação' ? 'lucas_projetos' : orderType === 'Reforma' ? 'carla_atendimento' : 'carla_atendimento');
+        (orderType === 'Fabricação' ? 'lucas_projetos' : orderType === 'Reforma' ? 'pedro_avaliacao' : 'carla_atendimento');
       const agentNames: Record<string, string> = {
         carla_atendimento: 'Carla (Atendimento ao Cliente)',
         pedro_avaliacao: 'Pedro (Avaliação Técnica)',
@@ -8582,12 +8828,13 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         status: 'em_andamento',
         currentStep: 1,
         clientName,
-        clientPhone: clientPhone || '',
-        clientEmail: clientEmail || '',
+        clientPhone: clientPhone || linkedClient.phone || '',
+        clientEmail: clientEmail || linkedClient.email || '',
+        clientId: linkedClient.id,
         requestType: effectiveRequestType,
-        neighborhood: neighborhood || undefined,
-        city: city || undefined,
-        fullAddress: fullAddress || undefined,
+        neighborhood: effectiveNeighborhood,
+        city: effectiveCity,
+        fullAddress: effectiveFullAddress,
         furnitureType: resolvedFurnitureType,
         piecesCount: piecesCount || '1 unidade',
         approxMeasurements: approxMeasurements || 'A validar na oficina',
@@ -8728,7 +8975,7 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         attendance: newOrder,
       });
 
-      res.json({ ok: true, order: newOrder });
+      res.json({ ok: true, order: newOrder, client: linkedClient });
     } catch (error) {
       console.error('Erro ao criar pedido:', error);
       res.status(500).json({ error: 'Erro ao criar pedido.' });
