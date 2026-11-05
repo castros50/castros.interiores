@@ -29,6 +29,9 @@ import {
 import { formatCurrencyBRL } from '../utils/calculations';
 import { AgentPortrait } from './AgentPortrait';
 import { ProductTechnicalEvaluationForm } from './ProductTechnicalEvaluationForm';
+import { InspectionSheetForm } from './InspectionSheetForm';
+import { ExecutionManualView } from './ExecutionManualView';
+import { QualityControlBoard } from './QualityControlBoard';
 
 interface LucasManufacturingDeskProps {
   order: AttendanceRecord;
@@ -48,7 +51,8 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
   onOpenFullWorkflow,
 }) => {
   const [activeTab, setActiveTab] = useState<
-    'ficha' | 'pecas' | 'materiais' | 'manual' | 'qualidade' | 'avaliacao_produto'
+    | 'ficha' | 'pecas' | 'materiais' | 'manual' | 'qualidade' | 'avaliacao_produto'
+    | 'vistoria' | 'manual_execucao' | 'qualidade_produto'
   >('ficha');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -328,6 +332,21 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
             id: 'avaliacao_produto',
             label: '6. Avaliação por Produto',
             count: Object.keys(order.productEvaluations || {}).length || null,
+          },
+          {
+            id: 'vistoria',
+            label: '7. Ficha de Verificação & Reavaliação',
+            count: (order.inspectionSheets || []).length || null,
+          },
+          {
+            id: 'manual_execucao',
+            label: '8. Manual de Execução (por Produto)',
+            count: (order.executionManuals || []).length || null,
+          },
+          {
+            id: 'qualidade_produto',
+            label: '9. Controle de Qualidade (por Produto)',
+            count: (order.qualityControlHistory || []).length || null,
           },
         ].map((t) => (
           <button
@@ -769,6 +788,33 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
               fromDesk="lucas_projetos"
             />
           </div>
+        )}
+
+        {activeTab === 'vistoria' && (
+          <InspectionSheetForm
+            order={order}
+            settings={settings}
+            defaultResponsibleName={settings.responsibleDefaultName}
+            onUpdateOrder={onUpdateOrder}
+          />
+        )}
+
+        {activeTab === 'manual_execucao' && (
+          <ExecutionManualView
+            order={order}
+            settings={settings}
+            defaultResponsibleName={settings.responsibleDefaultName}
+            onUpdateOrder={onUpdateOrder}
+          />
+        )}
+
+        {activeTab === 'qualidade_produto' && (
+          <QualityControlBoard
+            order={order}
+            settings={settings}
+            defaultResponsibleName={settings.responsibleDefaultName}
+            onUpdateOrder={onUpdateOrder}
+          />
         )}
       </div>
     </div>

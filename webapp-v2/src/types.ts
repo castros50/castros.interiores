@@ -402,6 +402,192 @@ export interface OrderNegotiation {
   updatedAt: string;
 }
 
+// Vistoria presencial, reavaliação técnica, manual de execução e controle de
+// qualidade — tudo aditivo, por produto (productId: 'primary' | OrderProduct.id)
+// e por peça individual dentro da quantidade (unitIndex), integrado às mesas
+// de Pedro e Lucas sem alterar o fluxo de 11 áreas nem o de negociação já
+// existentes.
+
+// Componentes aplicáveis à vistoria (14 itens), reaproveitando nomes já
+// usados em FurnitureArea/ReuseComponentType onde fazem sentido.
+export type InspectionComponentKey =
+  | 'estrutura' | 'base' | 'assento' | 'encosto' | 'bracos' | 'pes'
+  | 'percintas' | 'molas' | 'mecanismos' | 'espumas' | 'enchimentos'
+  | 'revestimento' | 'costuras' | 'fixacoes';
+
+export const INSPECTION_COMPONENT_LABELS: Record<InspectionComponentKey, string> = {
+  estrutura: 'Estrutura',
+  base: 'Base',
+  assento: 'Assento',
+  encosto: 'Encosto',
+  bracos: 'Braços',
+  pes: 'Pés',
+  percintas: 'Percintas',
+  molas: 'Molas',
+  mecanismos: 'Mecanismos',
+  espumas: 'Espumas',
+  enchimentos: 'Enchimentos',
+  revestimento: 'Revestimento',
+  costuras: 'Costuras',
+  fixacoes: 'Fixações',
+};
+
+export type InspectionMarking =
+  | 'bom' | 'reparar' | 'substituir' | 'reaproveitar' | 'nao_verificado' | 'nao_se_aplica';
+
+export const INSPECTION_MARKING_LABELS: Record<InspectionMarking, string> = {
+  bom: 'Bom',
+  reparar: 'Reparar',
+  substituir: 'Substituir',
+  reaproveitar: 'Reaproveitar',
+  nao_verificado: 'Não verificado',
+  nao_se_aplica: 'Não se aplica',
+};
+
+// Reforma: um registro por componente aplicável, por peça individual.
+export interface InspectionComponentEntry {
+  id: string;
+  component: InspectionComponentKey;
+  locationLabel?: string;              // identificação/localização na peça
+  materialSpecification?: string;      // material e especificação verificados
+  quantity?: number | null;
+  unit?: string;
+  measurementValue?: string;           // medida real, com unidade explícita no texto
+  measurementStatus: 'medido' | 'a_medir'; // nunca "medido" só por foto
+  condition: InspectionMarking;
+  defectObserved?: string;
+  possibleCause?: string;
+  causeConfirmed: boolean;             // hipótese vs. confirmado presencialmente
+  discoveredAfterDisassembly: boolean; // dano descoberto após desmontagem
+  detailPhotoId?: string;              // referencia AttendancePhoto.id
+  actionRequired?: string;
+  responsibleForCheck?: string;
+  notes?: string;
+  origin: InformationOrigin;           // reaproveita o enum já existente
+}
+
+// Fabricação nova: ficha própria conferindo projeto/medidas/componentes/
+// materiais/requisitos — defeitos encontrados viram não conformidade.
+export interface ManufacturingInspectionEntry {
+  id: string;
+  item: string;
+  specification?: string;  // o que a ficha técnica/projeto pede
+  found?: string;           // o que foi conferido de fato
+  status: InspectionMarking;
+  isNonConformance: boolean;
+  detailPhotoId?: string;
+  notes?: string;
+}
+
+export interface InspectionSheet {
+  id: string;
+  orderId: string;
+  productId: string;   // 'primary' | OrderProduct.id
+  unitIndex: number;   // identifica a peça individual dentro da quantidade do produto
+  unitLabel?: string;  // ex.: "Cadeira 1 de 4"
+  kind: 'reforma' | 'fabricacao_nova';
+  responsibleName?: string;
+  version: number;     // nunca sobrescrita — nova versão arquiva a anterior
+  status: 'gerada' | 'enviada_para_reavaliacao' | 'reavaliada';
+  components?: InspectionComponentEntry[];              // reforma
+  manufacturingChecks?: ManufacturingInspectionEntry[];  // fabricação nova
+  createdAt: string;
+  submittedPhotoIds?: string[];     // novas fotos enviadas junto com a devolução
+  submittedFormImageId?: string;    // foto da ficha marcada manualmente
+  aiReadResult?: InspectionFormReadResult;
+  confirmedAt?: string;
+  confirmedBy?: string;
+}
+
+export type ChecklistFieldReadStatus = 'lido' | 'ilegivel' | 'ausente';
+export interface InspectionFormReadField {
+  entryId: string; // id do InspectionComponentEntry/ManufacturingInspectionEntry correspondente
+  readStatus: ChecklistFieldReadStatus;
+  readCondition?: InspectionMarking;
+  readMeasurement?: string;
+  readNotes?: string;
+}
+export interface InspectionFormReadResult {
+  readAt: string;
+  fields: InspectionFormReadField[];
+  overallNotes?: string;
+  pdfReadUnavailable?: boolean; // true quando a tentativa de leitura de PDF falhou (fallback honesto)
+}
+
+// Reavaliação técnica: compara avaliação inicial x dados confirmados na devolução.
+export interface TechnicalReassessment {
+  id: string;
+  inspectionSheetId: string;
+  productId: string;
+  unitIndex: number;
+  version: number;
+  comparedToSheetVersion: number;
+  revisedDiagnosis: string;
+  updatedServicesNeeded: string;
+  updatedMaterials: ProductMaterialNeed[];
+  pendingItems: string[];
+  changesFromPrevious: string[];
+  costImpact: 'sem_impacto' | 'aumento' | 'reducao' | 'a_avaliar';
+  deadlineImpactDays?: number | null;
+  requiresNegotiationReview: boolean; // true se escopo/preço já aceitos mudam
+  createdBy: string;
+  createdAt: string;
+}
+
+// Manual de execução — PDF A4, rascunho até aprovação.
+export interface ExecutionManualStep {
+  stepNumber: number;
+  stage: 'preparacao' | 'montagem' | 'estofamento' | 'acabamento';
+  title: string;
+  description: string;
+  isIllustrative: boolean; // true = desenho ilustrativo, identificado como tal no PDF
+  referencePhotoId?: string;
+  inspectionPoints: string[];
+}
+export interface ExecutionManual {
+  id: string;
+  orderId: string;
+  productId: string;
+  version: number;
+  status: 'rascunho' | 'aprovado';
+  approvedBy?: string;
+  approvedAt?: string;
+  coverResponsibles: string[];
+  views: Array<{ label: string; photoId?: string; isIllustrative: boolean }>;
+  explodedView?: { available: boolean; note: string };
+  partsList: BudgetLineItem[];
+  cuttingPlanNote: string;
+  fabricGrainDirection?: 'Vertical' | 'Horizontal' | 'Indiferente';
+  sewingInstructions: { seamType?: string; thread?: string; stitch?: string; marginsNote?: string; notes?: string };
+  steps: ExecutionManualStep[];
+  createdAt: string;
+}
+
+// Controle de qualidade — resultado fechado, nunca "aprovado" com pendência.
+export type QcResult = 'conforme' | 'nao_conforme' | 'nao_se_aplica';
+export interface QcCheckEntry {
+  id: string;
+  item: string;
+  plannedValue?: string;  // vem só da ficha técnica/manual já validados
+  foundValue?: string;
+  toleranceFromManual?: string;
+  result?: QcResult; // ausente = ainda não verificado; servidor exige todos preenchidos para aprovar
+  photoId?: string;
+  notes?: string;
+}
+export interface QualityControlInspection {
+  id: string;
+  orderId: string;
+  productId: string;
+  unitIndex: number;
+  manualVersion: number;
+  checks: QcCheckEntry[];
+  responsibleName: string;
+  date: string;
+  outcome: 'aprovado' | 'retrabalho' | 'aguardando_verificacao';
+  reworkOfInspectionId?: string;
+}
+
 export interface ComplaintEntry {
   id: string;
   createdAt: string;
@@ -515,6 +701,13 @@ export interface AttendanceRecord {
   productEvaluations?: Record<string, ProductTechnicalEvaluation>; // chave: 'primary' | OrderProduct.id
   itemizedBudget?: ItemizedBudget;
   negotiation?: OrderNegotiation;
+
+  // Vistoria presencial, reavaliação, manual de execução e controle de
+  // qualidade — todos acumulados (nenhuma versão é sobrescrita/perdida).
+  inspectionSheets?: InspectionSheet[];
+  technicalReassessments?: TechnicalReassessment[];
+  executionManuals?: ExecutionManual[];
+  qualityControlHistory?: QualityControlInspection[];
 }
 
 export type RawMaterialCategory =

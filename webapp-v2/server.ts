@@ -131,7 +131,23 @@ import type {
   BudgetLineCategory,
   FinancialPaymentEntry,
   PaymentStatus,
+  InspectionComponentKey,
+  InspectionMarking,
+  InspectionComponentEntry,
+  ManufacturingInspectionEntry,
+  InspectionSheet,
+  ChecklistFieldReadStatus,
+  InspectionFormReadField,
+  InspectionFormReadResult,
+  TechnicalReassessment,
+  ExecutionManualStep,
+  ExecutionManual,
+  QcResult,
+  QcCheckEntry,
+  QualityControlInspection,
+  InformationOrigin,
 } from './src/types.ts';
+import { INSPECTION_COMPONENT_LABELS, INSPECTION_MARKING_LABELS } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
   createDemoSofa2Places,
@@ -2410,7 +2426,14 @@ function formatGeminiErrorMessage(err: unknown): string {
 
 async function generateContentWithRetryAndFallback(params: {
   preferredModel: string;
-  parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }>;
+  parts: Array<
+    | { text: string }
+    | { inlineData: { mimeType: string; data: string } }
+    // PDF — sem precedente nesta base antes da leitura de ficha de verificação.
+    // Content-block 'document' da própria API de Mensagens da Anthropic (REST cru,
+    // sem SDK), não ligado a nenhum recurso específico de imagem.
+    | { documentData: { mimeType: string; data: string } }
+  >;
   systemInstruction: string;
   responseSchema: Record<string, unknown>;
   lockKey?: string;
@@ -2430,18 +2453,27 @@ async function generateContentWithRetryAndFallback(params: {
     const maxAttempts = 3;
     let lastError: unknown = null;
 
-    const content = params.parts.map((part) =>
-      'text' in part
-        ? { type: 'text', text: part.text }
-        : {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: part.inlineData.mimeType,
-              data: part.inlineData.data,
-            },
-          }
-    );
+    const content = params.parts.map((part) => {
+      if ('text' in part) return { type: 'text', text: part.text };
+      if ('inlineData' in part) {
+        return {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: part.inlineData.mimeType,
+            data: part.inlineData.data,
+          },
+        };
+      }
+      return {
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: part.documentData.mimeType,
+          data: part.documentData.data,
+        },
+      };
+    });
     const toolSchema = convertSchemaToJsonSchema(params.responseSchema as AiSchema);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -3171,6 +3203,23 @@ REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS:
    - "Ferragens"
    - "Mecanismos retráteis ou reclináveis"
    - "Forro inferior e acabamentos"`;
+
+// Leitura de ficha de verificação fotografada/digitalizada (preenchida à mão ou
+// digitalmente) — mesmo princípio de honestidade do ANALYST_SYSTEM_INSTRUCTION acima,
+// adaptado para OCR/leitura de formulário em vez de análise visual de defeitos.
+const CHECKLIST_READER_SYSTEM_INSTRUCTION = `Você está lendo uma ficha de verificação técnica da Castros Interiores, preenchida à mão ou digitalmente, e enviada como foto ou PDF digitalizado.
+
+REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS:
+1. Para CADA campo listado no contexto (identificado por "entryId"), reporte exatamente um de três estados em "readStatus":
+   - "lido": você conseguiu identificar com confiança razoável a marcação/valor escrito para esse campo.
+   - "ilegivel": o campo foi preenchido mas a caligrafia, risco ou qualidade da imagem não permite ter certeza do que foi marcado.
+   - "ausente": o campo não foi preenchido, está em branco, ou não aparece de forma legível no documento.
+2. NUNCA marque "lido" por suposição, dedução do contexto, ou porque "faz sentido" aquele ser o valor — só marque "lido" quando a marcação/escrita estiver visualmente clara o bastante para transcrever com segurança.
+3. Quando "lido" e o campo for uma marcação de condição (bom/reparar/substituir/reaproveitar/não verificado/não se aplica), reporte o valor em "readCondition" usando exatamente um desses seis valores em minúsculo sem acento: bom, reparar, substituir, reaproveitar, nao_verificado, nao_se_aplica.
+4. Quando "lido" e o campo for uma medida escrita à mão, reporte o texto exatamente como está escrito em "readMeasurement", incluindo a unidade se estiver visível — nunca converta, arredonde ou complete uma unidade que não foi escrita.
+5. Use "readNotes" só para transcrever observações/anotações manuscritas relacionadas àquele campo específico — nunca para adicionar interpretação sua.
+6. Se o documento inteiro estiver ilegível, corrompido, ou não for reconhecível como esta ficha, reporte TODOS os campos como "ausente" e explique a situação em "overallNotes" — nunca invente conteúdo de um documento que não conseguiu processar.
+7. Não avalie nem opine sobre a condição real do móvel — sua única tarefa é transcrever o que está escrito no formulário, nada além disso.`;
 
 async function startServer() {
   // Antes de qualquer rota aceitar requisições: se o disco local estiver vazio
@@ -9647,6 +9696,833 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     } catch (error) {
       console.error('Erro ao registrar pagamento:', error);
       res.status(500).json({ error: 'Erro ao registrar pagamento.' });
+    }
+  });
+
+  // Mapeamento best-effort de FurnitureArea (11 áreas já existentes na vistoria de 11
+  // áreas) para os 14 componentes novos da ficha de verificação — usado só para
+  // pré-preencher condição/defeito quando já existe um achado prévio; nunca inventa
+  // um achado novo. Mapeamento 1-para-N porque as 11 áreas agrupam mais largo.
+  const FURNITURE_AREA_TO_INSPECTION_COMPONENTS: Record<string, InspectionComponentKey[]> = {
+    'Estrutura': ['estrutura'],
+    'Base e pés': ['base', 'pes'],
+    'Assento': ['assento'],
+    'Encosto': ['encosto'],
+    'Braços': ['bracos'],
+    'Tecido e costuras': ['revestimento', 'costuras'],
+    'Espumas e enchimentos': ['espumas', 'enchimentos'],
+    'Percintas, molas e sustentação': ['percintas', 'molas'],
+    'Ferragens': ['fixacoes'],
+    'Mecanismos retráteis ou reclináveis': ['mecanismos'],
+    'Forro inferior e acabamentos': ['revestimento'],
+  };
+  const ALL_INSPECTION_COMPONENTS: InspectionComponentKey[] = [
+    'estrutura', 'base', 'assento', 'encosto', 'bracos', 'pes',
+    'percintas', 'molas', 'mecanismos', 'espumas', 'enchimentos',
+    'revestimento', 'costuras', 'fixacoes',
+  ];
+
+  // Pedro/Lucas — gerar ficha de verificação na fábrica, uma por peça individual
+  // dentro da quantidade do produto (ex.: "Cadeira 1 de 4" ≠ "Cadeira 2 de 4").
+  // Nunca inventa condição nova: todo componente sem achado prévio correspondente
+  // nasce 'nao_verificado'. Toda geração nova nasce com version incrementada —
+  // versões anteriores do mesmo productId+unitIndex continuam em inspectionSheets.
+  app.post('/api/orders/:id/inspection-sheets', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const { productId, unitsCount, responsibleName } = req.body as {
+        productId: string;
+        unitsCount?: number;
+        responsibleName?: string;
+      };
+      const validIds = listOrderProducts(order).map((p) => p.id);
+      if (!productId || !validIds.includes(productId)) {
+        res.status(400).json({ error: 'Produto do pedido não encontrado (productId inválido).' });
+        return;
+      }
+      const kind: 'reforma' | 'fabricacao_nova' =
+        order.orderType === 'Fabricação' ? 'fabricacao_nova' : 'reforma';
+      const count = Math.max(1, Math.min(50, Math.round(unitsCount || 1)));
+      const now = new Date().toISOString();
+
+      if (!order.inspectionSheets) order.inspectionSheets = [];
+      const productLabel =
+        listOrderProducts(order).find((p) => p.id === productId)?.label || order.furnitureType;
+
+      const newSheets: InspectionSheet[] = [];
+      for (let unitIndex = 1; unitIndex <= count; unitIndex++) {
+        // Versão: se já existe ficha gerada para este productId+unitIndex, a nova
+        // nasce com version incrementada — a anterior continua no array, nunca é
+        // removida/sobrescrita.
+        const previous = order.inspectionSheets
+          .filter((s) => s.productId === productId && s.unitIndex === unitIndex)
+          .sort((a, b) => b.version - a.version)[0];
+        const version = (previous?.version || 0) + 1;
+
+        let components: InspectionComponentEntry[] | undefined;
+        let manufacturingChecks: ManufacturingInspectionEntry[] | undefined;
+
+        if (kind === 'reforma') {
+          components = ALL_INSPECTION_COMPONENTS.map((component, idx) => {
+            // Procura um achado prévio (defectFindings) cuja área mapeia para este
+            // componente — só usa o PRIMEIRO achado correspondente, só como ponto de
+            // partida; nunca inventa um achado que não existe.
+            const matchingFinding = order.defectFindings.find((f) =>
+              (FURNITURE_AREA_TO_INSPECTION_COMPONENTS[f.area] || []).includes(component)
+            );
+            return {
+              id: `insc-${Date.now()}-${unitIndex}-${idx}`,
+              component,
+              measurementStatus: 'a_medir',
+              // A marcação (bom/reparar/substituir/...) exige verificação presencial —
+              // mesmo havendo um achado prévio por foto, nasce sempre 'nao_verificado'.
+              condition: 'nao_verificado',
+              defectObserved: matchingFinding?.defectOrSuspicion,
+              possibleCause: undefined,
+              causeConfirmed: false,
+              discoveredAfterDisassembly: false,
+              actionRequired: matchingFinding?.suggestedService,
+              notes: matchingFinding ? `A partir do achado prévio: ${matchingFinding.evidenceAndPhoto}` : undefined,
+              origin: matchingFinding ? matchingFinding.origin : 'Não avaliável',
+            };
+          });
+        } else {
+          const evaluation = order.productEvaluations?.[productId];
+          const materialItems: ManufacturingInspectionEntry[] = (evaluation?.materials || []).map((m, idx) => ({
+            id: `mic-${Date.now()}-${unitIndex}-mat-${idx}`,
+            item: `Material: ${m.name}`,
+            specification: `${m.quantity ?? 'a levantar'} ${m.unit}`,
+            status: 'nao_verificado',
+            isNonConformance: false,
+          }));
+          manufacturingChecks = [
+            {
+              id: `mic-${Date.now()}-${unitIndex}-projeto`,
+              item: 'Projeto e medidas conforme ficha técnica',
+              specification: evaluation?.servicesNeeded || 'A conferir',
+              status: 'nao_verificado',
+              isNonConformance: false,
+            },
+            ...materialItems,
+            {
+              id: `mic-${Date.now()}-${unitIndex}-componentes`,
+              item: 'Componentes e requisitos de fabricação',
+              status: 'nao_verificado',
+              isNonConformance: false,
+            },
+          ];
+        }
+
+        const sheet: InspectionSheet = {
+          id: `isheet-${Date.now()}-${unitIndex}`,
+          orderId: order.id,
+          productId,
+          unitIndex,
+          unitLabel: count > 1 ? `${productLabel.split(' (')[0]} ${unitIndex} de ${count}` : productLabel,
+          kind,
+          responsibleName,
+          version,
+          status: 'gerada',
+          components,
+          manufacturingChecks,
+          createdAt: now,
+        };
+        order.inspectionSheets.push(sheet);
+        newSheets.push(sheet);
+      }
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: responsibleName || 'Vistoria de Fábrica',
+        stage: 'Ficha de Verificação',
+        action: `${count} ficha(s) de verificação gerada(s) para ${productLabel}`,
+        details: `Tipo: ${kind}`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Vistoria de Fábrica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, sheets: newSheets });
+    } catch (error) {
+      console.error('Erro ao gerar ficha de verificação:', error);
+      res.status(500).json({ error: 'Erro ao gerar ficha de verificação.' });
+    }
+  });
+
+  // Devolução da ficha de verificação: aceita dados digitados diretamente, uma foto da
+  // ficha marcada à mão, ou um PDF da ficha, além de novas fotos do móvel. Quando há
+  // foto/PDF, dispara leitura por IA — mas o resultado nunca é aplicado direto: fica em
+  // aiReadResult, pendente de confirmação humana via /confirm-reading abaixo.
+  app.post('/api/orders/:id/inspection-sheets/:sheetId/submit', async (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, sheetId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const sheet = (order.inspectionSheets || []).find((s) => s.id === sheetId);
+      if (!sheet) {
+        res.status(404).json({ error: 'Ficha de verificação não encontrada.' });
+        return;
+      }
+
+      const {
+        digitizedComponents,
+        digitizedManufacturingChecks,
+        formPhotoDataUrl,
+        formPdfDataUrl,
+        newPhotoIds,
+        confirmedBy,
+      } = req.body as {
+        digitizedComponents?: InspectionComponentEntry[];
+        digitizedManufacturingChecks?: ManufacturingInspectionEntry[];
+        formPhotoDataUrl?: string;
+        formPdfDataUrl?: string;
+        newPhotoIds?: string[];
+        confirmedBy?: string;
+      };
+
+      const now = new Date().toISOString();
+      if (Array.isArray(newPhotoIds)) sheet.submittedPhotoIds = newPhotoIds;
+      sheet.status = 'enviada_para_reavaliacao';
+
+      // Caminho 1: preenchimento digital direto — o operador já confirmou ao digitar,
+      // aplica sem passar pela IA.
+      if (digitizedComponents) sheet.components = digitizedComponents;
+      if (digitizedManufacturingChecks) sheet.manufacturingChecks = digitizedManufacturingChecks;
+
+      let aiReadResult: InspectionFormReadResult | undefined;
+
+      // Caminho 2/3: foto ou PDF da ficha marcada manualmente.
+      if (formPhotoDataUrl || formPdfDataUrl) {
+        const entries: Array<{ id: string; label: string }> =
+          sheet.kind === 'reforma'
+            ? (sheet.components || []).map((c) => ({
+                id: c.id,
+                label: `${INSPECTION_COMPONENT_LABELS[c.component]}${c.locationLabel ? ' - ' + c.locationLabel : ''}`,
+              }))
+            : (sheet.manufacturingChecks || []).map((c) => ({ id: c.id, label: c.item }));
+
+        const parts: Array<
+          { text: string } | { inlineData: { mimeType: string; data: string } } | { documentData: { mimeType: string; data: string } }
+        > = [
+          {
+            text: `CAMPOS DA FICHA (um por linha, "entryId: rótulo"):\n${entries
+              .map((e) => `${e.id}: ${e.label}`)
+              .join('\n')}\n\nLeia a ficha anexada e reporte o estado de cada entryId listado acima.`,
+          },
+        ];
+
+        if (formPhotoDataUrl) {
+          const match = formPhotoDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+        } else if (formPdfDataUrl) {
+          const match = formPdfDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) parts.push({ documentData: { mimeType: 'application/pdf', data: match[2] } });
+        }
+
+        const readSchema = {
+          type: Type.OBJECT,
+          properties: {
+            fields: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  entryId: { type: Type.STRING },
+                  readStatus: { type: Type.STRING, description: "'lido' | 'ilegivel' | 'ausente'" },
+                  readCondition: {
+                    type: Type.STRING,
+                    description: 'bom | reparar | substituir | reaproveitar | nao_verificado | nao_se_aplica',
+                  },
+                  readMeasurement: { type: Type.STRING },
+                  readNotes: { type: Type.STRING },
+                },
+                required: ['entryId', 'readStatus'],
+              },
+            },
+            overallNotes: { type: Type.STRING },
+          },
+          required: ['fields'],
+        };
+
+        try {
+          const { response } = await generateContentWithRetryAndFallback({
+            preferredModel: store.settings.aiModel || 'claude-sonnet-5',
+            parts,
+            systemInstruction: CHECKLIST_READER_SYSTEM_INSTRUCTION,
+            responseSchema: readSchema,
+            lockKey: `checklist-read:${sheetId}`,
+          });
+          const parsed = JSON.parse(response.text) as {
+            fields: InspectionFormReadField[];
+            overallNotes?: string;
+          };
+          const validStatuses: ChecklistFieldReadStatus[] = ['lido', 'ilegivel', 'ausente'];
+          const validConditions: InspectionMarking[] = [
+            'bom', 'reparar', 'substituir', 'reaproveitar', 'nao_verificado', 'nao_se_aplica',
+          ];
+          const byEntryId = new Map((parsed.fields || []).map((f) => [f.entryId, f]));
+          // Nunca deixa um campo "esquecido" pela IA desaparecer — todo entry não
+          // reportado vira 'ausente' explicitamente aqui, nunca fica indefinido.
+          const fields: InspectionFormReadField[] = entries.map((e) => {
+            const f = byEntryId.get(e.id);
+            const readStatus: ChecklistFieldReadStatus =
+              f && validStatuses.includes(f.readStatus) ? f.readStatus : 'ausente';
+            return {
+              entryId: e.id,
+              readStatus,
+              readCondition:
+                readStatus === 'lido' && f?.readCondition && validConditions.includes(f.readCondition)
+                  ? f.readCondition
+                  : undefined,
+              readMeasurement: readStatus === 'lido' ? f?.readMeasurement : undefined,
+              readNotes: f?.readNotes,
+            };
+          });
+          aiReadResult = { readAt: now, fields, overallNotes: parsed.overallNotes };
+        } catch (aiError) {
+          console.error('Erro ao ler ficha por IA:', aiError);
+          if (formPdfDataUrl) {
+            // Fallback honesto: se a leitura de PDF falhar (ex.: tipo document não
+            // aceito nesta conta), nunca finge sucesso — sinaliza e orienta foto.
+            aiReadResult = {
+              readAt: now,
+              fields: entries.map((e) => ({ entryId: e.id, readStatus: 'ausente' as ChecklistFieldReadStatus })),
+              overallNotes:
+                'Leitura de PDF indisponível no momento. Envie uma foto da ficha marcada em vez do PDF.',
+              pdfReadUnavailable: true,
+            };
+          } else {
+            res.status(502).json({
+              error: aiError instanceof Error ? aiError.message : 'Erro ao ler ficha por IA.',
+            });
+            return;
+          }
+        }
+      }
+
+      if (aiReadResult) sheet.aiReadResult = aiReadResult;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: confirmedBy || 'Reavaliação Técnica',
+        stage: 'Devolução da Ficha de Verificação',
+        action: `Ficha ${sheet.unitLabel || sheet.id} enviada para reavaliação`,
+        details: aiReadResult ? 'Leitura por IA gerada — pendente de confirmação humana.' : 'Dados digitados diretamente.',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Reavaliação Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, sheet });
+    } catch (error) {
+      console.error('Erro ao devolver ficha de verificação:', error);
+      res.status(500).json({ error: 'Erro ao devolver ficha de verificação.' });
+    }
+  });
+
+  // Confirma (ou descarta) campos lidos pela IA na devolução da ficha — nenhum campo
+  // lido por IA se torna definitivo sem passar por aqui, e campos 'ilegivel'/'ausente'
+  // nunca são aplicados mesmo que o operador tente aceitá-los.
+  app.post('/api/orders/:id/inspection-sheets/:sheetId/confirm-reading', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, sheetId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const sheet = (order.inspectionSheets || []).find((s) => s.id === sheetId);
+      if (!sheet || !sheet.aiReadResult) {
+        res.status(404).json({ error: 'Nenhuma leitura pendente de confirmação para esta ficha.' });
+        return;
+      }
+      const { acceptedEntryIds, confirmedBy } = req.body as {
+        acceptedEntryIds: string[];
+        confirmedBy: string;
+      };
+      if (!confirmedBy || !confirmedBy.trim()) {
+        res.status(400).json({ error: 'Informe quem está confirmando a leitura.' });
+        return;
+      }
+
+      const fieldsById = new Map(sheet.aiReadResult.fields.map((f) => [f.entryId, f]));
+      for (const entryId of acceptedEntryIds || []) {
+        const field = fieldsById.get(entryId);
+        if (!field || field.readStatus !== 'lido') continue; // nunca aplica ilegível/ausente
+        const componentEntry = sheet.components?.find((c) => c.id === entryId);
+        if (componentEntry) {
+          if (field.readCondition) componentEntry.condition = field.readCondition;
+          if (field.readMeasurement) {
+            componentEntry.measurementValue = field.readMeasurement;
+            componentEntry.measurementStatus = 'medido';
+          }
+          if (field.readNotes) {
+            componentEntry.notes = [componentEntry.notes, field.readNotes].filter(Boolean).join(' | ');
+          }
+          componentEntry.causeConfirmed = true;
+          componentEntry.origin = 'Confirmado pela oficina';
+        }
+        const manufacturingEntry = sheet.manufacturingChecks?.find((c) => c.id === entryId);
+        if (manufacturingEntry) {
+          if (field.readCondition) manufacturingEntry.status = field.readCondition;
+          if (field.readNotes) {
+            manufacturingEntry.notes = [manufacturingEntry.notes, field.readNotes].filter(Boolean).join(' | ');
+          }
+        }
+      }
+
+      const now = new Date().toISOString();
+      sheet.status = 'reavaliada';
+      sheet.confirmedAt = now;
+      sheet.confirmedBy = confirmedBy;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: confirmedBy,
+        stage: 'Confirmação de Leitura da Ficha',
+        action: `${(acceptedEntryIds || []).length} campo(s) confirmado(s) na ficha ${sheet.unitLabel || sheet.id}`,
+        details: '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Reavaliação Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, sheet });
+    } catch (error) {
+      console.error('Erro ao confirmar leitura da ficha:', error);
+      res.status(500).json({ error: 'Erro ao confirmar leitura da ficha.' });
+    }
+  });
+
+  // Pedro/Lucas — reavaliação técnica: compara a avaliação inicial com os dados
+  // confirmados na devolução da ficha e gera diagnóstico/serviços/materiais revisados.
+  // Toda versão anterior é preservada (technicalReassessments é um array só de
+  // inclusão, nunca sobrescrito). Sincroniza productEvaluations[productId] com a
+  // revisão (vira a "atual"), e se o pedido já tinha negociação aceita, reabre.
+  app.post('/api/orders/:id/reassessment', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        inspectionSheetId,
+        revisedDiagnosis,
+        updatedServicesNeeded,
+        updatedMaterials,
+        pendingItems,
+        changesFromPrevious,
+        costImpact,
+        deadlineImpactDays,
+        createdBy,
+      } = req.body as {
+        inspectionSheetId: string;
+        revisedDiagnosis: string;
+        updatedServicesNeeded: string;
+        updatedMaterials?: ProductMaterialNeed[];
+        pendingItems?: string[];
+        changesFromPrevious?: string[];
+        costImpact: TechnicalReassessment['costImpact'];
+        deadlineImpactDays?: number | null;
+        createdBy: string;
+      };
+
+      const sheet = (order.inspectionSheets || []).find((s) => s.id === inspectionSheetId);
+      if (!sheet) {
+        res.status(404).json({ error: 'Ficha de verificação não encontrada.' });
+        return;
+      }
+      if (!revisedDiagnosis || !revisedDiagnosis.trim()) {
+        res.status(400).json({ error: 'Informe o diagnóstico/especificação técnica revisada.' });
+        return;
+      }
+      if (!createdBy || !createdBy.trim()) {
+        res.status(400).json({ error: 'Informe o responsável pela reavaliação.' });
+        return;
+      }
+
+      const productId = sheet.productId;
+      if (!order.technicalReassessments) order.technicalReassessments = [];
+      const priorForSameUnit = order.technicalReassessments.filter(
+        (r) => r.productId === productId && r.unitIndex === sheet.unitIndex
+      );
+      const version = priorForSameUnit.length + 1;
+
+      // Detecta se o escopo realmente muda em relação ao que está vigente — só então
+      // mexe na negociação já aceita.
+      const currentEvaluation = order.productEvaluations?.[productId];
+      const servicesChanged = (currentEvaluation?.servicesNeeded || '') !== (updatedServicesNeeded || '');
+      const materialsChanged =
+        JSON.stringify(currentEvaluation?.materials || []) !== JSON.stringify(updatedMaterials || []);
+      const scopeChanged = servicesChanged || materialsChanged;
+      const requiresNegotiationReview = Boolean(
+        scopeChanged && order.negotiation?.clientDecision === 'aceito'
+      );
+
+      const now = new Date().toISOString();
+      const reassessment: TechnicalReassessment = {
+        id: `reass-${Date.now()}`,
+        inspectionSheetId,
+        productId,
+        unitIndex: sheet.unitIndex,
+        version,
+        comparedToSheetVersion: sheet.version,
+        revisedDiagnosis,
+        updatedServicesNeeded,
+        updatedMaterials: updatedMaterials || [],
+        pendingItems: pendingItems || [],
+        changesFromPrevious: changesFromPrevious || [],
+        costImpact,
+        deadlineImpactDays: deadlineImpactDays ?? null,
+        requiresNegotiationReview,
+        createdBy,
+        createdAt: now,
+      };
+      order.technicalReassessments.push(reassessment);
+
+      // productEvaluations[productId] é sempre a avaliação "vigente" (mesmo princípio
+      // de manufacturingData vs. technicalPlanRevisions) — a reavaliação a atualiza.
+      if (scopeChanged && order.productEvaluations?.[productId]) {
+        order.productEvaluations[productId] = {
+          ...order.productEvaluations[productId],
+          servicesNeeded: updatedServicesNeeded,
+          materials: updatedMaterials || order.productEvaluations[productId].materials,
+          evaluatedBy: createdBy,
+          evaluatedAt: now,
+        };
+      }
+
+      // Escopo/preço já aceitos pelo cliente mudando: reabre a negociação (mesma trava
+      // já usada quando os termos de negociação mudam) e marca o orçamento itemizado
+      // como precisando de nova homologação da Mila, sem apagar o que já existia.
+      if (requiresNegotiationReview && order.negotiation) {
+        order.negotiation.clientDecision = undefined;
+        order.negotiation.clientDecisionAt = undefined;
+        order.negotiation.clientDecisionBy = undefined;
+        order.negotiation.clientDecisionPriceCentsSnapshot = undefined;
+        order.negotiation.updatedAt = now;
+      }
+      if (requiresNegotiationReview && order.itemizedBudget) {
+        order.itemizedBudget.confirmedByResponsible = false;
+      }
+
+      sheet.status = 'reavaliada';
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: createdBy,
+        stage: 'Reavaliação Técnica',
+        action: `Reavaliação técnica v${version} gerada para ${sheet.unitLabel || productId}`,
+        details: requiresNegotiationReview
+          ? 'Escopo mudou com negociação já aceita — negociação reaberta, orçamento precisa ser re-homologado pela Mila.'
+          : `Impacto de custo: ${costImpact}.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Reavaliação Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, reassessment });
+    } catch (error) {
+      console.error('Erro ao gerar reavaliação técnica:', error);
+      res.status(500).json({ error: 'Erro ao gerar reavaliação técnica.' });
+    }
+  });
+
+  // Salva/atualiza o rascunho do manual de execução por produto. Enquanto estiver em
+  // rascunho, salvar de novo atualiza a MESMA versão (edição contínua); uma vez
+  // aprovado, qualquer nova edição cria uma versão nova (nunca sobrescreve o que já
+  // foi liberado para execução — mesmo princípio de technicalPlanRevisions).
+  app.post('/api/orders/:id/execution-manual', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        productId,
+        coverResponsibles,
+        views,
+        explodedView,
+        partsList,
+        cuttingPlanNote,
+        fabricGrainDirection,
+        sewingInstructions,
+        steps,
+      } = req.body as {
+        productId: string;
+        coverResponsibles?: string[];
+        views?: ExecutionManual['views'];
+        explodedView?: ExecutionManual['explodedView'];
+        partsList?: BudgetLineItem[];
+        cuttingPlanNote?: string;
+        fabricGrainDirection?: ExecutionManual['fabricGrainDirection'];
+        sewingInstructions?: ExecutionManual['sewingInstructions'];
+        steps?: ExecutionManualStep[];
+      };
+      const validIds = listOrderProducts(order).map((p) => p.id);
+      if (!productId || !validIds.includes(productId)) {
+        res.status(400).json({ error: 'Produto do pedido não encontrado (productId inválido).' });
+        return;
+      }
+
+      if (!order.executionManuals) order.executionManuals = [];
+      const forProduct = order.executionManuals.filter((m) => m.productId === productId);
+      const latest = forProduct.sort((a, b) => b.version - a.version)[0];
+      const now = new Date().toISOString();
+
+      let manual: ExecutionManual;
+      if (latest && latest.status === 'rascunho') {
+        latest.coverResponsibles = coverResponsibles ?? latest.coverResponsibles;
+        latest.views = views ?? latest.views;
+        latest.explodedView = explodedView ?? latest.explodedView;
+        latest.partsList = partsList ?? latest.partsList;
+        latest.cuttingPlanNote = cuttingPlanNote ?? latest.cuttingPlanNote;
+        latest.fabricGrainDirection = fabricGrainDirection ?? latest.fabricGrainDirection;
+        latest.sewingInstructions = sewingInstructions ?? latest.sewingInstructions;
+        latest.steps = steps ?? latest.steps;
+        manual = latest;
+      } else {
+        manual = {
+          id: `manual-${Date.now()}`,
+          orderId: order.id,
+          productId,
+          version: (latest?.version || 0) + 1,
+          status: 'rascunho',
+          coverResponsibles: coverResponsibles || [],
+          views: views || [],
+          explodedView,
+          partsList: partsList || [],
+          cuttingPlanNote: cuttingPlanNote || 'Pendente de medição.',
+          fabricGrainDirection,
+          sewingInstructions: sewingInstructions || {},
+          steps: steps || [],
+          createdAt: now,
+        };
+        order.executionManuals.push(manual);
+      }
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: 'Manual de Execução',
+        stage: 'Manual de Execução',
+        action: `Rascunho do manual v${manual.version} atualizado para ${productId}`,
+        details: '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Manual de Execução',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, manual });
+    } catch (error) {
+      console.error('Erro ao salvar manual de execução:', error);
+      res.status(500).json({ error: 'Erro ao salvar manual de execução.' });
+    }
+  });
+
+  // Aprova o manual de execução — só um responsável técnico explícito pode liberar
+  // para execução (mesmo padrão de planStatus: 'Liberado pelo responsável' já usado
+  // no plano do Tapeceiro Técnico).
+  app.post('/api/orders/:id/execution-manual/:manualId/approve', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, manualId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const manual = (order.executionManuals || []).find((m) => m.id === manualId);
+      if (!manual) {
+        res.status(404).json({ error: 'Manual de execução não encontrado.' });
+        return;
+      }
+      const { approvedBy } = req.body as { approvedBy: string };
+      if (!approvedBy || !approvedBy.trim()) {
+        res.status(400).json({ error: 'Informe o responsável técnico que está aprovando o manual.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      manual.status = 'aprovado';
+      manual.approvedBy = approvedBy;
+      manual.approvedAt = now;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: approvedBy,
+        stage: 'Manual de Execução',
+        action: `Manual de execução v${manual.version} aprovado e liberado para execução`,
+        details: '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Manual de Execução',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, manual });
+    } catch (error) {
+      console.error('Erro ao aprovar manual de execução:', error);
+      res.status(500).json({ error: 'Erro ao aprovar manual de execução.' });
+    }
+  });
+
+  // Controle de qualidade: checklist derivado do manual de execução APROVADO (medida
+  // prevista vem só dele, nunca inventada aqui). Nunca libera 'aprovado' havendo item
+  // 'nao_conforme' — validado no servidor, não só na UI. Retrabalho cria uma NOVA
+  // inspeção com reworkOfInspectionId apontando pra anterior — qualityControlHistory
+  // é só de inclusão, nenhuma inspeção anterior é sobrescrita ou removida.
+  app.post('/api/orders/:id/quality-control', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        productId,
+        unitIndex,
+        checks,
+        responsibleName,
+        outcome: requestedOutcome,
+        reworkOfInspectionId,
+      } = req.body as {
+        productId: string;
+        unitIndex: number;
+        checks: QcCheckEntry[];
+        responsibleName: string;
+        outcome?: QualityControlInspection['outcome'];
+        reworkOfInspectionId?: string;
+      };
+      if (!responsibleName || !responsibleName.trim()) {
+        res.status(400).json({ error: 'Informe o responsável pela inspeção.' });
+        return;
+      }
+      if (!Array.isArray(checks) || checks.length === 0) {
+        res.status(400).json({ error: 'Informe ao menos um item de verificação.' });
+        return;
+      }
+
+      const approvedManual = (order.executionManuals || [])
+        .filter((m) => m.productId === productId && m.status === 'aprovado')
+        .sort((a, b) => b.version - a.version)[0];
+      if (!approvedManual) {
+        res.status(400).json({
+          error: 'Não há manual de execução aprovado para este produto — libere o manual antes do controle de qualidade.',
+        });
+        return;
+      }
+
+      const hasNonConformance = checks.some((c) => c.result === 'nao_conforme');
+      const allFilled = checks.every((c) => c.result != null);
+      let outcome: QualityControlInspection['outcome'];
+      if (hasNonConformance) {
+        // Nunca libera aprovado com não conformidade, mesmo que o cliente peça isso.
+        outcome = 'retrabalho';
+      } else if (requestedOutcome === 'aprovado') {
+        if (!allFilled) {
+          res.status(400).json({
+            error: 'Existem itens ainda sem resultado — não é possível aprovar com verificação pendente.',
+          });
+          return;
+        }
+        outcome = 'aprovado';
+      } else {
+        outcome = 'aguardando_verificacao';
+      }
+
+      const now = new Date().toISOString();
+      const inspection: QualityControlInspection = {
+        id: `qc-${Date.now()}`,
+        orderId: order.id,
+        productId,
+        unitIndex,
+        manualVersion: approvedManual.version,
+        checks,
+        responsibleName,
+        date: now,
+        outcome,
+        reworkOfInspectionId,
+      };
+      if (!order.qualityControlHistory) order.qualityControlHistory = [];
+      order.qualityControlHistory.push(inspection);
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: responsibleName,
+        stage: 'Controle de Qualidade',
+        action: `Inspeção de QC registrada — resultado: ${outcome}`,
+        details: reworkOfInspectionId ? `Reinspeção após retrabalho de ${reworkOfInspectionId}` : '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Controle de Qualidade',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, inspection });
+    } catch (error) {
+      console.error('Erro ao registrar inspeção de controle de qualidade:', error);
+      res.status(500).json({ error: 'Erro ao registrar inspeção de controle de qualidade.' });
     }
   });
 
