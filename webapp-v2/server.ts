@@ -3604,11 +3604,13 @@ async function startServer() {
   app.put('/api/agent-voice-settings/:deskId', (req, res) => {
     const store = loadStore();
     const deskId = req.params.deskId as DepartmentId;
-    const { voiceURI, voiceName, lang, gender } = req.body as {
+    const { voiceURI, voiceName, lang, gender, rate, pitch } = req.body as {
       voiceURI: string;
       voiceName: string;
       lang: string;
       gender?: 'feminina' | 'masculina';
+      rate?: number;
+      pitch?: number;
     };
     if (!voiceURI || !voiceName) {
       res.status(400).json({ error: 'voiceURI e voiceName são obrigatórios.' });
@@ -3620,6 +3622,8 @@ async function startServer() {
       voiceName,
       lang: lang || 'pt-BR',
       gender,
+      rate: typeof rate === 'number' && rate > 0 ? rate : undefined,
+      pitch: typeof pitch === 'number' && pitch >= 0 ? pitch : undefined,
       updatedAt: new Date().toISOString(),
     };
     store.settings.agentVoiceSettings[deskId] = config;

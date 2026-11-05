@@ -37,6 +37,7 @@ import { MilaFinancialDesk } from './MilaFinancialDesk';
 import { CastroStrategyDesk } from './CastroStrategyDesk';
 import { SupervisorDesk } from './SupervisorDesk';
 import { AgentVoiceTextChat } from './AgentVoiceTextChat';
+import { stopAllAgentSpeech } from '../utils/agentVoice';
 import { AgentPortrait } from './AgentPortrait';
 import { TapeceiroTecnicoDesk } from './TapeceiroTecnicoDesk';
 import { MilaFactoryFinanceView } from './MilaFactoryFinanceView';
@@ -118,6 +119,14 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   const [forceNoOrderView, setForceNoOrderView] = useState(false);
   useEffect(() => {
     setForceNoOrderView(false);
+  }, [selectedDeskId]);
+
+  // Trocar de mesa interrompe qualquer fala em andamento imediatamente — sem isso,
+  // o widget de voz é a mesma instância React em algumas rotas (sem remontar), então
+  // uma fala "em voo" da mesa anterior podia continuar tocando com a voz errada por
+  // cima da mesa recém-aberta.
+  useEffect(() => {
+    stopAllAgentSpeech();
   }, [selectedDeskId]);
 
   // Carregar dados centrais do escritório

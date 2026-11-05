@@ -66,6 +66,7 @@ import { OfficeDesksHub } from './components/OfficeDesksHub';
 import { RawMaterialsAndPricing } from './components/RawMaterialsAndPricing';
 import { getOrCreateDeviceIdentity, usePWAInstall } from './hooks/usePWAInstall';
 import { AgentPortrait, PortraitUploadModal } from './components/AgentPortrait';
+import { AgentVoiceSettingsPanel } from './components/AgentVoiceSettingsPanel';
 import { ManualAjuda } from './components/ManualAjuda';
 import { OFFICE_DESKS } from './utils/officeDefaults';
 
@@ -2666,6 +2667,8 @@ export default function App() {
                     </button>
                   </div>
                 </form>
+
+                <AgentVoiceSettingsPanel />
 
                 <div className="pt-6 border-t border-[#EFECE6] space-y-4">
                   <div>

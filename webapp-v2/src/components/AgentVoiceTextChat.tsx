@@ -20,22 +20,7 @@ import {
 } from 'lucide-react';
 import { DepartmentId, AgentChatMessage, AgentActionProposal, AgentVoiceConfig } from '../types';
 import { AgentPortrait } from './AgentPortrait';
-
-// Sugestão de gênero por mesa — usada só para pré-selecionar uma aba na escolha
-// de voz (feminino/masculino conforme o personagem); quem decide de fato é o
-// humano ao ouvir a amostra e salvar, nunca uma inferência automática a partir
-// do nome da SpeechSynthesisVoice (a Web Speech API não informa gênero).
-const DESK_SUGGESTED_GENDER: Partial<Record<DepartmentId, 'feminina' | 'masculina'>> = {
-  carla_atendimento: 'feminina',
-  mila_financeiro: 'feminina',
-  julia_marketing: 'feminina',
-  ana_compras: 'feminina',
-  supervisora_geral: 'feminina',
-  pedro_avaliacao: 'masculina',
-  lucas_projetos: 'masculina',
-  castro_estrategia: 'masculina',
-  tapeceiro_tecnico: 'masculina',
-};
+import { DESK_SUGGESTED_GENDER, speakAsAgent, stopAllAgentSpeech } from '../utils/agentVoice';
 
 interface AgentVoiceTextChatProps {
   deskId: DepartmentId;
@@ -86,6 +71,8 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
   const [savedVoiceConfig, setSavedVoiceConfig] = useState<AgentVoiceConfig | null>(null);
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>('');
+  const [selectedRate, setSelectedRate] = useState(1.05);
+  const [selectedPitch, setSelectedPitch] = useState(1.0);
   const [isSavingVoice, setIsSavingVoice] = useState(false);
 
   // Execução de ação estruturada
@@ -174,6 +161,8 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
         if (config) {
           setSavedVoiceConfig(config);
           setSelectedVoiceURI(config.voiceURI);
+          if (typeof config.rate === 'number') setSelectedRate(config.rate);
+          if (typeof config.pitch === 'number') setSelectedPitch(config.pitch);
         }
       } catch {
         // sem servidor disponível — segue com a voz padrão do navegador
@@ -220,54 +209,26 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isSending, statusState]);
 
-  // Parar fala do sintetizador imediatamente
+  // Parar fala do sintetizador imediatamente (e descartar qualquer fala de
+  // outra mesa que ainda esteja "em voo" via o token global).
   const stopSpeaking = () => {
-    if (synthRef.current) {
-      synthRef.current.cancel();
-    }
+    stopAllAgentSpeech();
     setIsSpeaking(false);
   };
 
-  // Falar texto em voz alta com sintetizador em português do Brasil
+  // Falar texto em voz alta com a voz desta mesa (salva ou atribuída
+  // automaticamente), usando o utilitário único compartilhado com o resto do app.
   const speakTextInPortuguese = (text: string) => {
     if (!voiceSpeechEnabled) return;
     if (typeof window === 'undefined' || !window.speechSynthesis) {
       setVoiceNotice('Este navegador não tem suporte a síntese de voz — a resposta só aparece em texto.');
       return;
     }
-
-    stopSpeaking();
-
-    // Limpar markdown e asteriscos para dicção limpa
-    const cleanText = text
-      .replace(/\*\*/g, '')
-      .replace(/\*/g, '')
-      .replace(/#{1,6}\s?/g, '')
-      .replace(/`{1,3}/g, '')
-      .trim();
-
-    if (!cleanText) return;
-
-    try {
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.lang = 'pt-BR';
-      utterance.rate = 1.05;
-      utterance.pitch = 1.0;
-
-      // Usa a voz individual salva para esta mesa quando ela existir de fato
-      // neste navegador; só cai para uma voz pt-BR genérica quando não há voz
-      // salva ou quando a salva não está disponível aqui (ver aviso acima).
-      const voices = window.speechSynthesis.getVoices();
-      const savedVoice = savedVoiceConfig
-        ? voices.find((v) => v.voiceURI === savedVoiceConfig.voiceURI)
-        : undefined;
-      const fallbackVoice = voices.find((v) => v.lang.includes('pt-BR') || v.lang.includes('pt'));
-      const chosenVoice = savedVoice || fallbackVoice;
-      if (chosenVoice) {
-        utterance.voice = chosenVoice;
-      }
-
-      utterance.onstart = () => {
+    speakAsAgent({
+      deskId,
+      text,
+      savedConfig: savedVoiceConfig,
+      onStart: () => {
         setIsSpeaking(true);
         // Prevenir eco: interrompe reconhecimento se estiver ativo
         if (isListening && recognitionRef.current) {
@@ -278,9 +239,8 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
           }
           setIsListening(false);
         }
-      };
-
-      utterance.onend = () => {
+      },
+      onEnd: () => {
         setIsSpeaking(false);
         // No modo conversa contínua, reativa a escuta para o próximo turno
         if (voiceMode === 'conversa') {
@@ -288,21 +248,14 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
             startListening();
           }, 400);
         }
-      };
-
-      utterance.onerror = () => {
-        setIsSpeaking(false);
-      };
-
-      synthRef.current?.speak(utterance);
-    } catch (err) {
-      console.warn('Erro ao reproduzir síntese de voz:', err);
-      setIsSpeaking(false);
-    }
+      },
+      onError: () => setIsSpeaking(false),
+    });
   };
 
-  // Toca uma amostra com a voz selecionada no seletor (antes de salvar), para o
-  // humano ouvir e decidir — nunca inferimos o gênero da voz automaticamente.
+  // Toca uma amostra com a voz (e velocidade/tom) selecionadas no seletor antes
+  // de salvar, para o humano ouvir e decidir — nunca inferimos o gênero da voz
+  // automaticamente, quem decide é sempre uma pessoa ouvindo a amostra.
   const handleTestVoice = () => {
     if (typeof window === 'undefined' || !window.speechSynthesis) return;
     const voice = browserVoices.find((v) => v.voiceURI === selectedVoiceURI);
@@ -313,13 +266,13 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
     );
     utterance.voice = voice;
     utterance.lang = voice.lang || 'pt-BR';
-    utterance.rate = 1.05;
-    utterance.pitch = 1.0;
+    utterance.rate = selectedRate;
+    utterance.pitch = selectedPitch;
     window.speechSynthesis.speak(utterance);
   };
 
-  // Salva a voz escolhida para esta mesa no servidor (persiste entre
-  // recarregamentos/reaberturas — nunca só no navegador local).
+  // Salva a voz (+ velocidade/tom) escolhidas para esta mesa no servidor
+  // (persiste entre recarregamentos/reaberturas — nunca só no navegador local).
   const handleSaveVoice = async () => {
     const voice = browserVoices.find((v) => v.voiceURI === selectedVoiceURI);
     if (!voice) return;
@@ -333,6 +286,8 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
           voiceName: voice.name,
           lang: voice.lang,
           gender: DESK_SUGGESTED_GENDER[deskId],
+          rate: selectedRate,
+          pitch: selectedPitch,
         }),
       });
       const data = await res.json();
@@ -779,6 +734,30 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
                 disponível(is) neste navegador, de {sortedVoiceOptions.length} no total. A lista depende do
                 navegador/dispositivo — pode ser diferente em outro aparelho.
               </p>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-[11px] text-[#78716C] flex flex-col gap-1">
+                  Velocidade ({selectedRate.toFixed(2)}x)
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={2}
+                    step={0.05}
+                    value={selectedRate}
+                    onChange={(e) => setSelectedRate(parseFloat(e.target.value))}
+                  />
+                </label>
+                <label className="text-[11px] text-[#78716C] flex flex-col gap-1">
+                  Tom/expressividade ({selectedPitch.toFixed(2)})
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    value={selectedPitch}
+                    onChange={(e) => setSelectedPitch(parseFloat(e.target.value))}
+                  />
+                </label>
+              </div>
               <div className="flex gap-2">
                 <button
                   type="button"

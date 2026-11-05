@@ -990,6 +990,11 @@ export interface AgentVoiceConfig {
   voiceName: string;
   lang: string;
   gender?: 'feminina' | 'masculina';
+  // Velocidade (0.5–2, padrão 1.05) e tom/expressividade (0–2, padrão 1.0) da fala —
+  // só fazem sentido combinados com uma voz distinta de verdade (acima), nunca como
+  // substituto dela.
+  rate?: number;
+  pitch?: number;
   updatedAt: string;
 }
 

@@ -51,8 +51,10 @@ import {
   WorkshopSettings,
   PaidAdObjective,
   PaidAdBudgetProposal,
+  AgentVoiceConfig,
 } from '../types';
 import { ResilientImage } from './ResilientImage';
+import { speakAsAgent, stopAllAgentSpeech } from '../utils/agentVoice';
 
 interface JuliaMarketingDepartmentProps {
   deviceFormFactor: string;
@@ -779,6 +781,27 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
   const [voiceSpeakEnabled, setVoiceSpeakEnabled] = useState(true);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
+  // Voz salva da Júlia (persistida no servidor) — carregada aqui para que a fala
+  // desta tela use o mesmo utilitário/voz distinta das demais mesas, em vez de
+  // uma implementação própria que nunca lia essa configuração (bug original).
+  const [juliaVoiceConfig, setJuliaVoiceConfig] = useState<AgentVoiceConfig | null>(null);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/agent-voice-settings');
+        if (!res.ok) return;
+        const data = await res.json();
+        const config: AgentVoiceConfig | undefined = data?.agentVoiceSettings?.julia_marketing;
+        if (active && config) setJuliaVoiceConfig(config);
+      } catch {
+        // sem servidor disponível — segue com a atribuição automática de voz
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Daily report state
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
@@ -906,22 +929,15 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
   }, [cameraOpen, cameraFacing]);
 
   const speakTextInPortuguese = (text: string) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'pt-BR';
-      utterance.rate = 1.02;
-      window.speechSynthesis.speak(utterance);
-    } catch {
-      // ignore
-    }
+    speakAsAgent({
+      deskId: 'julia_marketing',
+      text,
+      savedConfig: juliaVoiceConfig,
+    });
   };
 
   const stopVoiceSpeaking = () => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
+    stopAllAgentSpeech();
   };
 
   const activeProject: JuliaSmartAdProject | null =
