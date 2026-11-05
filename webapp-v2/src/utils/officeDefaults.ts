@@ -1146,6 +1146,8 @@ export function createDefaultOfficeData(): SharedOfficeData {
       { id: 'acc-caixa', name: 'Caixa', type: 'caixa', active: true, createdAt: now, updatedAt: now },
     ],
     cashTransfers: [],
+    receiptDocuments: [],
+    materialReceiptEntries: [],
     strategyRecommendations: [
       {
         id: 'rec-1',

@@ -1161,6 +1161,109 @@ export interface FinancialTransaction {
   // status vira 'parcial' enquanto amountPaidCents < amountCents.
   amountPaidCents?: number;
   payments?: FinancialPaymentEntry[];
+  // Comprovantes e Lançamentos (Mesa da Mila) — identificador do documento/transação
+  // (nota fiscal, Pix, etc.) usado na checagem de duplicidade, e todos os documentos
+  // anexados a este lançamento (comprovante + nota fiscal podem coexistir sem duplicar
+  // a contabilização — ver ReceiptDocument.linkedTransactionId).
+  sourceDocumentId?: string;
+  receiptDocumentIds?: string[];
+  // Presente apenas em um lançamento do tipo 'estorno_cliente': aponta para o lançamento
+  // original que foi estornado.
+  reversalOfTransactionId?: string;
+}
+
+// ----------------------------------------------------------------------------
+// COMPROVANTES E LANÇAMENTOS (Mesa da Mila) — intake por foto/PDF com leitura
+// automática (OCR por IA), conferência humana obrigatória antes de qualquer
+// confirmação financeira ou de estoque.
+// ----------------------------------------------------------------------------
+
+export type ReceiptKind = 'comprovante_pagamento' | 'nota_fiscal' | 'recibo' | 'outro';
+
+// Nunca inferida do nome do arquivo — só a partir do conteúdo lido (IA) ou da escolha
+// manual do usuário. 'indefinido' até que uma das duas aconteça.
+export type ReceiptDirection = 'entrada' | 'saida' | 'indefinido';
+
+export type ReceiptProcessingStatus =
+  | 'pendente_analise' // acabou de ser enviado, IA ainda não rodou (ou falhou)
+  | 'pendente_revisao' // IA já leu (ou falhou em ler) — aguarda conferência humana
+  | 'vinculado' // conferido e vinculado a um lançamento financeiro (e/ou compra de material)
+  | 'ignorado'; // descartado (ilegível, duplicado, não se aplica)
+
+export interface ReceiptLineItem {
+  id: string;
+  description: string;
+  quantity?: number | null;
+  unit?: string;
+  unitCostCents?: number | null;
+  totalCents?: number | null;
+  materialId?: string; // vínculo ao catálogo, quando identificado/escolhido
+  foamDensity?: string;
+  dimensionsMm?: { length?: number; width?: number; thickness?: number };
+}
+
+export interface ReceiptExtractedData {
+  amountCents?: number | null;
+  date?: string | null;
+  payer?: string | null;
+  payee?: string | null;
+  paymentMethod?: string | null;
+  documentNumber?: string | null;
+  description?: string | null;
+  suggestedDirection?: ReceiptDirection;
+  suggestedKind?: ReceiptKind;
+  items?: ReceiptLineItem[];
+  confidence?: 'alta' | 'media' | 'baixa';
+  missingFields?: string[];
+  notes?: string;
+}
+
+export interface ReceiptDocument {
+  id: string;
+  kind: ReceiptKind;
+  direction: ReceiptDirection;
+  fileUrl: string;
+  mimeType: string;
+  fileName?: string;
+  uploadedAt: string;
+  uploadedBy?: string;
+  // Leitura automática por IA — nunca editada diretamente; serve de ponto de partida.
+  extracted?: ReceiptExtractedData;
+  extractionError?: string;
+  // Valores já conferidos/corrigidos manualmente, usados de fato ao vincular.
+  reviewed?: ReceiptExtractedData;
+  status: ReceiptProcessingStatus;
+  linkedTransactionId?: string;
+  linkedOrderId?: string;
+  linkedPurchaseId?: string; // MaterialReceiptEntry.id, quando vinculado a uma compra de material
+  possibleDuplicateOf?: string[]; // ids de outros ReceiptDocument semelhantes
+  discardReason?: string;
+  history: Array<{ action: string; timestamp: string; actor?: string; notes?: string }>;
+}
+
+// Recebimento (ou devolução, com quantityReceived negativo) de material vinculado a uma
+// compra — nunca confunde "comprovante lido" com "material realmente recebido": só esta
+// entrada move o estoque físico.
+export interface MaterialReceiptEntry {
+  id: string;
+  materialId: string;
+  receiptDocumentId?: string;
+  transactionId?: string; // lançamento financeiro (despesa_material) correspondente
+  quantityReceived: number;
+  unit: string;
+  unitCostCents: number;
+  totalCostCents: number;
+  specification?: string;
+  foamDensity?: string;
+  dimensionsMm?: { length?: number; width?: number; thickness?: number };
+  supplier?: string;
+  receivedAt: string;
+  receivedBy?: string;
+  partial: boolean; // ainda há quantidade aguardando entrega desta mesma compra
+  pendingQuantity?: number;
+  movementType?: 'recebimento' | 'devolucao';
+  relatedEntryId?: string; // devolução aponta para o recebimento original, quando houver
+  notes?: string;
 }
 
 // ----------------------------------------------------------------------------
@@ -1340,6 +1443,9 @@ export interface SharedOfficeData {
   initialBalance?: InitialBalanceRecord | null;
   cashAccounts?: CashAccount[];
   cashTransfers?: CashTransfer[];
+  // Comprovantes e Lançamentos (Mesa da Mila)
+  receiptDocuments?: ReceiptDocument[];
+  materialReceiptEntries?: MaterialReceiptEntry[];
 }
 
 
