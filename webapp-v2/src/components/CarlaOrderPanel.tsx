@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { AttendanceRecord, WorkshopSettings, DepartmentId } from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
+import { OrderNegotiationPanel } from './OrderNegotiationPanel';
 
 interface CarlaOrderPanelProps {
   order: AttendanceRecord;
@@ -298,6 +299,15 @@ export const CarlaOrderPanel: React.FC<CarlaOrderPanelProps> = ({ order, setting
           </div>
         )}
       </div>
+
+      {/* Negociação e Pagamento (fluxo novo com orçamento itemizado — só aparece quando a
+          Mila já homologou um orçamento itemizado para este pedido) */}
+      {order.itemizedBudget && (
+        <div className="space-y-2">
+          <h4 className="font-bold text-xs uppercase tracking-wider text-[#181512]">Negociação e Pagamento</h4>
+          <OrderNegotiationPanel order={order} defaultOperatorName={settings.responsibleDefaultName} onUpdateOrder={onUpdateOrder} />
+        </div>
+      )}
 
       {/* Reclamações */}
       <div className="space-y-2">

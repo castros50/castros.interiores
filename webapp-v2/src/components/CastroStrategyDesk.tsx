@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Target,
   Clock,
@@ -13,6 +13,7 @@ import {
   Check,
   User,
   HelpCircle,
+  Megaphone,
 } from 'lucide-react';
 import {
   AttendanceRecord,
@@ -21,6 +22,7 @@ import {
   WeeklyActionPlanItem,
   WeeklyStrategyPlan,
   WorkshopSettings,
+  PaidAdBudgetProposal,
 } from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
 import { AgentPortrait } from './AgentPortrait';
@@ -40,9 +42,68 @@ export const CastroStrategyDesk: React.FC<CastroStrategyDeskProps> = ({
   onUpdateOfficeData,
   onRequestHandoff,
 }) => {
-  const [activeTab, setActiveTab] = useState<'capacidade' | 'plano_semanal' | 'recomendacoes'>('capacidade');
+  const [activeTab, setActiveTab] = useState<
+    'capacidade' | 'plano_semanal' | 'recomendacoes' | 'anuncios_pagos'
+  >('capacidade');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // --- Anúncios pagos aguardando aprovação de orçamento (ver /api/julia/paid-ads/*).
+  // Castro é uma das mesas com alçada para aprovar, ao lado de Helena. ---
+  const [paidAdProposals, setPaidAdProposals] = useState<PaidAdBudgetProposal[]>([]);
+  const [isLoadingPaidAds, setIsLoadingPaidAds] = useState(false);
+  const [paidAdActionTarget, setPaidAdActionTarget] = useState<{ id: string; action: 'approve' | 'reject' } | null>(
+    null
+  );
+  const [paidAdActorName, setPaidAdActorName] = useState('');
+  const [paidAdActionNotes, setPaidAdActionNotes] = useState('');
+  const [isSubmittingPaidAdAction, setIsSubmittingPaidAdAction] = useState(false);
+
+  const loadPaidAdProposals = useCallback(async () => {
+    setIsLoadingPaidAds(true);
+    try {
+      const res = await fetch('/api/julia');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok) setPaidAdProposals(data.juliaData?.paidAdProposals || []);
+      }
+    } catch {
+      // mantém o último dado carregado — sem fingir sucesso
+    } finally {
+      setIsLoadingPaidAds(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'anuncios_pagos') loadPaidAdProposals();
+  }, [activeTab, loadPaidAdProposals]);
+
+  const handleSubmitPaidAdAction = async () => {
+    if (!paidAdActionTarget || !paidAdActorName.trim()) return;
+    setIsSubmittingPaidAdAction(true);
+    try {
+      const endpoint =
+        paidAdActionTarget.action === 'approve'
+          ? `/api/julia/paid-ads/${paidAdActionTarget.id}/approve`
+          : `/api/julia/paid-ads/${paidAdActionTarget.id}/reject`;
+      const bodyKey = paidAdActionTarget.action === 'approve' ? 'approvedBy' : 'rejectedBy';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [bodyKey]: paidAdActorName.trim(), notes: paidAdActionNotes.trim() }),
+      });
+      if (res.ok) {
+        setPaidAdActionTarget(null);
+        setPaidAdActorName('');
+        setPaidAdActionNotes('');
+        await loadPaidAdProposals();
+      }
+    } catch {
+      // mantém o estado anterior visível em caso de falha de rede
+    } finally {
+      setIsSubmittingPaidAdAction(false);
+    }
+  };
 
   // Formulário para nova ação semanal
   const [newActionTitle, setNewActionTitle] = useState('');
@@ -184,6 +245,10 @@ export const CastroStrategyDesk: React.FC<CastroStrategyDeskProps> = ({
             label: `3. Recomendações Estruturadas (${
               officeData.recommendations?.length || officeData.strategyRecommendations?.length || 0
             })`,
+          },
+          {
+            id: 'anuncios_pagos',
+            label: `4. Anúncios Pagos (${paidAdProposals.filter((p) => p.status === 'aguardando_aprovacao').length})`,
           },
         ].map((t) => (
           <button
@@ -457,6 +522,133 @@ export const CastroStrategyDesk: React.FC<CastroStrategyDeskProps> = ({
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* ABA 4: ANÚNCIOS PAGOS AGUARDANDO APROVAÇÃO DE ORÇAMENTO — Castro é uma
+            das mesas com alçada para aprovar, ao lado de Helena. A Júlia (IA)
+            nunca aprova, só propõe. */}
+        {activeTab === 'anuncios_pagos' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-[#6B6257]">
+                Propostas de orçamento de anúncio pago montadas pela Júlia, aguardando decisão formal. Nenhum
+                anúncio é veiculado antes da aprovação aqui.
+              </p>
+              <button
+                type="button"
+                onClick={loadPaidAdProposals}
+                disabled={isLoadingPaidAds}
+                className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] text-xs font-semibold text-[#181512] hover:bg-[#FAF8F5]"
+              >
+                {isLoadingPaidAds ? 'Atualizando...' : 'Atualizar'}
+              </button>
+            </div>
+
+            {paidAdProposals.length === 0 ? (
+              <div className="p-6 rounded-xl bg-[#FAF8F5] border border-[#E5DEC9] text-xs text-[#6B6257] text-center">
+                Nenhuma proposta de anúncio pago registrada ainda.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {paidAdProposals.map((p) => (
+                  <div key={p.id} className="p-3 rounded-xl border border-[#E5DEC9] bg-white text-xs space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="font-semibold text-[#181512] flex items-center gap-1.5">
+                          <Megaphone className="w-3.5 h-3.5 text-[#9A7138]" />
+                          {p.objective} · {p.channel} · R$ {(p.budgetCents / 100).toFixed(2)} ({p.budgetPeriod}) ·{' '}
+                          {p.durationDays} dia(s)
+                        </p>
+                        <p className="text-[11px] text-[#57534E] mt-0.5">Público: {p.targetAudienceDescription}</p>
+                        <p className="text-[10px] text-[#6B6257] mt-0.5">
+                          Proposto por {p.proposedBy} em {new Date(p.proposedAt).toLocaleString('pt-BR')}
+                        </p>
+                        {p.approval && (
+                          <p className="text-[10px] text-[#6B6257] mt-0.5">
+                            {p.approval.approved ? 'Aprovado' : 'Rejeitado'} por {p.approval.approvedBy} em{' '}
+                            {new Date(p.approval.approvedAt).toLocaleString('pt-BR')}
+                            {p.approval.notes ? ` — "${p.approval.notes}"` : ''}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                            p.status === 'aprovado' || p.status === 'em_veiculacao'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : p.status === 'rejeitado' || p.status === 'falhou'
+                              ? 'bg-red-100 text-red-900'
+                              : 'bg-amber-100 text-amber-900'
+                          }`}
+                        >
+                          {p.status.replace(/_/g, ' ')}
+                        </span>
+                        {p.status === 'aguardando_aprovacao' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setPaidAdActionTarget({ id: p.id, action: 'approve' })}
+                              className="px-2.5 py-1 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] text-white text-[11px] font-semibold"
+                            >
+                              Aprovar Orçamento
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPaidAdActionTarget({ id: p.id, action: 'reject' })}
+                              className="px-2.5 py-1 rounded-lg border border-red-300 text-red-700 hover:bg-red-50 text-[11px] font-semibold"
+                            >
+                              Rejeitar
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {paidAdActionTarget?.id === p.id && (
+                      <div className="p-3 rounded-lg bg-[#FAF8F5] border border-[#E5DEC9] space-y-2">
+                        <p className="text-[11px] font-semibold text-[#181512]">
+                          {paidAdActionTarget.action === 'approve'
+                            ? 'Confirmar aprovação do orçamento'
+                            : 'Confirmar rejeição da proposta'}
+                        </p>
+                        <input
+                          type="text"
+                          value={paidAdActorName}
+                          onChange={(e) => setPaidAdActorName(e.target.value)}
+                          placeholder="Seu nome (obrigatório)"
+                          className="w-full p-2 rounded-lg border border-[#D6CFC5] text-xs"
+                        />
+                        <textarea
+                          value={paidAdActionNotes}
+                          onChange={(e) => setPaidAdActionNotes(e.target.value)}
+                          placeholder="Observações (opcional)"
+                          rows={2}
+                          className="w-full p-2 rounded-lg border border-[#D6CFC5] text-xs"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPaidAdActionTarget(null)}
+                            className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] text-[#57534E] text-[11px] font-medium"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSubmitPaidAdAction}
+                            disabled={!paidAdActorName.trim() || isSubmittingPaidAdAction}
+                            className="px-3 py-1.5 rounded-lg bg-[#181512] hover:bg-[#2E2722] text-white text-[11px] font-semibold disabled:opacity-40"
+                          >
+                            {isSubmittingPaidAdAction ? 'Enviando...' : 'Confirmar'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

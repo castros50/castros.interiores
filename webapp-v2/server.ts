@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { getApps, initializeApp, applicationDefault } from 'firebase-admin/app';
@@ -108,7 +109,45 @@ import type {
   CashTransfer,
   AttendanceRequestType,
   ComplaintEntry,
+  BackgroundTask,
+  BackgroundTaskStatus,
+  IntegrationConnectionState,
+  AgentVoiceConfig,
+  PaidAdBudgetProposal,
+  PaidAdObjective,
+  JuliaCampaignScheduleItem,
+  ClientRecord,
+  ClientAddress,
+  OrderProduct,
+  ProductMaterialNeed,
+  ProductTechnicalEvaluation,
+  ItemizedBudgetEntry,
+  ItemizedBudget,
+  PaymentMethod,
+  OrderPaymentStatus,
+  OrderInstallment,
+  OrderNegotiation,
+  BudgetLineItem,
+  BudgetLineCategory,
+  FinancialPaymentEntry,
+  PaymentStatus,
+  InspectionComponentKey,
+  InspectionMarking,
+  InspectionComponentEntry,
+  ManufacturingInspectionEntry,
+  InspectionSheet,
+  ChecklistFieldReadStatus,
+  InspectionFormReadField,
+  InspectionFormReadResult,
+  TechnicalReassessment,
+  ExecutionManualStep,
+  ExecutionManual,
+  QcResult,
+  QcCheckEntry,
+  QualityControlInspection,
+  InformationOrigin,
 } from './src/types.ts';
+import { INSPECTION_COMPONENT_LABELS, INSPECTION_MARKING_LABELS } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
   createDemoSofa2Places,
@@ -152,6 +191,128 @@ interface PersistentStore {
   juliaData?: JuliaDepartmentData;
   officeData?: SharedOfficeData;
   agentChats?: Record<string, AgentChatMessage[]>;
+  backgroundTasks?: BackgroundTask[];
+  clients?: ClientRecord[];
+}
+
+// Normaliza telefone para comparação (só dígitos) — usado para não cadastrar o mesmo
+// cliente duas vezes só porque o telefone foi digitado com formatação diferente.
+function normalizePhoneDigits(phone: string | undefined | null): string {
+  return (phone || '').replace(/\D/g, '');
+}
+
+function findClientByPhoneOrName(
+  clients: ClientRecord[],
+  phone: string | undefined,
+  name: string | undefined
+): ClientRecord | undefined {
+  const phoneDigits = normalizePhoneDigits(phone);
+  if (phoneDigits) {
+    const byPhone = clients.find((c) => normalizePhoneDigits(c.phone) === phoneDigits);
+    if (byPhone) return byPhone;
+  }
+  const nameLower = (name || '').trim().toLowerCase();
+  if (!nameLower) return undefined;
+  return clients.find((c) => c.name.trim().toLowerCase() === nameLower);
+}
+
+const DESK_AGENT_NAMES: Record<string, string> = {
+  carla_atendimento: 'Carla (Atendimento ao Cliente)',
+  pedro_avaliacao: 'Pedro (Avaliação Técnica)',
+  lucas_projetos: 'Lucas (Projetos & Fabricação)',
+  ana_compras: 'Ana (Compras & Suprimentos)',
+  mila_financeiro: 'Mila (Administração Financeira)',
+  castro_estrategia: 'Castro (Estratégia & Negócio)',
+  julia_marketing: 'Júlia (Marketing & Divulgação)',
+  supervisora_geral: 'Helena (Supervisora Geral)',
+  tapeceiro_tecnico: 'Tapeceiro Técnico (Produção e Materiais)',
+};
+
+// Mecanismo genérico de encaminhamento entre mesas: só reatribui currentDesk/deskStatus
+// e registra o histórico — nunca inicia trabalho algum na mesa de destino sozinho. Extraído
+// de POST /api/orders/transfer para ser reaproveitado por outras rotas (ex.: a Mila
+// homologando o orçamento itemizado e encaminhando automaticamente para a Carla).
+// Quem chamar é responsável por dar saveStore(store)/broadcastRealtimeEvent depois, exceto
+// quando alreadyTransferred=true (nada novo foi criado, não há o que salvar/avisar).
+function createOrderHandoff(
+  store: PersistentStore,
+  order: AttendanceRecord,
+  params: {
+    fromDesk: DepartmentId;
+    toDesk: DepartmentId;
+    reason: string;
+    completedSummary: string;
+    pendingItems?: string[];
+    nextActionExpected: string;
+    documentVersion?: string;
+    deskStatusOverride?: OrderDeskStatus;
+  }
+): { handoff: OrderHandoffEntry; alreadyTransferred: boolean } {
+  const { fromDesk, toDesk, reason, completedSummary, pendingItems, nextActionExpected, documentVersion } = params;
+
+  // Prevenção de duplicidade: se o encaminhamento mais recente já é para a mesma mesa,
+  // pela mesma origem, e ainda está pendente de aceite (ninguém mexeu nele ainda), um
+  // novo clique repetido não deve empilhar outro registro idêntico no histórico.
+  const lastHandoff = order.handoffHistory && order.handoffHistory[0];
+  if (
+    lastHandoff &&
+    lastHandoff.fromDesk === fromDesk &&
+    lastHandoff.toDesk === toDesk &&
+    (lastHandoff.status || 'pendente_aceite') === 'pendente_aceite'
+  ) {
+    return { handoff: lastHandoff, alreadyTransferred: true };
+  }
+
+  const now = new Date().toISOString();
+  const entry: OrderHandoffEntry = {
+    id: `hnd-${Date.now()}`,
+    orderId: order.id,
+    fromDesk,
+    toDesk,
+    timestamp: now,
+    reason: reason || 'Transferência entre mesas operacionais',
+    completedSummary: completedSummary || 'Etapa anterior finalizada na mesa.',
+    pendingItems: Array.isArray(pendingItems) ? pendingItems : pendingItems ? [pendingItems] : [],
+    nextActionExpected: nextActionExpected || 'Análise técnica e continuidade dos trabalhos.',
+    documentVersion: documentVersion || order.manufacturingData?.version || 'v1.0',
+    status: 'pendente_aceite',
+  };
+
+  if (!order.handoffHistory) order.handoffHistory = [];
+  order.handoffHistory.unshift(entry);
+
+  order.currentDesk = toDesk;
+  order.deskStatus = params.deskStatusOverride || 'transferido';
+  order.assignedAgentName = DESK_AGENT_NAMES[toDesk] || toDesk;
+  order.updatedAt = now;
+
+  order.auditHistory.unshift({
+    id: `aud-${Date.now()}`,
+    timestamp: now,
+    actor: `${DESK_AGENT_NAMES[fromDesk] || fromDesk} ➔ ${DESK_AGENT_NAMES[toDesk] || toDesk}`,
+    stage: 'Transferência de Mesa',
+    action: `Pedido transferido de ${fromDesk} para ${toDesk}`,
+    details: `Motivo: ${reason}. Próxima ação: ${nextActionExpected}`,
+  });
+
+  if (!store.officeData) {
+    store.officeData = {
+      handoffs: [],
+      generalTransactions: [],
+      strategyRecommendations: [],
+      weeklyStrategyPlans: [],
+      weeklyActionPlans: [],
+      recommendations: [],
+      activeBottlenecks: [],
+      workshopCapacityHoursPerWeek: 80,
+      currentPlannedHoursWeek: 42,
+      lastReconciledAt: now,
+    };
+  }
+  store.officeData.handoffs.unshift(entry);
+  store.officeData.lastReconciledAt = now;
+
+  return { handoff: entry, alreadyTransferred: false };
 }
 
 const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
@@ -187,6 +348,31 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     createdAt: '2026-10-20T10:00:00.000Z',
     updatedAt: '2026-10-20T10:00:00.000Z',
   },
+  ...([1, 2, 3, 5, 7].map((thicknessCm) => ({
+    id: `mat-espuma-d28-${thicknessCm}cm`,
+    ownerId: 'system',
+    code: `ESP-D28-${String(thicknessCm).padStart(2, '0')}`,
+    name: `Espuma D28 Certificada (Lâmina ${thicknessCm}cm)`,
+    specification: 'Densidade 28 kg/m³ real certificada',
+    category: 'Material' as const,
+    rawCategory: 'espumas' as const,
+    unit: 'm²',
+    consumptionUnit: 'm²',
+    purchaseUnit: 'lâmina',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
+    lossMarginPercent: 10,
+    foamDensity: 'D28 Certificada',
+    foamType: 'Lâmina' as const,
+    dimensionsMm: { length: 2000, width: 1500, thickness: thicknessCm * 10 },
+    physicalStock: 0,
+    reservedStock: 0,
+    supplier: '',
+    priceOrigin: 'Estimativa pendente' as const,
+    isActive: true,
+    createdAt: '2026-11-04T00:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
+  }))),
   {
     id: 'mat-espuma-d33',
     ownerId: 'system',
@@ -317,6 +503,30 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     createdAt: '2026-10-20T10:00:00.000Z',
     updatedAt: '2026-10-20T10:00:00.000Z',
   },
+  {
+    id: 'mat-acrilon',
+    ownerId: 'system',
+    code: 'TEC-ACR-01',
+    name: 'Tecido Acrilon',
+    specification: 'Tecido usado na oficina para revestimento',
+    category: 'Material',
+    rawCategory: 'tecidos_revestimentos',
+    unit: 'm',
+    consumptionUnit: 'm',
+    purchaseUnit: 'rolo',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
+    lossMarginPercent: 15,
+    fabricType: 'Acrilon',
+    patternDirection: 'Sentido do rolo',
+    physicalStock: 0,
+    reservedStock: 0,
+    supplier: '',
+    priceOrigin: 'Estimativa pendente',
+    isActive: true,
+    createdAt: '2026-11-04T00:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
+  },
 
   // 3. MADEIRAS E CHAPAS
   {
@@ -415,6 +625,30 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     updatedAt: '2026-10-20T10:00:00.000Z',
   },
   {
+    id: 'mat-grampo-8014',
+    ownerId: 'system',
+    code: 'GRA-8014',
+    name: 'Grampo Pneumático 80/14',
+    specification: 'Grampo galvanizado coroa 12,8mm x perna 14mm, intermediário entre o 80/10 e o estrutural 14/50',
+    category: 'Material',
+    rawCategory: 'grampos_fixadores',
+    unit: 'unidade',
+    consumptionUnit: 'unidade',
+    purchaseUnit: 'caixa',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
+    lossMarginPercent: 5,
+    stapleType: '80/14',
+    stapleSize: '14mm',
+    physicalStock: 0,
+    reservedStock: 0,
+    supplier: '',
+    priceOrigin: 'Estimativa pendente',
+    isActive: true,
+    createdAt: '2026-11-04T00:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
+  },
+  {
     id: 'mat-grampo-1450',
     ownerId: 'system',
     code: 'GRA-1450',
@@ -452,8 +686,9 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     id: 'mat-cola-contato',
     ownerId: 'system',
     code: 'COL-CON-14',
-    name: 'Adesivo de Contato Especial sem Toluol (Lata 14kg)',
-    specification: 'Cola de contato de alta aderência para colagem de espumas e madeira sem odor tóxico',
+    name: 'Cola de Contato Expley (Lata 14kg)',
+    specification: 'Cola de contato de alta aderência para colagem de espumas e madeira, marca usada na oficina',
+    brand: 'Expley',
     category: 'Material',
     rawCategory: 'colas_auxiliares',
     unit: 'kg',
@@ -539,6 +774,28 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
 
   // 9. OUTROS MATERIAIS
   {
+    id: 'mat-ziper',
+    ownerId: 'system',
+    code: 'ZIP-METRO',
+    name: 'Zíper em Metro (Cadarço)',
+    specification: 'Zíper vendido em metro, para abertura de almofadas e revestimentos removíveis',
+    category: 'Material',
+    rawCategory: 'outros_materiais',
+    unit: 'm',
+    consumptionUnit: 'm',
+    purchaseUnit: 'm',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
+    lossMarginPercent: 5,
+    physicalStock: 0,
+    reservedStock: 0,
+    supplier: '',
+    priceOrigin: 'Estimativa pendente',
+    isActive: true,
+    createdAt: '2026-11-04T00:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
+  },
+  {
     id: 'mat-forro-tnt',
     ownerId: 'system',
     code: 'TNT-100',
@@ -565,6 +822,28 @@ const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
     isActive: true,
     createdAt: '2026-10-20T10:00:00.000Z',
     updatedAt: '2026-10-20T10:00:00.000Z',
+  },
+  {
+    id: 'mat-linha-costura',
+    ownerId: 'system',
+    code: 'LIN-040-060',
+    name: 'Linha de Costura Industrial Bitola 040-060',
+    specification: 'Linha para máquina industrial de tapeçaria, bitola 040-060 (a mais usada na oficina)',
+    category: 'Material',
+    rawCategory: 'outros_materiais',
+    unit: 'm',
+    consumptionUnit: 'm',
+    purchaseUnit: 'cone',
+    unitCostCents: 0,
+    notes: 'Preço ainda não cadastrado com o fornecedor — confirme antes de usar em orçamento.',
+    lossMarginPercent: 5,
+    physicalStock: 0,
+    reservedStock: 0,
+    supplier: '',
+    priceOrigin: 'Estimativa pendente',
+    isActive: true,
+    createdAt: '2026-10-20T10:00:00.000Z',
+    updatedAt: '2026-11-04T00:00:00.000Z',
   },
 
   // SERVIÇOS & LOGÍSTICA
@@ -940,13 +1219,13 @@ function generateSocialMediaVersionsServer(
 
 function createDefaultJuliaProject(id = 'proj-julia-01'): JuliaSmartAdProject {
   const today = new Date().toISOString().slice(0, 10);
-  const defaultHeadline = 'A Arte de Renovar o Seu Estofado com Acabamento de Atelier';
+  const defaultHeadline = 'Renove Seu Estofado com Qualidade Profissional — Para Casa e Empresa';
   const defaultCopy =
-    'Transforme o ambiente da sua sala preservando o design e o conforto do seu estofado favorito. Na Castros Interiores, cada costura, alinhamento e textura recebe cuidado artesanal de alto padrão.';
-  const defaultCta = 'Solicite Atendimento Exclusivo';
+    'Renovamos sofás, poltronas e cadeiras com cuidado em cada detalhe, para a sua casa ou para o seu negócio. Na Castros Interiores, cada costura, alinhamento e textura recebe atenção e qualidade do início ao fim.';
+  const defaultCta = 'Peça Seu Orçamento';
   const defaultPhone = '(91) 98556-9841';
   const defaultHashtags =
-    '#CastrosInteriores #EstofadosDeAltoPadrao #DesignDeInteriores #DecoracaoElegante #SalaDeEstar #AtelierDeEstofados';
+    '#CastrosInteriores #RenovacaoDeEstofados #EstofadosResidenciaisEComerciais #DecoracaoDeInteriores #SalaDeEstar #ConfortoENovaVida';
 
   const socialVersions = generateSocialMediaVersionsServer(
     defaultHeadline,
@@ -958,13 +1237,13 @@ function createDefaultJuliaProject(id = 'proj-julia-01'): JuliaSmartAdProject {
 
   return {
     id,
-    name: 'Campanha Alta Estofaria Artesanal — Castros Interiores',
+    name: 'Campanha Renovação de Estofados — Castros Interiores',
     currentStep: 1,
     selectedPhotoIds: [],
     campaignObjective:
-      'Divulgar a excelência estética, conforto sob medida e renovação de alto padrão em sofás, poltronas e cadeiras da Castros Interiores.',
+      'Divulgar a qualidade, o cuidado e a confiança na renovação de sofás, poltronas e cadeiras da Castros Interiores, para clientes residenciais e comerciais.',
     targetAudience:
-      'Clientes residenciais exigentes, arquitetos e apaixonados por decoração de interiores.',
+      'Famílias, escritórios, comércios e qualquer cliente que queira renovar o estofado em vez de comprar um novo.',
     pieceFormat: 'Anúncio',
     headline: defaultHeadline,
     copyText: defaultCopy,
@@ -976,9 +1255,9 @@ function createDefaultJuliaProject(id = 'proj-julia-01'): JuliaSmartAdProject {
     socialMediaVersions: socialVersions,
     posterConfig: {
       headline: defaultHeadline,
-      subheadline: 'Alta Estofaria & Design Artesanal Sob Medida — Castros Interiores',
-      badgeText: 'COLEÇÃO & RENOVAÇÃO DE ALTO PADRÃO',
-      ctaText: 'Solicite Atendimento Exclusivo pelo WhatsApp',
+      subheadline: 'Reforma e Renovação de Estofados — Residencial e Comercial',
+      badgeText: 'QUALIDADE E CONFIANÇA NA RENOVAÇÃO DO SEU ESTOFADO',
+      ctaText: 'Peça Seu Orçamento pelo WhatsApp',
       contactLine: '(91) 98556-9841',
       theme: 'noite_ouro',
     },
@@ -991,7 +1270,7 @@ function createDefaultJuliaProject(id = 'proj-julia-01'): JuliaSmartAdProject {
       },
       {
         slideNumber: 2,
-        title: 'Acabamento Artesanal de Atelier',
+        title: 'Qualidade Profissional em Cada Detalhe',
         body: 'Costuras alinhadas, caimento impecável e seleção criteriosa de texturas contemporâneas.',
         theme: 'noite_ouro',
       },
@@ -1089,6 +1368,7 @@ function getDefaultJuliaData(): JuliaDepartmentData {
         createdAt: new Date().toISOString(),
       },
     ],
+    paidAdProposals: [],
   };
 }
 
@@ -1331,6 +1611,31 @@ function loadStore(): PersistentStore {
           storeModified = true;
         }
 
+        // Reconciliar fila de tarefas em segundo plano (BackgroundTask)
+        if (!Array.isArray(parsed.backgroundTasks)) {
+          parsed.backgroundTasks = [];
+          storeModified = true;
+        }
+
+        // Reconciliar configurações novas (integrações oficiais, voz por agente,
+        // pausa de automação) sem sobrescrever o que já estiver salvo.
+        if (!parsed.settings.integrations) {
+          parsed.settings.integrations = {};
+          storeModified = true;
+        }
+        if (!parsed.settings.agentVoiceSettings) {
+          parsed.settings.agentVoiceSettings = {};
+          storeModified = true;
+        }
+        if (parsed.settings.automationPaused === undefined) {
+          parsed.settings.automationPaused = false;
+          storeModified = true;
+        }
+        if (!parsed.settings.carlaAutoReply) {
+          parsed.settings.carlaAutoReply = { enabled: false };
+          storeModified = true;
+        }
+
         // Reconciliar campos compartilhados de todos os pedidos
         for (const att of parsed.attendances) {
           // Só força orderType='Reforma' em registros antigos de verdade (sem requestType
@@ -1379,6 +1684,70 @@ function loadStore(): PersistentStore {
           }
         }
 
+        // Adicionar ao catálogo persistido os itens padrão novos que ainda não existem nele
+        // (ex.: um material novo cadastrado em uma atualização do código) — sem isso, um
+        // item adicionado aqui só apareceria em instalações novas, nunca na já existente.
+        // Nunca sobrescreve nem remove um item já salvo, só acrescenta os que faltam.
+        const existingMaterialIds = new Set(parsed.materials.map((m) => m.id));
+        const missingDefaults = DEFAULT_MATERIALS.filter((m) => !existingMaterialIds.has(m.id));
+        if (missingDefaults.length > 0) {
+          parsed.materials = [...parsed.materials, ...missingDefaults];
+          storeModified = true;
+        }
+
+        // Cadastro geral de clientes: deriva/completa a partir dos atendimentos já
+        // existentes, sem apagar nada. Toda vez que um atendimento tem nome/telefone de
+        // cliente mas ainda não está vinculado a um ClientRecord (dados antigos, de antes
+        // dessa funcionalidade existir, ou criados por outro caminho), vincula ao cliente
+        // já cadastrado com o mesmo telefone/nome, ou cria um novo registro — nunca duplica.
+        if (!parsed.clients) {
+          parsed.clients = [];
+          storeModified = true;
+        }
+        const clientReconcileNow = new Date().toISOString();
+        for (const att of parsed.attendances) {
+          if (att.clientId) continue;
+          if (!att.clientName || att.clientName === 'não informado' || att.clientName === 'Cliente não informado') {
+            continue;
+          }
+          const existingClient = findClientByPhoneOrName(parsed.clients, att.clientPhone, att.clientName);
+          if (existingClient) {
+            att.clientId = existingClient.id;
+            // Completa o endereço do cadastro se o atendimento tiver dado que falta nele
+            // (nunca sobrescreve um dado já preenchido, só completa o que está vazio).
+            if (!existingClient.address.neighborhood && att.neighborhood) {
+              existingClient.address.neighborhood = att.neighborhood;
+            }
+            if (!existingClient.address.city && att.city) {
+              existingClient.address.city = att.city;
+            }
+            if (!existingClient.address.street && att.fullAddress) {
+              existingClient.address.street = att.fullAddress;
+            }
+            if (!existingClient.phone && att.clientPhone) {
+              existingClient.phone = att.clientPhone;
+            }
+            existingClient.updatedAt = att.updatedAt || existingClient.updatedAt;
+          } else {
+            const newClient: ClientRecord = {
+              id: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              name: att.clientName,
+              phone: att.clientPhone || '',
+              email: att.clientEmail || undefined,
+              address: {
+                neighborhood: att.neighborhood || undefined,
+                city: att.city || undefined,
+                street: att.fullAddress || undefined,
+              },
+              createdAt: att.createdAt || clientReconcileNow,
+              updatedAt: clientReconcileNow,
+            };
+            parsed.clients.push(newClient);
+            att.clientId = newClient.id;
+          }
+          storeModified = true;
+        }
+
         if (storeModified) {
           saveStore(parsed);
         }
@@ -1395,15 +1764,21 @@ function loadStore(): PersistentStore {
     nextSequence: 3,
     attendances: [createDemoSofa2Places(), createDemoPoltronas4Un()],
     materials: DEFAULT_MATERIALS,
+    clients: [],
     settings: {
       workshopName: 'Castros Interiores',
       responsibleDefaultName: '',
       phoneWhatsapp: '(91) 98556-9841',
       cityState: '',
       aiModel: 'claude-sonnet-5',
+      integrations: {},
+      agentVoiceSettings: {},
+      automationPaused: false,
+      carlaAutoReply: { enabled: false },
     },
     juliaData: defaultJulia,
     officeData: createDefaultOfficeData(),
+    backgroundTasks: [],
   };
   saveStore(initialStore);
   return initialStore;
@@ -1425,6 +1800,535 @@ function saveStore(store: PersistentStore): void {
   // Sincroniza com o Firestore em segundo plano — não bloqueia a resposta da rota
   // que chamou saveStore(), mas garante que o dado sobreviva a um redeploy sem disco.
   persistStoreToFirestore(store);
+}
+
+// ----------------------------------------------------------------------------
+// TAREFAS EM SEGUNDO PLANO (BackgroundTask) — fila persistida no próprio store,
+// processada por processDueBackgroundTasks(). Não há execução "no cliente": uma
+// tarefa só avança quando algo chama essa função (rota /api/tasks/process-due,
+// tipicamente disparada por um Cloud Scheduler externo — ver documentação).
+// Isso é deliberado: no Cloud Run sem min-instances configurado, uma instância
+// pode ser desligada quando ociosa, então um setInterval() no processo não é
+// confiável para "roda com a página fechada e o servidor também ocioso".
+// ----------------------------------------------------------------------------
+
+function mapChannelToIntegrationKey(
+  channel: string
+): 'whatsapp' | 'instagram' | 'facebook' {
+  if (channel.startsWith('Instagram')) return 'instagram';
+  if (channel === 'Facebook') return 'facebook';
+  return 'whatsapp';
+}
+
+function createBackgroundTask(
+  store: PersistentStore,
+  input: {
+    type: BackgroundTask['type'];
+    agentId: DepartmentId;
+    action: string;
+    authorization: string;
+    scheduledFor: string;
+    relatedOrderId?: string;
+    relatedCampaignId?: string;
+    channel?: BackgroundTask['channel'];
+    idempotencyKey: string;
+    maxAttempts?: number;
+    createdBy?: string;
+    payload?: Record<string, unknown>;
+  }
+): BackgroundTask {
+  if (!Array.isArray(store.backgroundTasks)) store.backgroundTasks = [];
+
+  // Nunca cria duas tarefas para a mesma idempotencyKey enquanto a anterior não
+  // tiver terminado em estado definitivo de erro ou cancelamento — evita duplicar
+  // a mesma publicação/envio em reprocessamentos repetidos (ex.: webhook reenviado).
+  const existing = store.backgroundTasks.find(
+    (t) => t.idempotencyKey === input.idempotencyKey && t.status !== 'falhou' && t.status !== 'cancelada'
+  );
+  if (existing) return existing;
+
+  const task: BackgroundTask = {
+    id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: input.type,
+    agentId: input.agentId,
+    relatedOrderId: input.relatedOrderId,
+    relatedCampaignId: input.relatedCampaignId,
+    channel: input.channel,
+    action: input.action,
+    authorization: input.authorization,
+    scheduledFor: input.scheduledFor,
+    status: 'na_fila',
+    attempts: 0,
+    maxAttempts: input.maxAttempts ?? 3,
+    idempotencyKey: input.idempotencyKey,
+    createdAt: new Date().toISOString(),
+    createdBy: input.createdBy,
+    payload: input.payload,
+  };
+  store.backgroundTasks.push(task);
+  return task;
+}
+
+// Verifica uma integração oficial real (Meta Graph API) usando apenas credenciais
+// vindas de variáveis de ambiente do servidor — nunca solicitadas pelo chat nem
+// expostas ao navegador. Sem as variáveis configuradas, o resultado honesto é
+// "não configurado": a tarefa falha com o motivo exato, nunca finge sucesso.
+async function checkIntegrationConnection(
+  channel: 'whatsapp' | 'instagram' | 'facebook'
+): Promise<{ ok: boolean; state: IntegrationConnectionState; message: string; accountLabel?: string }> {
+  const envMap: Record<'whatsapp' | 'instagram' | 'facebook', { token: string; id: string }> = {
+    whatsapp: { token: 'WHATSAPP_ACCESS_TOKEN', id: 'WHATSAPP_PHONE_NUMBER_ID' },
+    instagram: { token: 'META_ACCESS_TOKEN', id: 'META_IG_BUSINESS_ACCOUNT_ID' },
+    facebook: { token: 'META_ACCESS_TOKEN', id: 'META_PAGE_ID' },
+  };
+  const { token: tokenVar, id: idVar } = envMap[channel];
+  const token = process.env[tokenVar];
+  const objectId = process.env[idVar];
+
+  if (!token || !objectId) {
+    const missing = [!token ? tokenVar : null, !objectId ? idVar : null].filter(Boolean);
+    return {
+      ok: false,
+      state: 'nao_configurado',
+      message: `Integração oficial não configurada no ambiente. Variável(is) ausente(s): ${missing.join(', ')}.`,
+    };
+  }
+
+  try {
+    const resp = await fetch(
+      `https://graph.facebook.com/v20.0/${objectId}?fields=id,name&access_token=${encodeURIComponent(token)}`
+    );
+    const data = (await resp.json()) as { id?: string; name?: string; error?: { message?: string } };
+    if (!resp.ok || data.error) {
+      return {
+        ok: false,
+        state: 'erro',
+        message: data.error?.message || `Falha ao verificar integração (HTTP ${resp.status}).`,
+      };
+    }
+    return {
+      ok: true,
+      state: 'conectado',
+      message: 'Integração verificada com sucesso junto ao serviço oficial.',
+      accountLabel: data.name || data.id,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      state: 'erro',
+      message: err instanceof Error ? err.message : 'Falha de rede ao verificar integração.',
+    };
+  }
+}
+
+// Verifica a conexão com a conta de anúncios da Meta (Marketing API) — distinta
+// da verificação de publicação orgânica acima. Sem as variáveis de ambiente,
+// resultado honesto "não configurado"; a CRIAÇÃO de campanha paga em si ainda
+// não está implementada (ver executeBackgroundTask, case 'iniciar_campanha_paga')
+// — esta função só confirma se a conta de anúncios existe e o token é válido.
+async function checkPaidAdsIntegrationConnection(): Promise<{
+  ok: boolean;
+  message: string;
+  accountLabel?: string;
+}> {
+  const token = process.env.META_ADS_ACCESS_TOKEN;
+  const adAccountId = process.env.META_AD_ACCOUNT_ID;
+
+  if (!token || !adAccountId) {
+    const missing = [!token ? 'META_ADS_ACCESS_TOKEN' : null, !adAccountId ? 'META_AD_ACCOUNT_ID' : null].filter(
+      Boolean
+    );
+    return {
+      ok: false,
+      message: `Integração de anúncios pagos (Meta Marketing API) não configurada no ambiente. Variável(is) ausente(s): ${missing.join(', ')}.`,
+    };
+  }
+
+  try {
+    const resp = await fetch(
+      `https://graph.facebook.com/v20.0/${adAccountId}?fields=id,name&access_token=${encodeURIComponent(token)}`
+    );
+    const data = (await resp.json()) as { id?: string; name?: string; error?: { message?: string } };
+    if (!resp.ok || data.error) {
+      return {
+        ok: false,
+        message: data.error?.message || `Falha ao verificar a conta de anúncios (HTTP ${resp.status}).`,
+      };
+    }
+    return {
+      ok: true,
+      message: 'Conta de anúncios verificada com sucesso junto à Meta.',
+      accountLabel: data.name || data.id,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Falha de rede ao verificar a conta de anúncios.',
+    };
+  }
+}
+
+// Envia uma mensagem de texto REAL via WhatsApp Cloud API oficial da Meta. Exige
+// WHATSAPP_ACCESS_TOKEN e WHATSAPP_PHONE_NUMBER_ID como variáveis de ambiente do
+// servidor — nunca aceita essas credenciais vindas do chat, do corpo da requisição
+// ou de qualquer entrada do navegador.
+async function sendWhatsAppMessage(
+  to: string,
+  text: string
+): Promise<{ ok: boolean; externalId?: string; errorMessage?: string }> {
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  if (!token || !phoneNumberId) {
+    return {
+      ok: false,
+      errorMessage:
+        'Integração do WhatsApp não configurada no ambiente (WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID ausentes).',
+    };
+  }
+  try {
+    const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: to.replace(/\D/g, ''),
+        type: 'text',
+        text: { body: text },
+      }),
+    });
+    const data = (await resp.json()) as {
+      messages?: Array<{ id: string }>;
+      error?: { message?: string };
+    };
+    if (!resp.ok || data.error) {
+      return { ok: false, errorMessage: data.error?.message || `Falha ao enviar (HTTP ${resp.status}).` };
+    }
+    return { ok: true, externalId: data.messages?.[0]?.id };
+  } catch (err) {
+    return { ok: false, errorMessage: err instanceof Error ? err.message : 'Falha de rede ao enviar mensagem.' };
+  }
+}
+
+// Processa UMA mensagem inbound real do webhook do WhatsApp: identifica (ou
+// cria) o atendimento pelo telefone, nunca duplica a mesma mensagem em
+// reentregas do webhook (dedup por externalMessageId), identifica a campanha de
+// origem SÓ quando a própria Meta informar um referral que bate com um
+// referenceCode real já cadastrado — nunca por suposição a partir de um clique
+// no anúncio, que não é mensagem do cliente. Também pode enfileirar uma resposta
+// automática, mas só quando settings.carlaAutoReply.enabled estiver ligado e a
+// conversa não estiver pausada para atendimento humano.
+function handleInboundWhatsAppMessage(
+  store: PersistentStore,
+  value: {
+    contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }>;
+  },
+  msg: Record<string, unknown>
+): void {
+  const externalMessageId = msg.id as string | undefined;
+  const fromPhone = msg.from as string | undefined;
+  if (!externalMessageId || !fromPhone) return;
+
+  if (!store.agentChats) store.agentChats = {};
+  if (!store.agentChats['carla_atendimento']) store.agentChats['carla_atendimento'] = [];
+  const carlaChat = store.agentChats['carla_atendimento'];
+
+  if (carlaChat.some((m) => m.externalMessageId === externalMessageId && m.externalChannel === 'whatsapp')) {
+    return; // mesma mensagem já processada — webhook reentregue
+  }
+
+  const msgType = msg.type as string | undefined;
+  const textBody = (msg.text as { body?: string } | undefined)?.body;
+  const text = textBody || `[Mensagem do tipo "${msgType || 'desconhecido'}" recebida — anexo não processado automaticamente]`;
+
+  const normalizedFrom = fromPhone.replace(/\D/g, '');
+  let attendance = store.attendances.find((a) =>
+    a.clientPhone && a.clientPhone.replace(/\D/g, '').endsWith(normalizedFrom.slice(-8))
+  );
+
+  const referral = (msg.referral as Record<string, unknown> | undefined) || value.contacts?.[0]?.referral;
+  const sourceId = referral?.source_id as string | undefined;
+  let originCampaignId: string | undefined;
+  let originIdentified = false;
+  if (sourceId && store.juliaData) {
+    const matchingCampaign = store.juliaData.campaigns.find((c) => c.referenceCode === sourceId);
+    if (matchingCampaign) {
+      originCampaignId = matchingCampaign.projectId;
+      originIdentified = true;
+    }
+  }
+
+  if (!attendance) {
+    const now = new Date();
+    const count = store.attendances.length + 1;
+    attendance = {
+      id: `att-wa-${Date.now()}`,
+      ownerId: 'system',
+      attendanceNumber: `CI-2026-${String(count).padStart(4, '0')}`,
+      status: 'Rascunho',
+      currentStep: 1,
+      clientName: value.contacts?.[0]?.profile?.name || 'Cliente via WhatsApp',
+      clientPhone: fromPhone,
+      furnitureType: 'Sofá',
+      piecesCount: '1 unidade',
+      approxMeasurements: 'A validar na oficina',
+      usageTime: '',
+      reportedDefects: '',
+      desiredService: '',
+      previousReforms: '',
+      fabricAndComfortPreference: 'não informado',
+      notes: 'Atendimento iniciado automaticamente a partir de mensagem recebida pelo canal oficial do WhatsApp.',
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      originChannel: 'whatsapp',
+      originCampaignId,
+      originIdentified: sourceId ? originIdentified : false,
+      photos: [],
+      leftRightReference: 'Olhando o móvel de frente',
+      defectFindings: [],
+      analysisLimitations: [],
+      requestedAdditionalPhotos: [],
+      aiPreliminarySummary: '',
+      reviewCompleted: false,
+      reviewerName: '',
+      reviewerGeneralNotes: '',
+      internalInspectionCompleted: false,
+      reuseItems: [],
+      foamInspection: {
+        inspectedByWorkshop: false,
+        permanentDeformation: 'Não avaliado',
+        compressionReturn: 'Não avaliado',
+        crumbling: 'Não avaliado',
+        odor: 'Não avaliado',
+        moisture: 'Não avaliado',
+        workshopNotes: '',
+      },
+      materialConsumptionAndReworkAnalysis: '',
+      proposals: [],
+      selectedProposalTier: 'RECOMENDADA',
+      budget: {
+        items: [],
+        cuttingPlanConfirmed: false,
+        sellingPriceCents: null,
+        paymentConditions: 'não informado',
+        confirmedByResponsible: false,
+      },
+      opinion: {
+        isPreliminary: true,
+        structureStateSummary: 'não informado',
+        damageExtentSummary: 'não informado',
+        possibleRecoverySummary: 'não informado',
+        reusableMaterialsSummary: 'não informado',
+        complexityLevel: 'A confirmar na oficina',
+        expectedResultSummary: 'não informado',
+        conclusion: 'Dados insuficientes para concluir',
+        reasons: 'Avaliação ainda não iniciada.',
+        pendingFactors: 'Envio de fotos, análise de defeitos, inspeção interna e orçamento.',
+        whatCouldChangeConclusion: 'Inspeção presencial na oficina e definição de custos.',
+        clientPlainLanguageSummary: 'Avaliação em andamento.',
+        recommendedNextStep: 'Concluir o cadastro e anexar fotos do móvel.',
+      },
+      hiddenDamages: [],
+      auditHistory: [
+        {
+          id: `log-${Date.now()}`,
+          timestamp: now.toISOString(),
+          actor: 'Sistema (WhatsApp)',
+          stage: 'Cadastro',
+          action: 'Atendimento criado',
+          details: 'Criado automaticamente a partir de mensagem recebida pelo canal oficial do WhatsApp.',
+        },
+      ],
+      staleness: {
+        defectsAnalysisNeedsReview: false,
+        responsibleReviewNeedsUpdate: false,
+        reuseNeedsReview: false,
+        proposalNeedsReview: false,
+        opinionNeedsReview: false,
+      },
+      handoffHistory: [],
+      deskStatus: 'em_andamento',
+      currentDesk: 'carla_atendimento',
+    };
+    store.attendances.push(attendance);
+  } else if (originCampaignId && !attendance.originIdentified) {
+    attendance.originChannel = 'whatsapp';
+    attendance.originCampaignId = originCampaignId;
+    attendance.originIdentified = true;
+  }
+
+  carlaChat.push({
+    id: `cmsg-wa-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    deskId: 'carla_atendimento',
+    sender: 'user',
+    agentName: attendance.clientName || 'Cliente via WhatsApp',
+    text,
+    modality: 'texto',
+    timestamp: new Date().toISOString(),
+    attendanceId: attendance.id,
+    externalChannel: 'whatsapp',
+    externalMessageId,
+  });
+
+  const autoReply = store.settings.carlaAutoReply;
+  const isPaused = autoReply?.pausedConversationIds?.includes(attendance.id);
+  if (autoReply?.enabled && !isPaused) {
+    createBackgroundTask(store, {
+      type: 'enviar_resposta_whatsapp',
+      agentId: 'carla_atendimento',
+      action: `Responder mensagem de ${attendance.clientName} via WhatsApp`,
+      authorization: 'Resposta automática autorizada em Configurações > Atendimento automático da Carla',
+      scheduledFor: new Date().toISOString(),
+      relatedOrderId: attendance.id,
+      idempotencyKey: `wa-reply-${externalMessageId}`,
+      payload: {
+        to: fromPhone,
+        text: 'Olá! Sou a Carla, assistente virtual da Castros Interiores. Recebi sua mensagem e já vou te ajudar — só um instante.',
+      },
+    });
+  }
+}
+
+// Executa UMA tarefa já marcada como 'executando'. Lança erro em caso de falha —
+// quem chama é responsável por capturar e registrar errorMessage/status.
+async function executeBackgroundTask(
+  store: PersistentStore,
+  task: BackgroundTask
+): Promise<string> {
+  switch (task.type) {
+    case 'verificar_integracao': {
+      const channel = task.channel || 'whatsapp';
+      const result = await checkIntegrationConnection(channel);
+      if (!store.settings.integrations) store.settings.integrations = {};
+      store.settings.integrations[channel] = {
+        state: result.state,
+        lastCheckedAt: new Date().toISOString(),
+        errorMessage: result.ok ? undefined : result.message,
+        accountLabel: result.accountLabel,
+      };
+      if (!result.ok) throw new Error(result.message);
+      return result.message;
+    }
+    case 'publicar_campanha': {
+      const channel = task.channel || 'whatsapp';
+      const status = store.settings.integrations?.[channel];
+      if (!status || status.state !== 'conectado') {
+        throw new Error(
+          `Integração oficial do canal "${channel}" não está conectada. Publicação automática não pode ocorrer — envio manual necessário.`
+        );
+      }
+      // Quando uma integração real estiver conectada, a chamada de publicação de
+      // fato (API oficial do canal) entra aqui. Hoje, sem nenhum canal conectado
+      // neste ambiente, este caminho nunca é alcançado — é código preparado, não
+      // uma automação ativa (ver seção de limitações na documentação da tarefa).
+      throw new Error(
+        'Publicação automática ainda não implementada para este canal — apenas a verificação de conexão está pronta. Use o envio manual.'
+      );
+    }
+    case 'enviar_resposta_whatsapp': {
+      const status = store.settings.integrations?.whatsapp;
+      if (!status || status.state !== 'conectado') {
+        throw new Error(
+          'Integração oficial do WhatsApp não está conectada. Não é possível enviar resposta automática — use o compartilhamento manual.'
+        );
+      }
+      const to = (task.payload?.to as string) || '';
+      const text = (task.payload?.text as string) || '';
+      if (!to || !text) {
+        throw new Error('Tarefa sem telefone/texto de destino — não há o que enviar.');
+      }
+      const result = await sendWhatsAppMessage(to, text);
+      if (!result.ok) throw new Error(result.errorMessage || 'Falha ao enviar mensagem.');
+
+      if (task.relatedOrderId) {
+        if (!store.agentChats) store.agentChats = {};
+        if (!store.agentChats['carla_atendimento']) store.agentChats['carla_atendimento'] = [];
+        store.agentChats['carla_atendimento'].push({
+          id: `cmsg-wa-${Date.now()}`,
+          deskId: 'carla_atendimento',
+          sender: 'agent',
+          agentName: 'Carla',
+          text,
+          modality: 'texto',
+          timestamp: new Date().toISOString(),
+          attendanceId: task.relatedOrderId,
+          externalChannel: 'whatsapp',
+          externalMessageId: result.externalId,
+        });
+      }
+      return `Mensagem enviada ao canal oficial do WhatsApp (id externo: ${result.externalId || 'não informado'}).`;
+    }
+    case 'iniciar_campanha_paga': {
+      const proposalId = task.payload?.paidAdProposalId as string | undefined;
+      const proposal = proposalId
+        ? store.juliaData?.paidAdProposals?.find((p) => p.id === proposalId)
+        : undefined;
+
+      const result = await checkPaidAdsIntegrationConnection();
+      if (!result.ok) {
+        if (proposal) proposal.status = 'aguardando_integracao';
+        throw new Error(result.message);
+      }
+      // A verificação da conta de anúncios passou, mas a chamada real de criação
+      // de campanha/conjunto de anúncios/anúncio na Marketing API da Meta ainda
+      // não está implementada — nunca afirmar que o anúncio foi ao ar sem esse
+      // código existir de fato. Isso é código preparado, não uma automação ativa.
+      if (proposal) proposal.status = 'aguardando_integracao';
+      throw new Error(
+        'Conta de anúncios verificada, mas a criação automática da campanha paga ainda não está implementada — crie manualmente na Meta por enquanto.'
+      );
+    }
+    default:
+      throw new Error(`Tipo de tarefa desconhecido: ${task.type}`);
+  }
+}
+
+// Processa todas as tarefas vencidas ('na_fila' com scheduledFor <= agora). Chamado
+// pela rota /api/tasks/process-due, pensada para ser disparada por um gatilho
+// externo (Cloud Scheduler) em intervalos regulares.
+async function processDueBackgroundTasks(
+  store: PersistentStore
+): Promise<Array<{ id: string; status: BackgroundTaskStatus; result?: string; errorMessage?: string }>> {
+  if (!Array.isArray(store.backgroundTasks)) store.backgroundTasks = [];
+  const now = new Date();
+  const due = store.backgroundTasks.filter(
+    (t) => t.status === 'na_fila' && new Date(t.scheduledFor).getTime() <= now.getTime()
+  );
+
+  const outcomes: Array<{ id: string; status: BackgroundTaskStatus; result?: string; errorMessage?: string }> = [];
+
+  for (const task of due) {
+    task.status = 'executando';
+    task.startedAt = new Date().toISOString();
+    task.attempts += 1;
+    try {
+      const result = await executeBackgroundTask(store, task);
+      task.status = 'concluida';
+      task.completedAt = new Date().toISOString();
+      task.result = result;
+      task.errorMessage = undefined;
+      outcomes.push({ id: task.id, status: task.status, result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Falha desconhecida.';
+      task.errorMessage = message;
+      // Nunca reentra em loop de retentativa sem limite: ao esgotar maxAttempts,
+      // a tarefa fica definitivamente 'falhou' — só um humano pode recriá-la.
+      if (task.attempts >= task.maxAttempts) {
+        task.status = 'falhou';
+        task.completedAt = new Date().toISOString();
+      } else {
+        task.status = 'na_fila';
+      }
+      outcomes.push({ id: task.id, status: task.status, errorMessage: message });
+    }
+  }
+
+  if (due.length > 0) {
+    saveStore(store);
+  }
+  return outcomes;
 }
 
 function getAnthropicApiKey(): string {
@@ -1522,7 +2426,14 @@ function formatGeminiErrorMessage(err: unknown): string {
 
 async function generateContentWithRetryAndFallback(params: {
   preferredModel: string;
-  parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }>;
+  parts: Array<
+    | { text: string }
+    | { inlineData: { mimeType: string; data: string } }
+    // PDF — sem precedente nesta base antes da leitura de ficha de verificação.
+    // Content-block 'document' da própria API de Mensagens da Anthropic (REST cru,
+    // sem SDK), não ligado a nenhum recurso específico de imagem.
+    | { documentData: { mimeType: string; data: string } }
+  >;
   systemInstruction: string;
   responseSchema: Record<string, unknown>;
   lockKey?: string;
@@ -1542,18 +2453,27 @@ async function generateContentWithRetryAndFallback(params: {
     const maxAttempts = 3;
     let lastError: unknown = null;
 
-    const content = params.parts.map((part) =>
-      'text' in part
-        ? { type: 'text', text: part.text }
-        : {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: part.inlineData.mimeType,
-              data: part.inlineData.data,
-            },
-          }
-    );
+    const content = params.parts.map((part) => {
+      if ('text' in part) return { type: 'text', text: part.text };
+      if ('inlineData' in part) {
+        return {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: part.inlineData.mimeType,
+            data: part.inlineData.data,
+          },
+        };
+      }
+      return {
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: part.documentData.mimeType,
+          data: part.documentData.data,
+        },
+      };
+    });
     const toolSchema = convertSchemaToJsonSchema(params.responseSchema as AiSchema);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -1685,12 +2605,35 @@ async function ensurePhotoFileAvailable(fileName: string): Promise<boolean> {
   }
 }
 
+// Detecta o tipo real da imagem pelos bytes iniciais (assinatura do formato), em vez de
+// confiar na extensão do arquivo em disco — alguns arquivos foram salvos com extensão
+// .jpg mesmo contendo PNG (ex.: retrato de agente e capa, que sempre gravam ".jpg"), e a
+// API da Anthropic recusa a requisição se o mimeType declarado não bater com os bytes.
+function detectImageMimeFromBuffer(buffer: Buffer, extFallback: string): string {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png';
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return extFallback === '.png' ? 'image/png' : extFallback === '.webp' ? 'image/webp' : 'image/jpeg';
+}
+
 function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string } | null {
   try {
     if (imageUrl.startsWith('data:')) {
       const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
       if (match) {
-        return { mimeType: match[1], data: match[2] };
+        const buffer = Buffer.from(match[2], 'base64');
+        const mimeType = detectImageMimeFromBuffer(buffer, '');
+        return { mimeType, data: match[2] };
       }
     }
     if (imageUrl.startsWith('/api/photos/')) {
@@ -1699,9 +2642,7 @@ function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string 
       const filePath = path.join(PHOTOS_DIR, safeId);
       if (fs.existsSync(filePath)) {
         const buffer = fs.readFileSync(filePath);
-        const ext = path.extname(safeId).toLowerCase();
-        const mimeType =
-          ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+        const mimeType = detectImageMimeFromBuffer(buffer, path.extname(safeId).toLowerCase());
         return { mimeType, data: buffer.toString('base64') };
       }
     }
@@ -1710,9 +2651,7 @@ function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string 
       const fullPath = path.join(__dirname, relPath);
       if (fs.existsSync(fullPath)) {
         const buffer = fs.readFileSync(fullPath);
-        const ext = path.extname(fullPath).toLowerCase();
-        const mimeType =
-          ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+        const mimeType = detectImageMimeFromBuffer(buffer, path.extname(fullPath).toLowerCase());
         return { mimeType, data: buffer.toString('base64') };
       }
     }
@@ -1813,6 +2752,70 @@ function deriveMaterialsListItems(
         createdAt: now,
         updatedAt: now,
       });
+    });
+  }
+
+  // Insumos de bancada: praticamente toda reforma de estofado consome grampo, forro TNT,
+  // linha de costura e cola de contato, mesmo quando nada disso aparece na avaliação de
+  // reaproveitamento (que registra peças/componentes, não consumíveis de oficina). Sem essa
+  // sugestão automática, o responsável tinha que lembrar e digitar cada um manualmente toda
+  // vez. A quantidade continua sempre pendente de medição/confirmação — nunca inventada — e o
+  // preço continua "A cotar", como todo o resto desta função; só o ITEM em si é sugerido.
+  const STANDARD_CONSUMABLE_ITEMS: Array<{
+    key: string;
+    materialCatalogItemId: string;
+    materialName: string;
+    unit: string;
+    justification: string;
+  }> = [
+    {
+      key: 'grampo',
+      materialCatalogItemId: 'mat-grampo-8010',
+      materialName: 'Grampo Pneumático 80/10 (Caixa 5.000 un)',
+      unit: 'unidade',
+      justification:
+        'Insumo padrão de bancada sugerido automaticamente (confirme a quantidade conforme a peça; se a armação precisar de travamento mais pesado, use o Grampo Estrutural 14/50 do catálogo em vez deste).',
+    },
+    {
+      key: 'tnt',
+      materialCatalogItemId: 'mat-forro-tnt',
+      materialName: 'Forro Inferior TNT Gramatura 100g Preto',
+      unit: 'm',
+      justification: 'Insumo padrão de bancada sugerido automaticamente (confirme a metragem conforme a peça).',
+    },
+    {
+      key: 'linha',
+      materialCatalogItemId: 'mat-linha-costura',
+      materialName: 'Linha de Costura Industrial Náilon Robusta (Cone 5.000m)',
+      unit: 'm',
+      justification: 'Insumo padrão de bancada sugerido automaticamente (confirme a metragem conforme a peça).',
+    },
+    {
+      key: 'cola',
+      materialCatalogItemId: 'mat-cola-contato',
+      materialName: 'Adesivo de Contato Especial sem Toluol (Lata 14kg)',
+      unit: 'kg',
+      justification: 'Insumo padrão de bancada sugerido automaticamente (confirme a quantidade conforme a peça).',
+    },
+  ];
+
+  for (const consumable of STANDARD_CONSUMABLE_ITEMS) {
+    items.push({
+      id: `matitem-${tier}-consumivel-${consumable.key}`,
+      component: 'Insumo de bancada',
+      materialCatalogItemId: consumable.materialCatalogItemId,
+      materialName: consumable.materialName,
+      justification: consumable.justification,
+      componentStatus: 'Substituído',
+      unit: consumable.unit,
+      consumptionQuantity: null,
+      purchaseQuantity: null,
+      quantitySource: 'proposta_pendente',
+      quantityStatus: 'Pendente de medição',
+      unitCostCents: null,
+      priceStatus: 'A cotar',
+      createdAt: now,
+      updatedAt: now,
     });
   }
 
@@ -2201,6 +3204,23 @@ REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS:
    - "Mecanismos retráteis ou reclináveis"
    - "Forro inferior e acabamentos"`;
 
+// Leitura de ficha de verificação fotografada/digitalizada (preenchida à mão ou
+// digitalmente) — mesmo princípio de honestidade do ANALYST_SYSTEM_INSTRUCTION acima,
+// adaptado para OCR/leitura de formulário em vez de análise visual de defeitos.
+const CHECKLIST_READER_SYSTEM_INSTRUCTION = `Você está lendo uma ficha de verificação técnica da Castros Interiores, preenchida à mão ou digitalmente, e enviada como foto ou PDF digitalizado.
+
+REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS:
+1. Para CADA campo listado no contexto (identificado por "entryId"), reporte exatamente um de três estados em "readStatus":
+   - "lido": você conseguiu identificar com confiança razoável a marcação/valor escrito para esse campo.
+   - "ilegivel": o campo foi preenchido mas a caligrafia, risco ou qualidade da imagem não permite ter certeza do que foi marcado.
+   - "ausente": o campo não foi preenchido, está em branco, ou não aparece de forma legível no documento.
+2. NUNCA marque "lido" por suposição, dedução do contexto, ou porque "faz sentido" aquele ser o valor — só marque "lido" quando a marcação/escrita estiver visualmente clara o bastante para transcrever com segurança.
+3. Quando "lido" e o campo for uma marcação de condição (bom/reparar/substituir/reaproveitar/não verificado/não se aplica), reporte o valor em "readCondition" usando exatamente um desses seis valores em minúsculo sem acento: bom, reparar, substituir, reaproveitar, nao_verificado, nao_se_aplica.
+4. Quando "lido" e o campo for uma medida escrita à mão, reporte o texto exatamente como está escrito em "readMeasurement", incluindo a unidade se estiver visível — nunca converta, arredonde ou complete uma unidade que não foi escrita.
+5. Use "readNotes" só para transcrever observações/anotações manuscritas relacionadas àquele campo específico — nunca para adicionar interpretação sua.
+6. Se o documento inteiro estiver ilegível, corrompido, ou não for reconhecível como esta ficha, reporte TODOS os campos como "ausente" e explique a situação em "overallNotes" — nunca invente conteúdo de um documento que não conseguiu processar.
+7. Não avalie nem opine sobre a condição real do móvel — sua única tarefa é transcrever o que está escrito no formulário, nada além disso.`;
+
 async function startServer() {
   // Antes de qualquer rota aceitar requisições: se o disco local estiver vazio
   // (ex.: container recém-criado, sem volume persistente), recupera o último
@@ -2209,7 +3229,17 @@ async function startServer() {
   await restoreStoreFromFirestoreIfNeeded();
 
   const app = express();
-  app.use(express.json({ limit: '50mb' }));
+  app.use(
+    express.json({
+      limit: '50mb',
+      // Guarda os bytes crus do corpo para a verificação de assinatura HMAC do
+      // webhook do WhatsApp (X-Hub-Signature-256) — não altera o comportamento
+      // de nenhuma outra rota, que continua recebendo req.body já parseado.
+      verify: (req, _res, buf) => {
+        (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+      },
+    })
+  );
 
   // Real-time Corporate Multi-Device Hub (Computador + Tablet + Celular)
   const activeDevices = new Map<string, CorporateDeviceSession>();
@@ -2453,6 +3483,99 @@ async function startServer() {
     });
   });
 
+  // Cadastro geral de clientes — reutilizado na mesa da Carla (busca ao abrir um
+  // atendimento novo, para não recadastrar a mesma pessoa) e na área Clientes.
+  app.get('/api/clients', (req, res) => {
+    const store = loadStore();
+    const q = ((req.query.q as string) || '').trim().toLowerCase();
+    const qDigits = normalizePhoneDigits(q);
+    const clients = store.clients || [];
+    const matches = q
+      ? clients.filter(
+          (c) =>
+            c.name.toLowerCase().includes(q) ||
+            (qDigits && normalizePhoneDigits(c.phone).includes(qDigits)) ||
+            (c.address.city || '').toLowerCase().includes(q)
+        )
+      : clients;
+    res.json({ ok: true, clients: matches.slice(0, 50) });
+  });
+
+  app.post('/api/clients', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.clients) store.clients = [];
+      const { name, phone, email, address, notes } = req.body as {
+        name: string;
+        phone?: string;
+        email?: string;
+        address?: ClientAddress;
+        notes?: string;
+      };
+      if (!name || !name.trim()) {
+        res.status(400).json({ error: 'Informe o nome do cliente.' });
+        return;
+      }
+      // Evita duplicar: se já existe alguém com esse telefone (ou, sem telefone, esse
+      // nome exato), reaproveita o cadastro existente e só completa o que estiver vazio,
+      // em vez de criar um registro novo para a mesma pessoa.
+      const existing = findClientByPhoneOrName(store.clients, phone, name);
+      const now = new Date().toISOString();
+      if (existing) {
+        existing.name = name.trim() || existing.name;
+        if (phone && !existing.phone) existing.phone = phone;
+        if (email && !existing.email) existing.email = email;
+        if (address) {
+          existing.address = { ...existing.address, ...Object.fromEntries(Object.entries(address).filter(([, v]) => v)) };
+        }
+        if (notes && !existing.notes) existing.notes = notes;
+        existing.updatedAt = now;
+        saveStore(store);
+        res.json({ ok: true, client: existing, reused: true });
+        return;
+      }
+      const newClient: ClientRecord = {
+        id: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: name.trim(),
+        phone: phone || '',
+        email: email || undefined,
+        address: address || {},
+        notes: notes || undefined,
+        createdAt: now,
+        updatedAt: now,
+      };
+      store.clients.push(newClient);
+      saveStore(store);
+      res.json({ ok: true, client: newClient, reused: false });
+    } catch (err) {
+      console.error('Erro ao cadastrar cliente:', err);
+      res.status(500).json({ error: 'Erro ao cadastrar cliente.' });
+    }
+  });
+
+  app.put('/api/clients/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      const client = (store.clients || []).find((c) => c.id === req.params.id);
+      if (!client) {
+        res.status(404).json({ error: 'Cliente não encontrado.' });
+        return;
+      }
+      const { name, phone, email, address, notes } = req.body as Partial<ClientRecord>;
+      if (name !== undefined) client.name = name;
+      if (phone !== undefined) client.phone = phone;
+      if (email !== undefined) client.email = email;
+      if (address !== undefined) client.address = { ...client.address, ...address };
+      if (notes !== undefined) client.notes = notes;
+      client.updatedAt = new Date().toISOString();
+      saveStore(store);
+      res.json({ ok: true, client });
+    } catch (err) {
+      console.error('Erro ao atualizar cliente:', err);
+      res.status(500).json({ error: 'Erro ao atualizar cliente.' });
+    }
+  });
+
   // Update workshop settings
   app.put('/api/settings', (req, res) => {
     const store = loadStore();
@@ -2468,6 +3591,40 @@ async function startServer() {
       settings: store.settings,
     });
     res.json({ ok: true, settings: store.settings });
+  });
+
+  // Voz individual por agente — lida/salva separado de /api/settings para que
+  // qualquer mesa possa ler sua própria voz sem precisar buscar as configurações
+  // inteiras da oficina.
+  app.get('/api/agent-voice-settings', (_req, res) => {
+    const store = loadStore();
+    res.json({ ok: true, agentVoiceSettings: store.settings.agentVoiceSettings || {} });
+  });
+
+  app.put('/api/agent-voice-settings/:deskId', (req, res) => {
+    const store = loadStore();
+    const deskId = req.params.deskId as DepartmentId;
+    const { voiceURI, voiceName, lang, gender } = req.body as {
+      voiceURI: string;
+      voiceName: string;
+      lang: string;
+      gender?: 'feminina' | 'masculina';
+    };
+    if (!voiceURI || !voiceName) {
+      res.status(400).json({ error: 'voiceURI e voiceName são obrigatórios.' });
+      return;
+    }
+    if (!store.settings.agentVoiceSettings) store.settings.agentVoiceSettings = {};
+    const config: AgentVoiceConfig = {
+      voiceURI,
+      voiceName,
+      lang: lang || 'pt-BR',
+      gender,
+      updatedAt: new Date().toISOString(),
+    };
+    store.settings.agentVoiceSettings[deskId] = config;
+    saveStore(store);
+    res.json({ ok: true, config });
   });
 
   // Identidade Visual dos Agentes — retrato por mesa/agente, arquivo fixo e durável
@@ -4482,7 +5639,15 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
           store.settings.proposalAgentCustomInstructions || ''
         }`,
         julia_marketing: `VOCÊ ATUA AGORA COMO: JÚLIA — DEPARTAMENTO DE MARKETING E DIVULGAÇÃO DA CASTROS INTERIORES.
-Sua missão é criar estratégias de divulgação, textos de apresentação de projetos (antes/depois), legendas para Instagram, campanhas de valorização da reforma artesanal de alto padrão e conteúdos educativos para clientes da Castros Interiores, sempre respeitando a veracidade técnica sem inventar dados.`,
+Sua missão é criar estratégias de divulgação, textos de apresentação de projetos (antes/depois), legendas para Instagram, campanhas de valorização da reforma artesanal de alto padrão e conteúdos educativos para clientes da Castros Interiores, sempre respeitando a veracidade técnica sem inventar dados.
+REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS SOBRE PUBLICAÇÃO E MÉTRICAS:
+1. Você PREPARA conteúdo (textos, peças, agendamento). Você NUNCA publica nada sozinha e NUNCA deve dizer "publiquei", "já postei" ou "está no ar" — só o status real do sistema (abaixo, em DADOS REAIS) determina isso.
+2. Status "Planejada" ou "Agendada" significa que NADA foi publicado ainda. Status "Enviada Manualmente" significa que um humano confirmou que enviou na mão — não é prova de publicação pelo canal. Status "Concluída" só existe quando há confirmação registrada do serviço externo (id/link); se não houver essa confirmação nos dados reais, trate como NÃO publicado, mesmo que o status pareça "Concluída".
+3. NUNCA diga que está "monitorando resultados", "acompanhando métricas" ou cite número de cliques, vendas, alcance ou resultado de teste A/B, a menos que os DADOS REAIS abaixo tragam uma métrica explícita com fonte conectada, período e data de atualização. Sem isso, diga claramente: "métricas indisponíveis — nenhum canal conectado está enviando dados de desempenho".
+4. Diferencie sempre: compartilhamento manual (abre o WhatsApp com texto pronto, para a pessoa enviar) de atendimento/publicação integrada (feita automaticamente pelo sistema via API oficial conectada). Se um canal não aparecer como conectado nos DADOS REAIS, o envio nesse canal é sempre manual.
+5. Você pode AJUDAR a montar uma proposta de orçamento de anúncio pago (objetivo, público, valor, duração) quando pedirem, mas essa proposta sempre nasce "Aguardando Aprovação de Orçamento" — você nunca aprova, nunca inicia o anúncio nem altera um orçamento já existente. A aprovação só acontece por um botão humano nas mesas de Helena ou Castro, nunca pelo chat.
+6. Mesmo depois de aprovado, o anúncio só é veiculado de verdade quando houver uma conta de anúncios da Meta conectada (variáveis de ambiente do servidor). Sem isso, diga claramente que a veiculação está pendente de integração — nunca diga que o anúncio está no ar.
+7. Se não souber o estado real de algo, diga que não tem esse dado em mãos em vez de estimar ou supor.`,
         carla_atendimento: `VOCÊ ATUA AGORA COMO: CARLA — DEPARTAMENTO DE ATENDIMENTO AO CLIENTE DA CASTROS INTERIORES.
 Sua missão é realizar o acolhimento de excelência do cliente, organizar a triagem inicial (reforma, fabricação nova, compra de produto, acompanhamento ou reclamação), orientar o envio correto das fotos por ângulo, responder dúvidas com empatia e clareza, e preparar rascunhos de mensagem para o cliente.
 REGRAS OBRIGATÓRIAS:
@@ -4643,7 +5808,10 @@ Sua missão exclusiva é criar e aperfeiçoar campanhas publicitárias, as 12 et
 REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
 1. PROIBIDO incluir avaliação técnica de defeitos, diagnóstico estrutural, lista de materiais de oficina, defeitos ou custos/orçamentos internos.
 2. Foque 100% em valorização estética, design de interiores, conforto, estilo, elegância artesanal, desejo de compra, posicionamento de marca da Castros Interiores e engajamento em redes sociais (Instagram, WhatsApp, Facebook).
-3. Use linguagem publicitária refinada, acolhedora e persuasiva em português do Brasil.`;
+3. Use linguagem publicitária refinada, acolhedora e persuasiva em português do Brasil.
+4. Você PREPARA conteúdo (textos, peças, agendamento). Você NUNCA publica nada sozinha e NUNCA deve dizer "publiquei", "já postei" ou "está no ar" — só o status real do sistema determina isso. "Planejada"/"Agendada" significa que nada foi publicado; "Enviada Manualmente" é só uma autodeclaração humana, não prova de publicação; "Concluída" só existe com confirmação registrada do canal externo.
+5. NUNCA diga que está "monitorando resultados" ou cite cliques/vendas/alcance sem uma métrica real, com fonte conectada, período e data de atualização nos dados fornecidos. Sem isso, diga "métricas indisponíveis".
+6. Você pode AJUDAR a montar uma proposta de orçamento de anúncio pago (objetivo, público, valor, duração), mas essa proposta sempre nasce "Aguardando Aprovação de Orçamento" — você nunca aprova, nunca inicia o anúncio nem altera um orçamento existente; aprovação só acontece por um botão humano nas mesas de Helena ou Castro. Mesmo aprovado, só é veiculado de verdade com uma conta de anúncios da Meta conectada — sem isso, diga que está pendente de integração.`;
 
   app.get('/api/julia', (_req, res) => {
     const store = loadStore();
@@ -4704,6 +5872,34 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       ...current,
       ...incoming,
     };
+
+    // Toda publicação marcada 'Agendada' (modo automático, integração oficial já
+    // conectada no servidor) precisa de uma BackgroundTask real vinculada — nunca
+    // basta o status no calendário. Idempotente: cada item de campanha só recebe
+    // uma tarefa (idempotencyKey = o próprio id do item).
+    if (Array.isArray(store.juliaData.campaigns)) {
+      store.juliaData.campaigns = store.juliaData.campaigns.map((camp) => {
+        if (camp.status === 'Agendada' && !camp.backgroundTaskId) {
+          const channel = mapChannelToIntegrationKey(camp.channel);
+          const task = createBackgroundTask(store, {
+            type: 'publicar_campanha',
+            agentId: 'julia_marketing',
+            action: `Publicar "${camp.title}" em ${camp.channel}`,
+            authorization: `Agendamento automático solicitado via painel por ${
+              (req.headers['x-station-name'] as string) || 'estação não identificada'
+            }`,
+            scheduledFor: `${camp.scheduledDate}T${camp.scheduledTime || '00:00'}:00`,
+            relatedCampaignId: camp.projectId,
+            channel,
+            idempotencyKey: `julia-publicar-${camp.id}`,
+            createdBy: (req.headers['x-station-name'] as string) || undefined,
+          });
+          return { ...camp, backgroundTaskId: task.id };
+        }
+        return camp;
+      });
+    }
+
     saveStore(store);
     broadcastRealtimeEvent({
       type: 'julia:updated',
@@ -4713,6 +5909,361 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       juliaData: store.juliaData,
     });
     res.json({ ok: true, juliaData: store.juliaData });
+  });
+
+  // --------------------------------------------------------------------------
+  // ANÚNCIOS PAGOS — proposta de orçamento sempre nasce travada; só uma rota
+  // separada, acionada por um botão humano (nunca pelo chat da Júlia), pode
+  // aprovar. Ver PaidAdBudgetProposal em types.ts e o plano aprovado desta
+  // funcionalidade.
+  // --------------------------------------------------------------------------
+
+  app.post('/api/julia/paid-ads/propose', (req, res) => {
+    const store = loadStore();
+    if (!store.juliaData) store.juliaData = getDefaultJuliaData();
+    const {
+      projectId,
+      campaignScheduleItemId,
+      objective,
+      targetAudienceDescription,
+      budgetCents,
+      budgetPeriod,
+      durationDays,
+      channel,
+      proposedBy,
+    } = req.body as {
+      projectId: string;
+      campaignScheduleItemId?: string;
+      objective: PaidAdObjective;
+      targetAudienceDescription: string;
+      budgetCents: number;
+      budgetPeriod: 'diario' | 'total';
+      durationDays: number;
+      channel: JuliaCampaignScheduleItem['channel'];
+      proposedBy?: string;
+    };
+
+    if (
+      !projectId ||
+      !objective ||
+      !targetAudienceDescription?.trim() ||
+      !budgetCents ||
+      budgetCents <= 0 ||
+      !budgetPeriod ||
+      !durationDays ||
+      durationDays <= 0 ||
+      !channel
+    ) {
+      res.status(400).json({
+        error:
+          'Campos obrigatórios ausentes ou inválidos para propor um orçamento de anúncio pago (objetivo, público-alvo, orçamento, período, duração e canal).',
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const proposal: PaidAdBudgetProposal = {
+      id: `paidad-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      projectId,
+      campaignScheduleItemId,
+      objective,
+      targetAudienceDescription: targetAudienceDescription.trim(),
+      budgetCents,
+      budgetPeriod,
+      durationDays,
+      channel,
+      status: 'aguardando_aprovacao',
+      proposedBy: proposedBy || (req.headers['x-station-name'] as string) || 'Estação não identificada',
+      proposedAt: now,
+      createdAt: now,
+    };
+
+    if (!store.juliaData.paidAdProposals) store.juliaData.paidAdProposals = [];
+    store.juliaData.paidAdProposals.push(proposal);
+    saveStore(store);
+    res.json({ ok: true, proposal });
+  });
+
+  app.post('/api/julia/paid-ads/:id/approve', (req, res) => {
+    const store = loadStore();
+    const proposal = store.juliaData?.paidAdProposals?.find((p) => p.id === req.params.id);
+    if (!proposal) {
+      res.status(404).json({ error: 'Proposta de anúncio pago não encontrada.' });
+      return;
+    }
+    if (proposal.status !== 'aguardando_aprovacao') {
+      res.status(400).json({
+        error: `Esta proposta já está em estado "${proposal.status}" e não pode ser aprovada novamente.`,
+      });
+      return;
+    }
+
+    const { approvedBy, notes } = req.body as { approvedBy?: string; notes?: string };
+    const approver = approvedBy || (req.headers['x-station-name'] as string);
+    if (!approver || !approver.trim()) {
+      res.status(400).json({
+        error: 'É obrigatório identificar quem está aprovando este orçamento (approvedBy).',
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    proposal.approval = {
+      approved: true,
+      approvedBy: approver,
+      approvedAt: now,
+      notes: notes || '',
+    };
+    proposal.status = 'aprovado';
+
+    const task = createBackgroundTask(store, {
+      type: 'iniciar_campanha_paga',
+      agentId: 'julia_marketing',
+      action: `Iniciar anúncio pago (${proposal.objective}) aprovado por ${approver}`,
+      authorization: `Orçamento de R$ ${(proposal.budgetCents / 100).toFixed(2)} (${proposal.budgetPeriod}) aprovado por ${approver} em ${now}`,
+      scheduledFor: now,
+      relatedCampaignId: proposal.projectId,
+      idempotencyKey: `paidad-iniciar-${proposal.id}`,
+      payload: { paidAdProposalId: proposal.id },
+      createdBy: approver,
+    });
+    proposal.backgroundTaskId = task.id;
+
+    saveStore(store);
+    res.json({ ok: true, proposal });
+  });
+
+  app.post('/api/julia/paid-ads/:id/reject', (req, res) => {
+    const store = loadStore();
+    const proposal = store.juliaData?.paidAdProposals?.find((p) => p.id === req.params.id);
+    if (!proposal) {
+      res.status(404).json({ error: 'Proposta de anúncio pago não encontrada.' });
+      return;
+    }
+    if (proposal.status !== 'aguardando_aprovacao') {
+      res.status(400).json({
+        error: `Esta proposta já está em estado "${proposal.status}" e não pode ser rejeitada.`,
+      });
+      return;
+    }
+
+    const { rejectedBy, notes } = req.body as { rejectedBy?: string; notes?: string };
+    const rejecter = rejectedBy || (req.headers['x-station-name'] as string);
+    if (!rejecter || !rejecter.trim()) {
+      res.status(400).json({ error: 'É obrigatório identificar quem está rejeitando esta proposta (rejectedBy).' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    proposal.approval = {
+      approved: false,
+      approvedBy: rejecter,
+      approvedAt: now,
+      notes: notes || '',
+    };
+    proposal.status = 'rejeitado';
+
+    saveStore(store);
+    res.json({ ok: true, proposal });
+  });
+
+  // --------------------------------------------------------------------------
+  // TAREFAS EM SEGUNDO PLANO (BackgroundTask)
+  // --------------------------------------------------------------------------
+
+  app.get('/api/tasks', (req, res) => {
+    const store = loadStore();
+    const { agentId, status } = req.query as { agentId?: string; status?: string };
+    let tasks = store.backgroundTasks || [];
+    if (agentId) tasks = tasks.filter((t) => t.agentId === agentId);
+    if (status) tasks = tasks.filter((t) => t.status === status);
+    res.json({ ok: true, tasks });
+  });
+
+  app.post('/api/tasks', (req, res) => {
+    const store = loadStore();
+    const body = req.body as {
+      type: BackgroundTask['type'];
+      agentId: DepartmentId;
+      action: string;
+      authorization: string;
+      scheduledFor: string;
+      relatedOrderId?: string;
+      relatedCampaignId?: string;
+      channel?: BackgroundTask['channel'];
+      idempotencyKey?: string;
+      maxAttempts?: number;
+      payload?: Record<string, unknown>;
+    };
+    if (!body.type || !body.agentId || !body.action || !body.authorization || !body.scheduledFor) {
+      res.status(400).json({ error: 'Campos obrigatórios ausentes para criar a tarefa.' });
+      return;
+    }
+    const task = createBackgroundTask(store, {
+      ...body,
+      idempotencyKey: body.idempotencyKey || `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdBy: (req.headers['x-station-name'] as string) || undefined,
+    });
+    saveStore(store);
+    res.json({ ok: true, task });
+  });
+
+  app.post('/api/tasks/:id/cancel', (req, res) => {
+    const store = loadStore();
+    const task = (store.backgroundTasks || []).find((t) => t.id === req.params.id);
+    if (!task) {
+      res.status(404).json({ error: 'Tarefa não encontrada.' });
+      return;
+    }
+    if (task.status === 'concluida' || task.status === 'falhou') {
+      res.status(400).json({ error: `Tarefa já está em estado definitivo (${task.status}) e não pode ser cancelada.` });
+      return;
+    }
+    task.status = 'cancelada';
+    task.completedAt = new Date().toISOString();
+    saveStore(store);
+    res.json({ ok: true, task });
+  });
+
+  // Alvo do gatilho externo (Cloud Scheduler) que mantém a fila avançando mesmo
+  // com o app fechado e sem ninguém olhando a tela. Protegido por um segredo que
+  // só existe como variável de ambiente do servidor — nunca pedido pelo chat nem
+  // enviado pelo navegador. Ver documentação de configuração do Cloud Scheduler.
+  app.post('/api/tasks/process-due', async (req, res) => {
+    const expectedSecret = process.env.BACKGROUND_TASKS_SECRET;
+    if (!expectedSecret) {
+      res.status(503).json({
+        error:
+          'BACKGROUND_TASKS_SECRET não configurado no ambiente do servidor. A fila de tarefas em segundo plano existe, mas não está sendo processada automaticamente até essa variável ser definida e um gatilho externo (ex.: Cloud Scheduler) ser configurado para chamar esta rota periodicamente.',
+      });
+      return;
+    }
+    const providedSecret = req.headers['x-tasks-secret'];
+    if (providedSecret !== expectedSecret) {
+      res.status(403).json({ error: 'Segredo inválido.' });
+      return;
+    }
+    const store = loadStore();
+    const outcomes = await processDueBackgroundTasks(store);
+    res.json({ ok: true, processed: outcomes.length, outcomes });
+  });
+
+  // --------------------------------------------------------------------------
+  // WEBHOOK OFICIAL DO WHATSAPP (Meta Cloud API) — recebe mensagens reais de
+  // clientes e as entrega à Carla. Totalmente implementado, mas SÓ funciona
+  // quando o usuário configurar as credenciais reais como variáveis de ambiente
+  // do servidor (nunca pelo chat): WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET,
+  // WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID. Sem elas, esta rota nunca
+  // recebe tráfego real da Meta — ver documentação de configuração.
+  // --------------------------------------------------------------------------
+
+  // Handshake de verificação que a Meta chama uma vez ao configurar o webhook.
+  app.get('/api/webhooks/whatsapp', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    const expected = process.env.WHATSAPP_VERIFY_TOKEN;
+    if (expected && mode === 'subscribe' && token === expected) {
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403);
+    }
+  });
+
+  app.post('/api/webhooks/whatsapp', async (req, res) => {
+    const appSecret = process.env.WHATSAPP_APP_SECRET;
+    if (appSecret) {
+      const signatureHeader = req.headers['x-hub-signature-256'] as string | undefined;
+      const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+      const expectedSig =
+        'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody || Buffer.alloc(0)).digest('hex');
+      const sigBuf = Buffer.from(signatureHeader || '');
+      const expectedBuf = Buffer.from(expectedSig);
+      const valid =
+        !!signatureHeader &&
+        !!rawBody &&
+        sigBuf.length === expectedBuf.length &&
+        crypto.timingSafeEqual(sigBuf, expectedBuf);
+      if (!valid) {
+        res.sendStatus(401);
+        return;
+      }
+    }
+
+    // Sempre responde 200 rapidamente (padrão exigido pela Meta) mesmo se o
+    // processamento interno falhar — o erro fica só no log do servidor.
+    res.sendStatus(200);
+
+    try {
+      const store = loadStore();
+      const entries = (req.body?.entry || []) as Array<{
+        changes?: Array<{ value?: Record<string, unknown> }>;
+      }>;
+      let changed = false;
+      for (const entry of entries) {
+        for (const change of entry.changes || []) {
+          const value = (change.value || {}) as {
+            messages?: Array<Record<string, unknown>>;
+            contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }>;
+          };
+          for (const msg of value.messages || []) {
+            handleInboundWhatsAppMessage(store, value, msg);
+            changed = true;
+          }
+        }
+      }
+      if (changed) saveStore(store);
+    } catch (err) {
+      console.error('[WhatsApp Webhook] Erro ao processar payload recebido:', err);
+    }
+  });
+
+  // Envio imediato pelo canal OFICIAL e integrado do WhatsApp — diferente do
+  // link manual wa.me (que só abre o WhatsApp do atendente para ele mandar com
+  // a própria mão). Só funciona quando a integração estiver realmente conectada;
+  // caso contrário recusa com o motivo exato, nunca finge sucesso.
+  app.post('/api/whatsapp/send-now', async (req, res) => {
+    const store = loadStore();
+    const { attendanceId, to, text } = req.body as {
+      attendanceId?: string;
+      to: string;
+      text: string;
+    };
+    if (!to || !text) {
+      res.status(400).json({ error: 'Telefone e texto são obrigatórios.' });
+      return;
+    }
+    const status = store.settings.integrations?.whatsapp;
+    if (!status || status.state !== 'conectado') {
+      res.status(409).json({
+        error:
+          'Integração oficial do WhatsApp não está conectada. Use o compartilhamento manual (abre o WhatsApp para você enviar) enquanto a integração não estiver configurada.',
+      });
+      return;
+    }
+    const result = await sendWhatsAppMessage(to, text);
+    if (!result.ok) {
+      res.status(502).json({ error: result.errorMessage || 'Falha ao enviar mensagem.' });
+      return;
+    }
+    if (attendanceId) {
+      if (!store.agentChats) store.agentChats = {};
+      if (!store.agentChats['carla_atendimento']) store.agentChats['carla_atendimento'] = [];
+      store.agentChats['carla_atendimento'].push({
+        id: `cmsg-wa-${Date.now()}`,
+        deskId: 'carla_atendimento',
+        sender: 'agent',
+        agentName: (req.headers['x-station-name'] as string) || 'Carla',
+        text,
+        modality: 'texto',
+        timestamp: new Date().toISOString(),
+        attendanceId,
+        externalChannel: 'whatsapp',
+        externalMessageId: result.externalId,
+      });
+      saveStore(store);
+    }
+    res.json({ ok: true, externalId: result.externalId });
   });
 
   // Direct mobile photo upload for Júlia Marketing (NO active attendance required!)
@@ -5714,6 +7265,41 @@ CAMPANHA PUBLICITÁRIA SELECIONADA:
         } else {
           factualContext += `Nenhuma campanha publicitária específica cadastrada no momento.\n`;
         }
+
+        const integ = store.settings.integrations || {};
+        const chanLabel = (s?: { state: string }) =>
+          !s || s.state === 'nao_configurado'
+            ? 'não configurado'
+            : s.state === 'pendente'
+            ? 'pendente de verificação'
+            : s.state === 'erro'
+            ? 'com erro'
+            : 'conectado';
+        factualContext += `
+STATUS REAL DAS INTEGRAÇÕES DE CANAL (único critério válido para "publicação automática"):
+- WhatsApp: ${chanLabel(integ.whatsapp)}
+- Instagram: ${chanLabel(integ.instagram)}
+- Facebook: ${chanLabel(integ.facebook)}
+`;
+
+        const calendarItems = (store.juliaData?.campaigns || []).slice(0, 8);
+        if (calendarItems.length > 0) {
+          factualContext += `
+PUBLICAÇÕES NO CALENDÁRIO (até 8 mais recentes — status real, não uma intenção):
+${calendarItems
+  .map((c) => {
+    const confirmed = c.externalConfirmation
+      ? `CONFIRMADA pelo canal externo em ${c.externalConfirmation.confirmedAt}${c.externalConfirmation.externalLink ? ` (${c.externalConfirmation.externalLink})` : ''}`
+      : c.manualSendConfirmation
+      ? `enviada manualmente por um humano em ${c.manualSendConfirmation.confirmedAt} — NÃO é confirmação do canal`
+      : 'sem nenhuma confirmação de envio';
+    return `  * "${c.title}" | ${c.channel} | ${c.scheduledDate} ${c.scheduledTime} | status cadastrado: ${c.status} | ${confirmed}`;
+  })
+  .join('\n')}
+`;
+        } else {
+          factualContext += `\nNenhuma publicação cadastrada no calendário ainda.\n`;
+        }
       }
 
       if (deskId === 'supervisora_geral') {
@@ -6151,105 +7737,27 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         return;
       }
 
-      // Prevenção de duplicidade: se o encaminhamento mais recente já é para a mesma mesa,
-      // pela mesma origem, e ainda está pendente de aceite (ninguém mexeu nele ainda), um
-      // novo clique repetido não deve empilhar outro registro idêntico no histórico.
-      const lastHandoff = order.handoffHistory && order.handoffHistory[0];
-      if (
-        lastHandoff &&
-        lastHandoff.fromDesk === fromDesk &&
-        lastHandoff.toDesk === toDesk &&
-        (lastHandoff.status || 'pendente_aceite') === 'pendente_aceite'
-      ) {
-        res.json({
-          ok: true,
-          handoff: lastHandoff,
-          order,
-          officeData: store.officeData,
-          alreadyTransferred: true,
-        });
-        return;
-      }
-
-      const deskAgentNames: Record<string, string> = {
-        carla_atendimento: 'Carla (Atendimento ao Cliente)',
-        pedro_avaliacao: 'Pedro (Avaliação Técnica)',
-        lucas_projetos: 'Lucas (Projetos & Fabricação)',
-        ana_compras: 'Ana (Compras & Suprimentos)',
-        mila_financeiro: 'Mila (Administração Financeira)',
-        castro_estrategia: 'Castro (Estratégia & Negócio)',
-        julia_marketing: 'Júlia (Marketing & Divulgação)',
-        supervisora_geral: 'Helena (Supervisora Geral)',
-        tapeceiro_tecnico: 'Tapeceiro Técnico (Produção e Materiais)',
-      };
-
-      const now = new Date().toISOString();
-      const handoffId = `hnd-${Date.now()}`;
-      const entry: OrderHandoffEntry = {
-        id: handoffId,
-        orderId,
+      const { handoff, alreadyTransferred } = createOrderHandoff(store, order, {
         fromDesk,
         toDesk,
-        timestamp: now,
-        reason: reason || 'Transferência entre mesas operacionais',
-        completedSummary: completedSummary || 'Etapa anterior finalizada na mesa.',
-        pendingItems: Array.isArray(pendingItems)
-          ? pendingItems
-          : pendingItems
-          ? [pendingItems]
-          : [],
-        nextActionExpected:
-          nextActionExpected || 'Análise técnica e continuidade dos trabalhos.',
-        documentVersion: documentVersion || order.manufacturingData?.version || 'v1.0',
-        status: 'pendente_aceite',
-      };
-
-      if (!order.handoffHistory) order.handoffHistory = [];
-      order.handoffHistory.unshift(entry);
-
-      order.currentDesk = toDesk;
-      order.deskStatus = 'transferido';
-      order.assignedAgentName = deskAgentNames[toDesk] || toDesk;
-      order.updatedAt = now;
-
-      // Registrar auditoria
-      order.auditHistory.unshift({
-        id: `aud-${Date.now()}`,
-        timestamp: now,
-        actor: `${deskAgentNames[fromDesk] || fromDesk} ➔ ${deskAgentNames[toDesk] || toDesk}`,
-        stage: 'Transferência de Mesa',
-        action: `Pedido transferido de ${fromDesk} para ${toDesk}`,
-        details: `Motivo: ${reason}. Próxima ação: ${nextActionExpected}`,
+        reason,
+        completedSummary,
+        pendingItems,
+        nextActionExpected,
+        documentVersion,
       });
 
-      // Atualizar lista central de handoffs no officeData
-      if (!store.officeData) {
-        store.officeData = {
-          handoffs: [],
-          generalTransactions: [],
-          strategyRecommendations: [],
-          weeklyStrategyPlans: [],
-          weeklyActionPlans: [],
-          recommendations: [],
-          activeBottlenecks: [],
-          workshopCapacityHoursPerWeek: 80,
-          currentPlannedHoursWeek: 42,
-          lastReconciledAt: now,
-        };
+      if (!alreadyTransferred) {
+        saveStore(store);
+        broadcastRealtimeEvent({
+          type: 'attendance:updated',
+          timestamp: new Date().toISOString(),
+          sourceStationName: `Mesa ${toDesk}`,
+          attendance: order,
+        });
       }
-      store.officeData.handoffs.unshift(entry);
-      store.officeData.lastReconciledAt = now;
 
-      saveStore(store);
-
-      broadcastRealtimeEvent({
-        type: 'attendance:updated',
-        timestamp: now,
-        sourceStationName: `Mesa ${toDesk}`,
-        attendance: order,
-      });
-
-      res.json({ ok: true, handoff: entry, order, officeData: store.officeData });
+      res.json({ ok: true, handoff, order, officeData: store.officeData, alreadyTransferred });
     } catch (error) {
       console.error('Erro ao transferir pedido entre mesas:', error);
       res.status(500).json({ error: 'Erro ao transferir pedido entre mesas.' });
@@ -7242,9 +8750,11 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
   app.post('/api/orders/create-order', (req, res) => {
     try {
       const store = loadStore();
+      if (!store.clients) store.clients = [];
       const {
         requestType,
         orderType: incomingOrderType,
+        clientId: incomingClientId,
         clientName,
         clientPhone,
         clientEmail,
@@ -7256,11 +8766,14 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         neighborhood,
         city,
         fullAddress,
+        address,
         notes,
         assignedDesk,
+        additionalProducts: incomingAdditionalProducts,
       } = req.body as {
         requestType?: AttendanceRequestType;
         orderType?: OrderType;
+        clientId?: string;
         clientName: string;
         clientPhone?: string;
         clientEmail?: string;
@@ -7272,9 +8785,29 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         neighborhood?: string;
         city?: string;
         fullAddress?: string;
+        address?: ClientAddress;
         notes?: string;
         assignedDesk?: DepartmentId;
+        additionalProducts?: Array<Partial<OrderProduct>>;
       };
+
+      // Produtos além do principal (ex.: sofá + 2 poltronas no mesmo pedido) — o produto
+      // principal continua sendo furnitureType/piecesCount/approxMeasurements acima.
+      // Só exige a descrição; quantidade/medidas ficam pendentes se não vierem, igual ao
+      // resto do cadastro da Carla.
+      const now0 = new Date().toISOString();
+      const normalizedAdditionalProducts: OrderProduct[] = Array.isArray(incomingAdditionalProducts)
+        ? incomingAdditionalProducts
+            .filter((p) => p && typeof p.description === 'string' && p.description.trim())
+            .map((p, idx) => ({
+              id: p.id || `prod-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+              description: p.description!.trim(),
+              quantity: p.quantity || '1 unidade',
+              measurements: p.measurements || undefined,
+              notes: p.notes || undefined,
+              createdAt: p.createdAt || now0,
+            }))
+        : [];
 
       // Carla deve poder salvar o atendimento mesmo com dados faltando, mostrando as
       // pendências depois — nunca rejeitar o cadastro por falta de campos secundários.
@@ -7287,6 +8820,21 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       // requestType é a classificação da Carla no atendimento; orderType só existe para
       // pedidos operacionais reais (reforma/fabricação) que seguem o fluxo de mesas.
       const effectiveRequestType: AttendanceRequestType = requestType || (incomingOrderType === 'Fabricação' ? 'fabricacao_nova' : 'reforma');
+
+      // Para um pedido operacional (reforma/fabricação), a escolha do tipo é obrigatória —
+      // o formulário tem que mandar o orderType explicitamente, nunca um valor adivinhado
+      // aqui no servidor. Só não se aplica a solicitações que não são um pedido (compra de
+      // produto, acompanhamento, reclamação), que não têm orderType mesmo.
+      if (
+        (effectiveRequestType === 'reforma' || effectiveRequestType === 'fabricacao_nova') &&
+        incomingOrderType !== 'Reforma' &&
+        incomingOrderType !== 'Fabricação'
+      ) {
+        res.status(400).json({
+          error: 'Escolha o tipo do atendimento (Reforma de estofado ou Fabricação de móvel novo) antes de concluir.',
+        });
+        return;
+      }
       const orderType: OrderType | undefined =
         incomingOrderType ||
         (effectiveRequestType === 'fabricacao_nova'
@@ -7294,6 +8842,58 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
           : effectiveRequestType === 'reforma'
           ? 'Reforma'
           : undefined);
+
+      // Cadastro de clientes: reaproveita o cliente indicado (por id, ou por telefone/nome
+      // já cadastrado) em vez de duplicar a pessoa a cada atendimento novo.
+      let linkedClient = incomingClientId ? store.clients.find((c) => c.id === incomingClientId) : undefined;
+      if (!linkedClient) {
+        linkedClient = findClientByPhoneOrName(store.clients, clientPhone, clientName);
+      }
+      const clientNowTs = new Date().toISOString();
+      if (linkedClient) {
+        // Completa (nunca sobrescreve) o cadastro existente com dado novo informado agora.
+        if (clientPhone && !linkedClient.phone) linkedClient.phone = clientPhone;
+        if (clientEmail && !linkedClient.email) linkedClient.email = clientEmail;
+        if (address) {
+          linkedClient.address = {
+            ...linkedClient.address,
+            ...Object.fromEntries(Object.entries(address).filter(([, v]) => v)),
+          };
+        }
+        if (neighborhood && !linkedClient.address.neighborhood) linkedClient.address.neighborhood = neighborhood;
+        if (city && !linkedClient.address.city) linkedClient.address.city = city;
+        if (fullAddress && !linkedClient.address.street) linkedClient.address.street = fullAddress;
+        linkedClient.updatedAt = clientNowTs;
+      } else {
+        linkedClient = {
+          id: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: clientName.trim(),
+          phone: clientPhone || '',
+          email: clientEmail || undefined,
+          address: {
+            ...(address || {}),
+            neighborhood: address?.neighborhood || neighborhood || undefined,
+            city: address?.city || city || undefined,
+            street: address?.street || fullAddress || undefined,
+          },
+          createdAt: clientNowTs,
+          updatedAt: clientNowTs,
+        };
+        store.clients.push(linkedClient);
+      }
+      // Endereço efetivo deste atendimento: o do cadastro do cliente (já mesclado acima),
+      // com prioridade para o que foi digitado agora especificamente neste atendimento.
+      const effectiveNeighborhood = neighborhood || linkedClient.address.neighborhood;
+      const effectiveCity = city || linkedClient.address.city;
+      const effectiveFullAddress =
+        fullAddress ||
+        [
+          linkedClient.address.street,
+          linkedClient.address.number,
+          linkedClient.address.complement,
+        ]
+          .filter(Boolean)
+          .join(', ') || undefined;
 
       const now = new Date().toISOString();
       const count = store.attendances.length + 1;
@@ -7303,11 +8903,14 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
           ? `FAB-2026-${formattedSeq}`
           : `CI-2026-${formattedSeq}`;
 
-      // Para solicitações que não são um pedido operacional de reforma/fabricação, a Carla
-      // continua sendo a responsável direta — não existe uma mesa técnica para "rotear".
+      // Encaminhamento automático: Reforma vai direto para a avaliação técnica do Pedro,
+      // Fabricação vai direto para projetos do Lucas — sem precisar abrir a mesa de destino
+      // para repetir o cadastro. Para solicitações que não são um pedido operacional
+      // (compra de produto, acompanhamento, reclamação), a Carla continua responsável
+      // direta, já que não existe mesa técnica para rotear.
       const desk =
         assignedDesk ||
-        (orderType === 'Fabricação' ? 'lucas_projetos' : orderType === 'Reforma' ? 'carla_atendimento' : 'carla_atendimento');
+        (orderType === 'Fabricação' ? 'lucas_projetos' : orderType === 'Reforma' ? 'pedro_avaliacao' : 'carla_atendimento');
       const agentNames: Record<string, string> = {
         carla_atendimento: 'Carla (Atendimento ao Cliente)',
         pedro_avaliacao: 'Pedro (Avaliação Técnica)',
@@ -7328,12 +8931,13 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         status: 'em_andamento',
         currentStep: 1,
         clientName,
-        clientPhone: clientPhone || '',
-        clientEmail: clientEmail || '',
+        clientPhone: clientPhone || linkedClient.phone || '',
+        clientEmail: clientEmail || linkedClient.email || '',
+        clientId: linkedClient.id,
         requestType: effectiveRequestType,
-        neighborhood: neighborhood || undefined,
-        city: city || undefined,
-        fullAddress: fullAddress || undefined,
+        neighborhood: effectiveNeighborhood,
+        city: effectiveCity,
+        fullAddress: effectiveFullAddress,
         furnitureType: resolvedFurnitureType,
         piecesCount: piecesCount || '1 unidade',
         approxMeasurements: approxMeasurements || 'A validar na oficina',
@@ -7462,6 +9066,7 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
           paymentConditions: '50% entrada e 50% na entrega',
           transactions: [],
         },
+        additionalProducts: normalizedAdditionalProducts.length ? normalizedAdditionalProducts : undefined,
       };
 
       store.attendances.unshift(newOrder);
@@ -7474,10 +9079,1450 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         attendance: newOrder,
       });
 
-      res.json({ ok: true, order: newOrder });
+      res.json({ ok: true, order: newOrder, client: linkedClient });
     } catch (error) {
       console.error('Erro ao criar pedido:', error);
       res.status(500).json({ error: 'Erro ao criar pedido.' });
+    }
+  });
+
+  // Lista de produtos (principal + adicionais) de um pedido, usada pelas rotas de
+  // avaliação técnica / orçamento itemizado abaixo para validar productId e montar as
+  // listas que o front mostra (Pedro/Lucas/Mila).
+  function listOrderProducts(order: AttendanceRecord): Array<{ id: string; label: string }> {
+    const list: Array<{ id: string; label: string }> = [
+      { id: 'primary', label: `${order.furnitureType} (${order.piecesCount})` },
+    ];
+    for (const p of order.additionalProducts || []) {
+      list.push({ id: p.id, label: `${p.description} (${p.quantity})` });
+    }
+    return list;
+  }
+
+  // Pedro/Lucas — avaliação técnica enxuta por produto: serviços, materiais, mão de
+  // obra e prazo. Não exige preencher todos os produtos de uma vez — grava um de cada
+  // vez por productId, sem apagar avaliações já feitas de outros produtos do mesmo pedido.
+  app.post('/api/orders/:id/technical-evaluation', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const { productId, servicesNeeded, materials, laborHours, laborCostCents, estimatedDeadlineDays, notes, evaluatedBy } =
+        req.body as {
+          productId: string;
+          servicesNeeded?: string;
+          materials?: ProductMaterialNeed[];
+          laborHours?: number | null;
+          laborCostCents?: number | null;
+          estimatedDeadlineDays?: number | null;
+          notes?: string;
+          evaluatedBy?: string;
+        };
+
+      const validIds = listOrderProducts(order).map((p) => p.id);
+      if (!productId || !validIds.includes(productId)) {
+        res.status(400).json({ error: 'Produto do pedido não encontrado (productId inválido).' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const evaluation: ProductTechnicalEvaluation = {
+        productId,
+        servicesNeeded: servicesNeeded || '',
+        // Nunca inventa custo: todo material sem unitCostCents vindo do front fica null
+        // (pendente), nunca preenchido aqui com um palpite.
+        materials: Array.isArray(materials)
+          ? materials.map((m) => ({
+              catalogItemId: m.catalogItemId,
+              name: m.name,
+              quantity: m.quantity ?? null,
+              unit: m.unit || 'un',
+              unitCostCents: m.unitCostCents ?? null,
+            }))
+          : [],
+        laborHours: laborHours ?? null,
+        laborCostCents: laborCostCents ?? null,
+        estimatedDeadlineDays: estimatedDeadlineDays ?? null,
+        notes: notes || undefined,
+        evaluatedBy: evaluatedBy || undefined,
+        evaluatedAt: now,
+      };
+
+      if (!order.productEvaluations) order.productEvaluations = {};
+      order.productEvaluations[productId] = evaluation;
+      order.updatedAt = now;
+
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: evaluatedBy || 'Avaliação Técnica',
+        stage: 'Avaliação Técnica por Produto',
+        action: `Avaliação técnica salva para o produto ${productId}`,
+        details: servicesNeeded || 'Sem descrição de serviços informada.',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Avaliação Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, evaluation });
+    } catch (error) {
+      console.error('Erro ao salvar avaliação técnica por produto:', error);
+      res.status(500).json({ error: 'Erro ao salvar avaliação técnica por produto.' });
+    }
+  });
+
+  // Pedro/Lucas — encaminhar o pedido para a Mila depois da avaliação técnica, mantendo
+  // o mesmo pedido e todos os anexos (não cria nada novo, só reatribui a mesa — mesmo
+  // mecanismo genérico já usado em /api/orders/transfer).
+  app.post('/api/orders/:id/forward-to-mila', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const { fromDesk } = req.body as { fromDesk: DepartmentId };
+      const { handoff, alreadyTransferred } = createOrderHandoff(store, order, {
+        fromDesk: fromDesk || order.currentDesk || 'pedro_avaliacao',
+        toDesk: 'mila_financeiro',
+        reason: 'Avaliação técnica concluída — encaminhado para orçamento.',
+        completedSummary: 'Avaliação técnica por produto registrada (serviços, materiais, mão de obra, prazo).',
+        nextActionExpected: 'Montar orçamento itemizado e homologar.',
+      });
+      if (!alreadyTransferred) {
+        saveStore(store);
+        broadcastRealtimeEvent({
+          type: 'attendance:updated',
+          timestamp: new Date().toISOString(),
+          sourceStationName: 'Mesa mila_financeiro',
+          attendance: order,
+        });
+      }
+      res.json({ ok: true, order, handoff, alreadyTransferred });
+    } catch (error) {
+      console.error('Erro ao encaminhar pedido para a Mila:', error);
+      res.status(500).json({ error: 'Erro ao encaminhar pedido para a Mila.' });
+    }
+  });
+
+  // Mila — monta/atualiza o orçamento itemizado (por produto + total), a partir das
+  // avaliações técnicas (productEvaluations) e do catálogo de materiais. Nunca inventa
+  // custo: todo material sem preço no catálogo entra com unitCostCents: null e o produto
+  // fica com costsPending: true. Ao homologar (confirmedByResponsible: true), encaminha
+  // automaticamente o pedido para a Carla com status 'aguardando_negociacao_cliente'.
+  app.post('/api/orders/:id/itemized-budget', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        discountCents,
+        appliedMarginPercent,
+        appliedFeeCents,
+        confirmedByResponsible,
+        responsibleName,
+        fromDesk,
+      } = req.body as {
+        discountCents?: number;
+        appliedMarginPercent?: number;
+        appliedFeeCents?: number;
+        confirmedByResponsible?: boolean;
+        responsibleName?: string;
+        fromDesk?: DepartmentId;
+      };
+
+      const products = listOrderProducts(order);
+      const evaluations = order.productEvaluations || {};
+      const policy = store.settings?.negotiationPolicy;
+      const marginPercent = appliedMarginPercent ?? policy?.defaultMarginPercent ?? 0;
+
+      const byProduct: ItemizedBudgetEntry[] = products.map((p) => {
+        const evaluation = evaluations[p.id];
+        const materials = evaluation?.materials || [];
+        const items: BudgetLineItem[] = materials.map((m, idx) => {
+          const catalogMatch =
+            (m.catalogItemId ? store.materials.find((cm) => cm.id === m.catalogItemId) : null) ||
+            store.materials.find(
+              (cm) =>
+                cm.name.toLowerCase() === m.name.toLowerCase() ||
+                (cm.code && m.name.toLowerCase().includes(cm.code.toLowerCase()))
+            );
+          const unitCostCents = m.unitCostCents ?? catalogMatch?.unitCostCents ?? null;
+          return {
+            id: `ibi-${p.id}-${idx}`,
+            catalogItemId: catalogMatch?.id || m.catalogItemId,
+            category: 'Material' as BudgetLineCategory,
+            name: m.name,
+            unit: m.unit || 'un',
+            quantity: m.quantity ?? null,
+            quantityStatus: m.quantity == null ? 'A levantar (requer medidas e plano de corte)' : 'Definida',
+            unitCostCents,
+          };
+        });
+        if (evaluation?.laborCostCents != null) {
+          items.push({
+            id: `ibi-${p.id}-labor`,
+            category: 'Mão de obra' as BudgetLineCategory,
+            name: 'Mão de obra',
+            unit: 'serviço',
+            quantity: 1,
+            quantityStatus: 'Definida',
+            unitCostCents: evaluation.laborCostCents,
+          });
+        }
+        // Produto sem avaliação técnica nenhuma ainda não pode ser homologado — um preço de
+        // R$0,00 silencioso seria inventar que o produto não custa nada, não "pendente".
+        const costsPending =
+          !evaluation || items.some((it) => it.unitCostCents == null || it.quantity == null);
+        const materialsCostCents = items.reduce(
+          (sum, it) => sum + (it.unitCostCents || 0) * (it.quantity || 0),
+          0
+        );
+        const sellingPriceCents = costsPending
+          ? null
+          : Math.round(materialsCostCents * (1 + marginPercent / 100));
+        return { productId: p.id, items, sellingPriceCents, costsPending };
+      });
+
+      const anyPending = byProduct.some((b) => b.costsPending);
+      const subtotalCents = byProduct.reduce((sum, b) => sum + (b.sellingPriceCents || 0), 0);
+      const feeCents = appliedFeeCents ?? (policy?.feePercent ? Math.round(subtotalCents * (policy.feePercent / 100)) : 0);
+      const discount = discountCents || 0;
+      const totalSellingPriceCents = anyPending ? null : Math.max(0, subtotalCents + feeCents - discount);
+
+      const now = new Date().toISOString();
+      const itemizedBudget: ItemizedBudget = {
+        byProduct,
+        appliedMarginPercent: marginPercent,
+        appliedFeeCents: feeCents,
+        discountCents: discount,
+        totalSellingPriceCents,
+        confirmedByResponsible: Boolean(confirmedByResponsible) && !anyPending,
+        responsibleName: confirmedByResponsible ? responsibleName : order.itemizedBudget?.responsibleName,
+        confirmedAt: confirmedByResponsible && !anyPending ? now : order.itemizedBudget?.confirmedAt,
+      };
+
+      if (confirmedByResponsible && anyPending) {
+        res.status(400).json({
+          error: 'Existem custos pendentes (não cadastrados no catálogo) — resolva antes de homologar o orçamento.',
+        });
+        return;
+      }
+
+      order.itemizedBudget = itemizedBudget;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: responsibleName || 'Mila (Administração Financeira)',
+        stage: 'Orçamento Itemizado',
+        action: itemizedBudget.confirmedByResponsible
+          ? 'Orçamento itemizado homologado'
+          : 'Orçamento itemizado atualizado (rascunho)',
+        details: `Total: ${totalSellingPriceCents != null ? (totalSellingPriceCents / 100).toFixed(2) : 'pendente'}`,
+      });
+
+      let handoff = null;
+      if (itemizedBudget.confirmedByResponsible) {
+        const result = createOrderHandoff(store, order, {
+          fromDesk: fromDesk || order.currentDesk || 'mila_financeiro',
+          toDesk: 'carla_atendimento',
+          reason: 'Orçamento itemizado homologado — pronto para negociação com o cliente.',
+          completedSummary: 'Orçamento por produto e total calculados e homologados pela Mila.',
+          nextActionExpected: 'Negociar condições com o cliente (entrada, parcelas, aceite).',
+          deskStatusOverride: 'aguardando_negociacao_cliente',
+        });
+        handoff = result.handoff;
+      }
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Mila (Administração Financeira)',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, itemizedBudget, handoff });
+    } catch (error) {
+      console.error('Erro ao montar orçamento itemizado:', error);
+      res.status(500).json({ error: 'Erro ao montar orçamento itemizado.' });
+    }
+  });
+
+  // Carla — salva os termos de negociação (valor final, desconto, entrada, forma de
+  // pagamento, parcelas/integral/saldo na entrega, data de entrega). Exige orçamento já
+  // homologado pela Mila, mesmo princípio de dupla trava do /api/orders/:id/budget-decision.
+  app.post('/api/orders/:id/negotiation', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      if (!order.itemizedBudget?.confirmedByResponsible) {
+        res.status(400).json({ error: 'O orçamento itemizado ainda não foi homologado pela Mila.' });
+        return;
+      }
+      const {
+        finalPriceCents,
+        discountCents,
+        downPayment,
+        balanceMode,
+        installments,
+        deliveryDate,
+        deliveryDateValidatedBy,
+      } = req.body as {
+        finalPriceCents: number;
+        discountCents?: number;
+        downPayment?: OrderNegotiation['downPayment'];
+        balanceMode: OrderNegotiation['balanceMode'];
+        installments?: OrderInstallment[];
+        deliveryDate?: string;
+        deliveryDateValidatedBy?: string;
+      };
+
+      if (typeof finalPriceCents !== 'number' || finalPriceCents <= 0) {
+        res.status(400).json({ error: 'Informe o valor final da negociação.' });
+        return;
+      }
+      if (!balanceMode) {
+        res.status(400).json({ error: 'Escolha a forma do saldo: parcelado, integral ou na entrega.' });
+        return;
+      }
+
+      // Fora da política aprovada pelo proprietário (desconto acima do máximo configurado)
+      // trava em requiresOwnerApproval até alguém aprovar explicitamente a exceção.
+      const policy = store.settings?.negotiationPolicy;
+      const appliedDiscount = discountCents || 0;
+      const homologatedTotal = order.itemizedBudget.totalSellingPriceCents || 0;
+      const discountPercent = homologatedTotal > 0 ? (appliedDiscount / homologatedTotal) * 100 : 0;
+      const requiresOwnerApproval = Boolean(
+        policy?.maxDiscountPercent != null && discountPercent > policy.maxDiscountPercent
+      );
+
+      const now = new Date().toISOString();
+      const negotiation: OrderNegotiation = {
+        finalPriceCents,
+        discountCents: appliedDiscount,
+        downPayment,
+        balanceMode,
+        installments: Array.isArray(installments) ? installments : [],
+        deliveryDate,
+        deliveryDateValidatedBy,
+        requiresOwnerApproval,
+        ownerApproval: requiresOwnerApproval ? undefined : order.negotiation?.ownerApproval,
+        clientDecision: undefined, // qualquer alteração nos termos invalida uma decisão anterior
+        clientDecisionAt: undefined,
+        clientDecisionBy: undefined,
+        clientDecisionPriceCentsSnapshot: undefined,
+        transactions: order.negotiation?.transactions || [],
+        updatedAt: now,
+      };
+
+      order.negotiation = negotiation;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: 'Carla (Atendimento ao Cliente)',
+        stage: 'Negociação',
+        action: requiresOwnerApproval
+          ? 'Termos de negociação salvos — fora da política, aguardando aprovação do proprietário'
+          : 'Termos de negociação salvos',
+        details: `Valor final: ${(finalPriceCents / 100).toFixed(2)}. Desconto: ${(appliedDiscount / 100).toFixed(2)}.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Carla (Atendimento ao Cliente)',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, negotiation });
+    } catch (error) {
+      console.error('Erro ao salvar termos de negociação:', error);
+      res.status(500).json({ error: 'Erro ao salvar termos de negociação.' });
+    }
+  });
+
+  // Proprietário — aprova (ou rejeita) uma exceção de política (ex.: desconto acima do
+  // máximo configurado). Só depois disso o aceite/recusa do cliente pode ser registrado.
+  app.post('/api/orders/:id/negotiation/approve-exception', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order?.negotiation) {
+        res.status(404).json({ error: 'Negociação não encontrada para este pedido.' });
+        return;
+      }
+      const { approved, approvedBy, notes } = req.body as { approved: boolean; approvedBy: string; notes?: string };
+      if (!approvedBy || !approvedBy.trim()) {
+        res.status(400).json({ error: 'Informe quem está aprovando/rejeitando a exceção.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      order.negotiation.ownerApproval = { approved: Boolean(approved), approvedBy, approvedAt: now, notes };
+      if (approved) {
+        order.negotiation.requiresOwnerApproval = false;
+      }
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: approvedBy,
+        stage: 'Negociação — Exceção de Política',
+        action: approved ? 'Exceção de desconto/preço aprovada pelo proprietário' : 'Exceção rejeitada pelo proprietário',
+        details: notes || '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Proprietário',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, negotiation: order.negotiation });
+    } catch (error) {
+      console.error('Erro ao aprovar exceção de negociação:', error);
+      res.status(500).json({ error: 'Erro ao aprovar exceção de negociação.' });
+    }
+  });
+
+  // Carla — registra o aceite ou recusa do cliente, com o mesmo padrão de snapshot de
+  // preço (para detectar obsolescência) já usado em BudgetData.clientDecisionPriceCentsSnapshot.
+  app.post('/api/orders/:id/negotiation/decision', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order?.negotiation) {
+        res.status(404).json({ error: 'Negociação não encontrada para este pedido.' });
+        return;
+      }
+      const { decision, decidedBy } = req.body as { decision: 'aceito' | 'recusado'; decidedBy?: string };
+      if (decision !== 'aceito' && decision !== 'recusado') {
+        res.status(400).json({ error: 'Decisão inválida.' });
+        return;
+      }
+      if (order.negotiation.requiresOwnerApproval && !order.negotiation.ownerApproval?.approved) {
+        res.status(400).json({
+          error: 'Os termos estão fora da política aprovada e ainda dependem de aprovação do proprietário.',
+        });
+        return;
+      }
+      const now = new Date().toISOString();
+      order.negotiation.clientDecision = decision;
+      order.negotiation.clientDecisionAt = now;
+      order.negotiation.clientDecisionBy = decidedBy;
+      order.negotiation.clientDecisionPriceCentsSnapshot = order.negotiation.finalPriceCents;
+      order.negotiation.updatedAt = now;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: decidedBy || 'Carla (Atendimento ao Cliente)',
+        stage: 'Negociação — Decisão do Cliente',
+        action: decision === 'aceito' ? 'Cliente aceitou a proposta' : 'Cliente recusou a proposta',
+        details: `Valor na decisão: ${(order.negotiation.finalPriceCents / 100).toFixed(2)}.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Carla (Atendimento ao Cliente)',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, negotiation: order.negotiation });
+    } catch (error) {
+      console.error('Erro ao registrar decisão do cliente:', error);
+      res.status(500).json({ error: 'Erro ao registrar decisão do cliente.' });
+    }
+  });
+
+  // Mila — registra um pagamento (entrada ou parcela) com valor/data/forma/responsável/
+  // comprovante. Cria negotiation sob demanda (mesmo padrão de lazy-create já usado em
+  // /api/orders/financial para financialData) para permitir registrar um adiantamento
+  // mesmo antes de existir negociação formal.
+  app.post('/api/orders/:id/payments', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        amountCents,
+        paidDate,
+        paymentMethod,
+        registeredBy,
+        receiptImageUrl,
+        receiptMimeType,
+        installmentIndex,
+        targetsDownPayment,
+        status,
+      } = req.body as {
+        amountCents: number;
+        paidDate: string;
+        paymentMethod: PaymentMethod;
+        registeredBy: string;
+        receiptImageUrl?: string;
+        receiptMimeType?: string;
+        installmentIndex?: number;
+        targetsDownPayment?: boolean;
+        status?: OrderPaymentStatus;
+      };
+
+      if (!amountCents || amountCents <= 0) {
+        res.status(400).json({ error: 'Informe um valor de pagamento maior que zero.' });
+        return;
+      }
+      if (!registeredBy || !registeredBy.trim()) {
+        res.status(400).json({ error: 'Informe quem está registrando o pagamento.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      if (!order.negotiation) {
+        order.negotiation = {
+          finalPriceCents: 0,
+          discountCents: 0,
+          balanceMode: 'integral',
+          installments: [],
+          requiresOwnerApproval: false,
+          transactions: [],
+          updatedAt: now,
+        };
+      }
+
+      const resolvedStatus: OrderPaymentStatus = status || 'informada_aguardando_confirmacao';
+      const paymentEntry: FinancialPaymentEntry = {
+        id: `pay-${Date.now()}`,
+        amountCents,
+        paidDate: paidDate || now,
+        paymentMethod,
+        notes: registeredBy,
+      };
+
+      const transaction: FinancialTransaction = {
+        id: `fin-${Date.now()}`,
+        orderId: order.id,
+        orderNumber: order.attendanceNumber,
+        clientName: order.clientName,
+        type: 'receita_cliente',
+        description: targetsDownPayment
+          ? 'Entrada'
+          : installmentIndex != null
+          ? `Parcela ${installmentIndex}`
+          : 'Pagamento',
+        amountCents,
+        dueDate: paidDate || now,
+        paidDate: paidDate || now,
+        createdAt: now,
+        status: resolvedStatus === 'confirmada' ? 'realizado' : 'previsto',
+        installmentIndex,
+        paymentMethod,
+        receiptImageUrl,
+        receiptMimeType,
+        history: [{ action: 'Pagamento registrado', timestamp: now, notes: registeredBy }],
+        amountPaidCents: amountCents,
+        payments: [paymentEntry],
+      };
+
+      order.negotiation.transactions.push(transaction);
+
+      // Atualiza o status da entrada ou da parcela correspondente, nos mesmos 4 estados
+      // pedidos: combinada / informada aguardando confirmação / confirmada / saldo a receber.
+      // Permite registrar um adiantamento mesmo sem entrada formalmente combinada ainda
+      // (ex.: pagamento integral, ou sinal dado antes da negociação) — cria a entrada
+      // sob demanda em vez de descartar o registro silenciosamente.
+      if (targetsDownPayment) {
+        if (!order.negotiation.downPayment) {
+          order.negotiation.downPayment = { amountCents, method: paymentMethod, status: resolvedStatus };
+        } else {
+          order.negotiation.downPayment.status = resolvedStatus;
+        }
+      } else if (installmentIndex != null) {
+        const inst = order.negotiation.installments.find((i) => i.index === installmentIndex);
+        if (inst) inst.status = resolvedStatus;
+      }
+
+      order.negotiation.updatedAt = now;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: registeredBy,
+        stage: 'Pagamento',
+        action: `Pagamento registrado: ${(amountCents / 100).toFixed(2)} via ${paymentMethod}`,
+        details: resolvedStatus,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Mila (Administração Financeira)',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, negotiation: order.negotiation, transaction });
+    } catch (error) {
+      console.error('Erro ao registrar pagamento:', error);
+      res.status(500).json({ error: 'Erro ao registrar pagamento.' });
+    }
+  });
+
+  // Mapeamento best-effort de FurnitureArea (11 áreas já existentes na vistoria de 11
+  // áreas) para os 14 componentes novos da ficha de verificação — usado só para
+  // pré-preencher condição/defeito quando já existe um achado prévio; nunca inventa
+  // um achado novo. Mapeamento 1-para-N porque as 11 áreas agrupam mais largo.
+  const FURNITURE_AREA_TO_INSPECTION_COMPONENTS: Record<string, InspectionComponentKey[]> = {
+    'Estrutura': ['estrutura'],
+    'Base e pés': ['base', 'pes'],
+    'Assento': ['assento'],
+    'Encosto': ['encosto'],
+    'Braços': ['bracos'],
+    'Tecido e costuras': ['revestimento', 'costuras'],
+    'Espumas e enchimentos': ['espumas', 'enchimentos'],
+    'Percintas, molas e sustentação': ['percintas', 'molas'],
+    'Ferragens': ['fixacoes'],
+    'Mecanismos retráteis ou reclináveis': ['mecanismos'],
+    'Forro inferior e acabamentos': ['revestimento'],
+  };
+  const ALL_INSPECTION_COMPONENTS: InspectionComponentKey[] = [
+    'estrutura', 'base', 'assento', 'encosto', 'bracos', 'pes',
+    'percintas', 'molas', 'mecanismos', 'espumas', 'enchimentos',
+    'revestimento', 'costuras', 'fixacoes',
+  ];
+
+  // Pedro/Lucas — gerar ficha de verificação na fábrica, uma por peça individual
+  // dentro da quantidade do produto (ex.: "Cadeira 1 de 4" ≠ "Cadeira 2 de 4").
+  // Nunca inventa condição nova: todo componente sem achado prévio correspondente
+  // nasce 'nao_verificado'. Toda geração nova nasce com version incrementada —
+  // versões anteriores do mesmo productId+unitIndex continuam em inspectionSheets.
+  app.post('/api/orders/:id/inspection-sheets', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const { productId, unitsCount, responsibleName } = req.body as {
+        productId: string;
+        unitsCount?: number;
+        responsibleName?: string;
+      };
+      const validIds = listOrderProducts(order).map((p) => p.id);
+      if (!productId || !validIds.includes(productId)) {
+        res.status(400).json({ error: 'Produto do pedido não encontrado (productId inválido).' });
+        return;
+      }
+      const kind: 'reforma' | 'fabricacao_nova' =
+        order.orderType === 'Fabricação' ? 'fabricacao_nova' : 'reforma';
+      const count = Math.max(1, Math.min(50, Math.round(unitsCount || 1)));
+      const now = new Date().toISOString();
+
+      if (!order.inspectionSheets) order.inspectionSheets = [];
+      const productLabel =
+        listOrderProducts(order).find((p) => p.id === productId)?.label || order.furnitureType;
+
+      const newSheets: InspectionSheet[] = [];
+      for (let unitIndex = 1; unitIndex <= count; unitIndex++) {
+        // Versão: se já existe ficha gerada para este productId+unitIndex, a nova
+        // nasce com version incrementada — a anterior continua no array, nunca é
+        // removida/sobrescrita.
+        const previous = order.inspectionSheets
+          .filter((s) => s.productId === productId && s.unitIndex === unitIndex)
+          .sort((a, b) => b.version - a.version)[0];
+        const version = (previous?.version || 0) + 1;
+
+        let components: InspectionComponentEntry[] | undefined;
+        let manufacturingChecks: ManufacturingInspectionEntry[] | undefined;
+
+        if (kind === 'reforma') {
+          components = ALL_INSPECTION_COMPONENTS.map((component, idx) => {
+            // Procura um achado prévio (defectFindings) cuja área mapeia para este
+            // componente — só usa o PRIMEIRO achado correspondente, só como ponto de
+            // partida; nunca inventa um achado que não existe.
+            const matchingFinding = order.defectFindings.find((f) =>
+              (FURNITURE_AREA_TO_INSPECTION_COMPONENTS[f.area] || []).includes(component)
+            );
+            return {
+              id: `insc-${Date.now()}-${unitIndex}-${idx}`,
+              component,
+              measurementStatus: 'a_medir',
+              // A marcação (bom/reparar/substituir/...) exige verificação presencial —
+              // mesmo havendo um achado prévio por foto, nasce sempre 'nao_verificado'.
+              condition: 'nao_verificado',
+              defectObserved: matchingFinding?.defectOrSuspicion,
+              possibleCause: undefined,
+              causeConfirmed: false,
+              discoveredAfterDisassembly: false,
+              actionRequired: matchingFinding?.suggestedService,
+              notes: matchingFinding ? `A partir do achado prévio: ${matchingFinding.evidenceAndPhoto}` : undefined,
+              origin: matchingFinding ? matchingFinding.origin : 'Não avaliável',
+            };
+          });
+        } else {
+          const evaluation = order.productEvaluations?.[productId];
+          const materialItems: ManufacturingInspectionEntry[] = (evaluation?.materials || []).map((m, idx) => ({
+            id: `mic-${Date.now()}-${unitIndex}-mat-${idx}`,
+            item: `Material: ${m.name}`,
+            specification: `${m.quantity ?? 'a levantar'} ${m.unit}`,
+            status: 'nao_verificado',
+            isNonConformance: false,
+          }));
+          manufacturingChecks = [
+            {
+              id: `mic-${Date.now()}-${unitIndex}-projeto`,
+              item: 'Projeto e medidas conforme ficha técnica',
+              specification: evaluation?.servicesNeeded || 'A conferir',
+              status: 'nao_verificado',
+              isNonConformance: false,
+            },
+            ...materialItems,
+            {
+              id: `mic-${Date.now()}-${unitIndex}-componentes`,
+              item: 'Componentes e requisitos de fabricação',
+              status: 'nao_verificado',
+              isNonConformance: false,
+            },
+          ];
+        }
+
+        const sheet: InspectionSheet = {
+          id: `isheet-${Date.now()}-${unitIndex}`,
+          orderId: order.id,
+          productId,
+          unitIndex,
+          unitLabel: count > 1 ? `${productLabel.split(' (')[0]} ${unitIndex} de ${count}` : productLabel,
+          kind,
+          responsibleName,
+          version,
+          status: 'gerada',
+          components,
+          manufacturingChecks,
+          createdAt: now,
+        };
+        order.inspectionSheets.push(sheet);
+        newSheets.push(sheet);
+      }
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: responsibleName || 'Vistoria de Fábrica',
+        stage: 'Ficha de Verificação',
+        action: `${count} ficha(s) de verificação gerada(s) para ${productLabel}`,
+        details: `Tipo: ${kind}`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Vistoria de Fábrica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, sheets: newSheets });
+    } catch (error) {
+      console.error('Erro ao gerar ficha de verificação:', error);
+      res.status(500).json({ error: 'Erro ao gerar ficha de verificação.' });
+    }
+  });
+
+  // Devolução da ficha de verificação: aceita dados digitados diretamente, uma foto da
+  // ficha marcada à mão, ou um PDF da ficha, além de novas fotos do móvel. Quando há
+  // foto/PDF, dispara leitura por IA — mas o resultado nunca é aplicado direto: fica em
+  // aiReadResult, pendente de confirmação humana via /confirm-reading abaixo.
+  app.post('/api/orders/:id/inspection-sheets/:sheetId/submit', async (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, sheetId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const sheet = (order.inspectionSheets || []).find((s) => s.id === sheetId);
+      if (!sheet) {
+        res.status(404).json({ error: 'Ficha de verificação não encontrada.' });
+        return;
+      }
+
+      const {
+        digitizedComponents,
+        digitizedManufacturingChecks,
+        formPhotoDataUrl,
+        formPdfDataUrl,
+        newPhotoIds,
+        confirmedBy,
+      } = req.body as {
+        digitizedComponents?: InspectionComponentEntry[];
+        digitizedManufacturingChecks?: ManufacturingInspectionEntry[];
+        formPhotoDataUrl?: string;
+        formPdfDataUrl?: string;
+        newPhotoIds?: string[];
+        confirmedBy?: string;
+      };
+
+      const now = new Date().toISOString();
+      if (Array.isArray(newPhotoIds)) sheet.submittedPhotoIds = newPhotoIds;
+      sheet.status = 'enviada_para_reavaliacao';
+
+      // Caminho 1: preenchimento digital direto — o operador já confirmou ao digitar,
+      // aplica sem passar pela IA.
+      if (digitizedComponents) sheet.components = digitizedComponents;
+      if (digitizedManufacturingChecks) sheet.manufacturingChecks = digitizedManufacturingChecks;
+
+      let aiReadResult: InspectionFormReadResult | undefined;
+
+      // Caminho 2/3: foto ou PDF da ficha marcada manualmente.
+      if (formPhotoDataUrl || formPdfDataUrl) {
+        const entries: Array<{ id: string; label: string }> =
+          sheet.kind === 'reforma'
+            ? (sheet.components || []).map((c) => ({
+                id: c.id,
+                label: `${INSPECTION_COMPONENT_LABELS[c.component]}${c.locationLabel ? ' - ' + c.locationLabel : ''}`,
+              }))
+            : (sheet.manufacturingChecks || []).map((c) => ({ id: c.id, label: c.item }));
+
+        const parts: Array<
+          { text: string } | { inlineData: { mimeType: string; data: string } } | { documentData: { mimeType: string; data: string } }
+        > = [
+          {
+            text: `CAMPOS DA FICHA (um por linha, "entryId: rótulo"):\n${entries
+              .map((e) => `${e.id}: ${e.label}`)
+              .join('\n')}\n\nLeia a ficha anexada e reporte o estado de cada entryId listado acima.`,
+          },
+        ];
+
+        if (formPhotoDataUrl) {
+          const match = formPhotoDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+        } else if (formPdfDataUrl) {
+          const match = formPdfDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) parts.push({ documentData: { mimeType: 'application/pdf', data: match[2] } });
+        }
+
+        const readSchema = {
+          type: Type.OBJECT,
+          properties: {
+            fields: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  entryId: { type: Type.STRING },
+                  readStatus: { type: Type.STRING, description: "'lido' | 'ilegivel' | 'ausente'" },
+                  readCondition: {
+                    type: Type.STRING,
+                    description: 'bom | reparar | substituir | reaproveitar | nao_verificado | nao_se_aplica',
+                  },
+                  readMeasurement: { type: Type.STRING },
+                  readNotes: { type: Type.STRING },
+                },
+                required: ['entryId', 'readStatus'],
+              },
+            },
+            overallNotes: { type: Type.STRING },
+          },
+          required: ['fields'],
+        };
+
+        try {
+          const { response } = await generateContentWithRetryAndFallback({
+            preferredModel: store.settings.aiModel || 'claude-sonnet-5',
+            parts,
+            systemInstruction: CHECKLIST_READER_SYSTEM_INSTRUCTION,
+            responseSchema: readSchema,
+            lockKey: `checklist-read:${sheetId}`,
+          });
+          const parsed = JSON.parse(response.text) as {
+            fields: InspectionFormReadField[];
+            overallNotes?: string;
+          };
+          const validStatuses: ChecklistFieldReadStatus[] = ['lido', 'ilegivel', 'ausente'];
+          const validConditions: InspectionMarking[] = [
+            'bom', 'reparar', 'substituir', 'reaproveitar', 'nao_verificado', 'nao_se_aplica',
+          ];
+          const byEntryId = new Map((parsed.fields || []).map((f) => [f.entryId, f]));
+          // Nunca deixa um campo "esquecido" pela IA desaparecer — todo entry não
+          // reportado vira 'ausente' explicitamente aqui, nunca fica indefinido.
+          const fields: InspectionFormReadField[] = entries.map((e) => {
+            const f = byEntryId.get(e.id);
+            const readStatus: ChecklistFieldReadStatus =
+              f && validStatuses.includes(f.readStatus) ? f.readStatus : 'ausente';
+            return {
+              entryId: e.id,
+              readStatus,
+              readCondition:
+                readStatus === 'lido' && f?.readCondition && validConditions.includes(f.readCondition)
+                  ? f.readCondition
+                  : undefined,
+              readMeasurement: readStatus === 'lido' ? f?.readMeasurement : undefined,
+              readNotes: f?.readNotes,
+            };
+          });
+          aiReadResult = { readAt: now, fields, overallNotes: parsed.overallNotes };
+        } catch (aiError) {
+          console.error('Erro ao ler ficha por IA:', aiError);
+          if (formPdfDataUrl) {
+            // Fallback honesto: se a leitura de PDF falhar (ex.: tipo document não
+            // aceito nesta conta), nunca finge sucesso — sinaliza e orienta foto.
+            aiReadResult = {
+              readAt: now,
+              fields: entries.map((e) => ({ entryId: e.id, readStatus: 'ausente' as ChecklistFieldReadStatus })),
+              overallNotes:
+                'Leitura de PDF indisponível no momento. Envie uma foto da ficha marcada em vez do PDF.',
+              pdfReadUnavailable: true,
+            };
+          } else {
+            res.status(502).json({
+              error: aiError instanceof Error ? aiError.message : 'Erro ao ler ficha por IA.',
+            });
+            return;
+          }
+        }
+      }
+
+      if (aiReadResult) sheet.aiReadResult = aiReadResult;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: confirmedBy || 'Reavaliação Técnica',
+        stage: 'Devolução da Ficha de Verificação',
+        action: `Ficha ${sheet.unitLabel || sheet.id} enviada para reavaliação`,
+        details: aiReadResult ? 'Leitura por IA gerada — pendente de confirmação humana.' : 'Dados digitados diretamente.',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Reavaliação Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, sheet });
+    } catch (error) {
+      console.error('Erro ao devolver ficha de verificação:', error);
+      res.status(500).json({ error: 'Erro ao devolver ficha de verificação.' });
+    }
+  });
+
+  // Confirma (ou descarta) campos lidos pela IA na devolução da ficha — nenhum campo
+  // lido por IA se torna definitivo sem passar por aqui, e campos 'ilegivel'/'ausente'
+  // nunca são aplicados mesmo que o operador tente aceitá-los.
+  app.post('/api/orders/:id/inspection-sheets/:sheetId/confirm-reading', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, sheetId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const sheet = (order.inspectionSheets || []).find((s) => s.id === sheetId);
+      if (!sheet || !sheet.aiReadResult) {
+        res.status(404).json({ error: 'Nenhuma leitura pendente de confirmação para esta ficha.' });
+        return;
+      }
+      const { acceptedEntryIds, confirmedBy } = req.body as {
+        acceptedEntryIds: string[];
+        confirmedBy: string;
+      };
+      if (!confirmedBy || !confirmedBy.trim()) {
+        res.status(400).json({ error: 'Informe quem está confirmando a leitura.' });
+        return;
+      }
+
+      const fieldsById = new Map(sheet.aiReadResult.fields.map((f) => [f.entryId, f]));
+      for (const entryId of acceptedEntryIds || []) {
+        const field = fieldsById.get(entryId);
+        if (!field || field.readStatus !== 'lido') continue; // nunca aplica ilegível/ausente
+        const componentEntry = sheet.components?.find((c) => c.id === entryId);
+        if (componentEntry) {
+          if (field.readCondition) componentEntry.condition = field.readCondition;
+          if (field.readMeasurement) {
+            componentEntry.measurementValue = field.readMeasurement;
+            componentEntry.measurementStatus = 'medido';
+          }
+          if (field.readNotes) {
+            componentEntry.notes = [componentEntry.notes, field.readNotes].filter(Boolean).join(' | ');
+          }
+          componentEntry.causeConfirmed = true;
+          componentEntry.origin = 'Confirmado pela oficina';
+        }
+        const manufacturingEntry = sheet.manufacturingChecks?.find((c) => c.id === entryId);
+        if (manufacturingEntry) {
+          if (field.readCondition) manufacturingEntry.status = field.readCondition;
+          if (field.readNotes) {
+            manufacturingEntry.notes = [manufacturingEntry.notes, field.readNotes].filter(Boolean).join(' | ');
+          }
+        }
+      }
+
+      const now = new Date().toISOString();
+      sheet.status = 'reavaliada';
+      sheet.confirmedAt = now;
+      sheet.confirmedBy = confirmedBy;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: confirmedBy,
+        stage: 'Confirmação de Leitura da Ficha',
+        action: `${(acceptedEntryIds || []).length} campo(s) confirmado(s) na ficha ${sheet.unitLabel || sheet.id}`,
+        details: '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Reavaliação Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, sheet });
+    } catch (error) {
+      console.error('Erro ao confirmar leitura da ficha:', error);
+      res.status(500).json({ error: 'Erro ao confirmar leitura da ficha.' });
+    }
+  });
+
+  // Pedro/Lucas — reavaliação técnica: compara a avaliação inicial com os dados
+  // confirmados na devolução da ficha e gera diagnóstico/serviços/materiais revisados.
+  // Toda versão anterior é preservada (technicalReassessments é um array só de
+  // inclusão, nunca sobrescrito). Sincroniza productEvaluations[productId] com a
+  // revisão (vira a "atual"), e se o pedido já tinha negociação aceita, reabre.
+  app.post('/api/orders/:id/reassessment', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        inspectionSheetId,
+        revisedDiagnosis,
+        updatedServicesNeeded,
+        updatedMaterials,
+        pendingItems,
+        changesFromPrevious,
+        costImpact,
+        deadlineImpactDays,
+        createdBy,
+      } = req.body as {
+        inspectionSheetId: string;
+        revisedDiagnosis: string;
+        updatedServicesNeeded: string;
+        updatedMaterials?: ProductMaterialNeed[];
+        pendingItems?: string[];
+        changesFromPrevious?: string[];
+        costImpact: TechnicalReassessment['costImpact'];
+        deadlineImpactDays?: number | null;
+        createdBy: string;
+      };
+
+      const sheet = (order.inspectionSheets || []).find((s) => s.id === inspectionSheetId);
+      if (!sheet) {
+        res.status(404).json({ error: 'Ficha de verificação não encontrada.' });
+        return;
+      }
+      if (!revisedDiagnosis || !revisedDiagnosis.trim()) {
+        res.status(400).json({ error: 'Informe o diagnóstico/especificação técnica revisada.' });
+        return;
+      }
+      if (!createdBy || !createdBy.trim()) {
+        res.status(400).json({ error: 'Informe o responsável pela reavaliação.' });
+        return;
+      }
+
+      const productId = sheet.productId;
+      if (!order.technicalReassessments) order.technicalReassessments = [];
+      const priorForSameUnit = order.technicalReassessments.filter(
+        (r) => r.productId === productId && r.unitIndex === sheet.unitIndex
+      );
+      const version = priorForSameUnit.length + 1;
+
+      // Detecta se o escopo realmente muda em relação ao que está vigente — só então
+      // mexe na negociação já aceita.
+      const currentEvaluation = order.productEvaluations?.[productId];
+      const servicesChanged = (currentEvaluation?.servicesNeeded || '') !== (updatedServicesNeeded || '');
+      const materialsChanged =
+        JSON.stringify(currentEvaluation?.materials || []) !== JSON.stringify(updatedMaterials || []);
+      const scopeChanged = servicesChanged || materialsChanged;
+      const requiresNegotiationReview = Boolean(
+        scopeChanged && order.negotiation?.clientDecision === 'aceito'
+      );
+
+      const now = new Date().toISOString();
+      const reassessment: TechnicalReassessment = {
+        id: `reass-${Date.now()}`,
+        inspectionSheetId,
+        productId,
+        unitIndex: sheet.unitIndex,
+        version,
+        comparedToSheetVersion: sheet.version,
+        revisedDiagnosis,
+        updatedServicesNeeded,
+        updatedMaterials: updatedMaterials || [],
+        pendingItems: pendingItems || [],
+        changesFromPrevious: changesFromPrevious || [],
+        costImpact,
+        deadlineImpactDays: deadlineImpactDays ?? null,
+        requiresNegotiationReview,
+        createdBy,
+        createdAt: now,
+      };
+      order.technicalReassessments.push(reassessment);
+
+      // productEvaluations[productId] é sempre a avaliação "vigente" (mesmo princípio
+      // de manufacturingData vs. technicalPlanRevisions) — a reavaliação a atualiza.
+      if (scopeChanged && order.productEvaluations?.[productId]) {
+        order.productEvaluations[productId] = {
+          ...order.productEvaluations[productId],
+          servicesNeeded: updatedServicesNeeded,
+          materials: updatedMaterials || order.productEvaluations[productId].materials,
+          evaluatedBy: createdBy,
+          evaluatedAt: now,
+        };
+      }
+
+      // Escopo/preço já aceitos pelo cliente mudando: reabre a negociação (mesma trava
+      // já usada quando os termos de negociação mudam) e marca o orçamento itemizado
+      // como precisando de nova homologação da Mila, sem apagar o que já existia.
+      if (requiresNegotiationReview && order.negotiation) {
+        order.negotiation.clientDecision = undefined;
+        order.negotiation.clientDecisionAt = undefined;
+        order.negotiation.clientDecisionBy = undefined;
+        order.negotiation.clientDecisionPriceCentsSnapshot = undefined;
+        order.negotiation.updatedAt = now;
+      }
+      if (requiresNegotiationReview && order.itemizedBudget) {
+        order.itemizedBudget.confirmedByResponsible = false;
+      }
+
+      sheet.status = 'reavaliada';
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: createdBy,
+        stage: 'Reavaliação Técnica',
+        action: `Reavaliação técnica v${version} gerada para ${sheet.unitLabel || productId}`,
+        details: requiresNegotiationReview
+          ? 'Escopo mudou com negociação já aceita — negociação reaberta, orçamento precisa ser re-homologado pela Mila.'
+          : `Impacto de custo: ${costImpact}.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Reavaliação Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, reassessment });
+    } catch (error) {
+      console.error('Erro ao gerar reavaliação técnica:', error);
+      res.status(500).json({ error: 'Erro ao gerar reavaliação técnica.' });
+    }
+  });
+
+  // Salva/atualiza o rascunho do manual de execução por produto. Enquanto estiver em
+  // rascunho, salvar de novo atualiza a MESMA versão (edição contínua); uma vez
+  // aprovado, qualquer nova edição cria uma versão nova (nunca sobrescreve o que já
+  // foi liberado para execução — mesmo princípio de technicalPlanRevisions).
+  app.post('/api/orders/:id/execution-manual', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        productId,
+        coverResponsibles,
+        views,
+        explodedView,
+        partsList,
+        cuttingPlanNote,
+        fabricGrainDirection,
+        sewingInstructions,
+        steps,
+      } = req.body as {
+        productId: string;
+        coverResponsibles?: string[];
+        views?: ExecutionManual['views'];
+        explodedView?: ExecutionManual['explodedView'];
+        partsList?: BudgetLineItem[];
+        cuttingPlanNote?: string;
+        fabricGrainDirection?: ExecutionManual['fabricGrainDirection'];
+        sewingInstructions?: ExecutionManual['sewingInstructions'];
+        steps?: ExecutionManualStep[];
+      };
+      const validIds = listOrderProducts(order).map((p) => p.id);
+      if (!productId || !validIds.includes(productId)) {
+        res.status(400).json({ error: 'Produto do pedido não encontrado (productId inválido).' });
+        return;
+      }
+
+      if (!order.executionManuals) order.executionManuals = [];
+      const forProduct = order.executionManuals.filter((m) => m.productId === productId);
+      const latest = forProduct.sort((a, b) => b.version - a.version)[0];
+      const now = new Date().toISOString();
+
+      let manual: ExecutionManual;
+      if (latest && latest.status === 'rascunho') {
+        latest.coverResponsibles = coverResponsibles ?? latest.coverResponsibles;
+        latest.views = views ?? latest.views;
+        latest.explodedView = explodedView ?? latest.explodedView;
+        latest.partsList = partsList ?? latest.partsList;
+        latest.cuttingPlanNote = cuttingPlanNote ?? latest.cuttingPlanNote;
+        latest.fabricGrainDirection = fabricGrainDirection ?? latest.fabricGrainDirection;
+        latest.sewingInstructions = sewingInstructions ?? latest.sewingInstructions;
+        latest.steps = steps ?? latest.steps;
+        manual = latest;
+      } else {
+        manual = {
+          id: `manual-${Date.now()}`,
+          orderId: order.id,
+          productId,
+          version: (latest?.version || 0) + 1,
+          status: 'rascunho',
+          coverResponsibles: coverResponsibles || [],
+          views: views || [],
+          explodedView,
+          partsList: partsList || [],
+          cuttingPlanNote: cuttingPlanNote || 'Pendente de medição.',
+          fabricGrainDirection,
+          sewingInstructions: sewingInstructions || {},
+          steps: steps || [],
+          createdAt: now,
+        };
+        order.executionManuals.push(manual);
+      }
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: 'Manual de Execução',
+        stage: 'Manual de Execução',
+        action: `Rascunho do manual v${manual.version} atualizado para ${productId}`,
+        details: '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Manual de Execução',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, manual });
+    } catch (error) {
+      console.error('Erro ao salvar manual de execução:', error);
+      res.status(500).json({ error: 'Erro ao salvar manual de execução.' });
+    }
+  });
+
+  // Aprova o manual de execução — só um responsável técnico explícito pode liberar
+  // para execução (mesmo padrão de planStatus: 'Liberado pelo responsável' já usado
+  // no plano do Tapeceiro Técnico).
+  app.post('/api/orders/:id/execution-manual/:manualId/approve', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, manualId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const manual = (order.executionManuals || []).find((m) => m.id === manualId);
+      if (!manual) {
+        res.status(404).json({ error: 'Manual de execução não encontrado.' });
+        return;
+      }
+      const { approvedBy } = req.body as { approvedBy: string };
+      if (!approvedBy || !approvedBy.trim()) {
+        res.status(400).json({ error: 'Informe o responsável técnico que está aprovando o manual.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      manual.status = 'aprovado';
+      manual.approvedBy = approvedBy;
+      manual.approvedAt = now;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: approvedBy,
+        stage: 'Manual de Execução',
+        action: `Manual de execução v${manual.version} aprovado e liberado para execução`,
+        details: '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Manual de Execução',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, manual });
+    } catch (error) {
+      console.error('Erro ao aprovar manual de execução:', error);
+      res.status(500).json({ error: 'Erro ao aprovar manual de execução.' });
+    }
+  });
+
+  // Controle de qualidade: checklist derivado do manual de execução APROVADO (medida
+  // prevista vem só dele, nunca inventada aqui). Nunca libera 'aprovado' havendo item
+  // 'nao_conforme' — validado no servidor, não só na UI. Retrabalho cria uma NOVA
+  // inspeção com reworkOfInspectionId apontando pra anterior — qualityControlHistory
+  // é só de inclusão, nenhuma inspeção anterior é sobrescrita ou removida.
+  app.post('/api/orders/:id/quality-control', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        productId,
+        unitIndex,
+        checks,
+        responsibleName,
+        outcome: requestedOutcome,
+        reworkOfInspectionId,
+      } = req.body as {
+        productId: string;
+        unitIndex: number;
+        checks: QcCheckEntry[];
+        responsibleName: string;
+        outcome?: QualityControlInspection['outcome'];
+        reworkOfInspectionId?: string;
+      };
+      if (!responsibleName || !responsibleName.trim()) {
+        res.status(400).json({ error: 'Informe o responsável pela inspeção.' });
+        return;
+      }
+      if (!Array.isArray(checks) || checks.length === 0) {
+        res.status(400).json({ error: 'Informe ao menos um item de verificação.' });
+        return;
+      }
+
+      const approvedManual = (order.executionManuals || [])
+        .filter((m) => m.productId === productId && m.status === 'aprovado')
+        .sort((a, b) => b.version - a.version)[0];
+      if (!approvedManual) {
+        res.status(400).json({
+          error: 'Não há manual de execução aprovado para este produto — libere o manual antes do controle de qualidade.',
+        });
+        return;
+      }
+
+      const hasNonConformance = checks.some((c) => c.result === 'nao_conforme');
+      const allFilled = checks.every((c) => c.result != null);
+      let outcome: QualityControlInspection['outcome'];
+      if (hasNonConformance) {
+        // Nunca libera aprovado com não conformidade, mesmo que o cliente peça isso.
+        outcome = 'retrabalho';
+      } else if (requestedOutcome === 'aprovado') {
+        if (!allFilled) {
+          res.status(400).json({
+            error: 'Existem itens ainda sem resultado — não é possível aprovar com verificação pendente.',
+          });
+          return;
+        }
+        outcome = 'aprovado';
+      } else {
+        outcome = 'aguardando_verificacao';
+      }
+
+      const now = new Date().toISOString();
+      const inspection: QualityControlInspection = {
+        id: `qc-${Date.now()}`,
+        orderId: order.id,
+        productId,
+        unitIndex,
+        manualVersion: approvedManual.version,
+        checks,
+        responsibleName,
+        date: now,
+        outcome,
+        reworkOfInspectionId,
+      };
+      if (!order.qualityControlHistory) order.qualityControlHistory = [];
+      order.qualityControlHistory.push(inspection);
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: responsibleName,
+        stage: 'Controle de Qualidade',
+        action: `Inspeção de QC registrada — resultado: ${outcome}`,
+        details: reworkOfInspectionId ? `Reinspeção após retrabalho de ${reworkOfInspectionId}` : '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Controle de Qualidade',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, inspection });
+    } catch (error) {
+      console.error('Erro ao registrar inspeção de controle de qualidade:', error);
+      res.status(500).json({ error: 'Erro ao registrar inspeção de controle de qualidade.' });
     }
   });
 

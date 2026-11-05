@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Plus,
   Search,
@@ -34,6 +34,7 @@ import {
   RealtimeSyncEvent,
   JuliaDepartmentData,
   DepartmentId,
+  ClientRecord,
 } from './types';
 import {
   auth,
@@ -57,6 +58,7 @@ import {
   generateShoppingListPdf,
 } from './utils/pdfGenerator';
 import { ResilientImage } from './components/ResilientImage';
+import { CastrosLogo } from './components/CastrosLogo';
 import { CorporateSyncModal, PWAInstallButton } from './components/CorporateSyncModal';
 import { AgentsControlPanel } from './components/AgentsControlPanel';
 import { DepartmentsHub } from './components/DepartmentsHub';
@@ -64,6 +66,7 @@ import { OfficeDesksHub } from './components/OfficeDesksHub';
 import { RawMaterialsAndPricing } from './components/RawMaterialsAndPricing';
 import { getOrCreateDeviceIdentity, usePWAInstall } from './hooks/usePWAInstall';
 import { AgentPortrait, PortraitUploadModal } from './components/AgentPortrait';
+import { ManualAjuda } from './components/ManualAjuda';
 import { OFFICE_DESKS } from './utils/officeDefaults';
 
 type MenuTab =
@@ -74,6 +77,7 @@ type MenuTab =
   | 'clientes'
   | 'materiais'
   | 'relatorios'
+  | 'manual'
   | 'configuracoes';
 
 async function createCompressedThumbnail(fileOrDataUrl: File | string): Promise<{
@@ -155,9 +159,19 @@ export default function App() {
 
   // Persistent Data State
   const [attendances, setAttendances] = useState<AttendanceRecord[]>([]);
+  // Espelha `attendances` em uma ref para leitura síncrona dentro de handlers
+  // assíncronos (ex.: upload de várias fotos em sequência) — sem isso, cada
+  // chamada de handleUploadPhotoFile leria um `activeAttendance.photos`
+  // desatualizado (capturado no fechamento da função) e sobrescreveria as
+  // fotos já salvas pelas chamadas anteriores do mesmo lote.
+  const attendancesRef = useRef<AttendanceRecord[]>(attendances);
+  useEffect(() => {
+    attendancesRef.current = attendances;
+  }, [attendances]);
   const [activeAttendanceId, setActiveAttendanceId] = useState<string | null>(
     () => localStorage.getItem('active_attendance_id')
   );
+  const [clients, setClients] = useState<ClientRecord[]>([]);
 
   useEffect(() => {
     if (activeAttendanceId) {
@@ -334,6 +348,9 @@ export default function App() {
           if (Array.isArray(storeData.materials)) {
             setMaterials(storeData.materials);
           }
+          if (Array.isArray(storeData.clients)) {
+            setClients(storeData.clients);
+          }
           if (storeData.settings) {
             setSettings(storeData.settings);
           }
@@ -359,6 +376,16 @@ export default function App() {
 
   const activeAttendance =
     attendances.find((a) => a.id === activeAttendanceId) || null;
+
+  // Protege uma navegação local recém-feita (ex.: acabou de criar um atendimento na
+  // mesa da Carla) contra ser sobrescrita por um evento attendance:focus que chegue
+  // logo em seguida de outro aparelho (ex.: alguém clicou "Abrir nos 3 Aparelhos" em
+  // outro atendimento por perto) — sem desativar o recurso de sincronização em si.
+  const recentLocalNavigationRef = useRef<{ id: string; at: number } | null>(null);
+  const focusAttendanceLocally = (id: string | null) => {
+    recentLocalNavigationRef.current = id ? { id, at: Date.now() } : null;
+    setActiveAttendanceId(id);
+  };
 
   // Real-time Server-Sent Events (SSE) connection across Computador, Tablet, and Celular
   useEffect(() => {
@@ -448,15 +475,23 @@ export default function App() {
                 : a
             );
           });
-          setActiveAttendanceId(focused.id);
-          setActiveTab('painel');
-          if (isFromOtherDevice) {
-            setRealtimeNotice(
-              `Tela sincronizada com ${
-                data.sourceStationName || 'outro aparelho'
-              }: Atendimento ${focused.attendanceNumber} (Etapa ${data.step || focused.currentStep})`
-            );
-            setTimeout(() => setRealtimeNotice(null), 6000);
+          const recentLocal = recentLocalNavigationRef.current;
+          const justNavigatedLocallyElsewhere =
+            isFromOtherDevice &&
+            recentLocal != null &&
+            recentLocal.id !== focused.id &&
+            Date.now() - recentLocal.at < 8000;
+          if (!justNavigatedLocallyElsewhere) {
+            setActiveAttendanceId(focused.id);
+            setActiveTab('painel');
+            if (isFromOtherDevice) {
+              setRealtimeNotice(
+                `Tela sincronizada com ${
+                  data.sourceStationName || 'outro aparelho'
+                }: Atendimento ${focused.attendanceNumber} (Etapa ${data.step || focused.currentStep})`
+              );
+              setTimeout(() => setRealtimeNotice(null), 6000);
+            }
           }
         } else if (data.type === 'materials:updated' && Array.isArray(data.materials)) {
           setMaterials(data.materials);
@@ -571,7 +606,7 @@ export default function App() {
         await syncAttendanceToFirestore(created, false);
       }
       setAttendances((prev) => [created, ...prev]);
-      setActiveAttendanceId(created.id);
+      focusAttendanceLocally(created.id);
       setActiveTab('atendimentos');
       setLastSavedSuccessAt(new Date().toLocaleTimeString('pt-BR'));
     } catch (err) {
@@ -580,6 +615,73 @@ export default function App() {
       );
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  // Cadastro de atendimento na mesa da Carla: cria o pedido (reaproveitando ou cadastrando
+  // o cliente no servidor) e, em seguida, envia as fotos selecionadas já direto pro
+  // atendimento recém-criado — tudo num só fluxo, sem precisar abrir a mesa de destino
+  // (Pedro/Lucas) depois para repetir o cadastro ou anexar as fotos.
+  const handleCreateOrderFromCarla = async (
+    payload: Record<string, unknown>,
+    photoFiles: File[],
+    additionalProductPhotos?: Record<string, File[]>
+  ): Promise<{ ok: true; order: AttendanceRecord } | { ok: false; error: string }> => {
+    try {
+      const res = await fetch('/api/orders/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.order) {
+        return { ok: false, error: data.error || 'Erro ao registrar atendimento.' };
+      }
+      const created: AttendanceRecord = data.order;
+      attendancesRef.current = [created, ...attendancesRef.current];
+      setAttendances((prev) => (prev.some((a) => a.id === created.id) ? prev : [created, ...prev]));
+      if (data.client) {
+        setClients((prev) => {
+          const idx = prev.findIndex((c) => c.id === data.client.id);
+          if (idx === -1) return [data.client, ...prev];
+          const copy = [...prev];
+          copy[idx] = data.client;
+          return copy;
+        });
+      }
+      for (const file of photoFiles) {
+        await handleUploadPhotoFile(
+          file,
+          'Frente',
+          `Foto do atendimento ${created.attendanceNumber}`,
+          created.furnitureType,
+          undefined,
+          created.id
+        );
+      }
+      if (additionalProductPhotos) {
+        for (const product of created.additionalProducts || []) {
+          const files = additionalProductPhotos[product.id];
+          if (!files) continue;
+          for (const file of files) {
+            await handleUploadPhotoFile(
+              file,
+              'Frente',
+              `Foto de ${product.description} (${created.attendanceNumber})`,
+              product.description,
+              undefined,
+              created.id,
+              product.id
+            );
+          }
+        }
+      }
+      return { ok: true, order: created };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Erro de comunicação ao registrar atendimento.',
+      };
     }
   };
 
@@ -682,12 +784,30 @@ export default function App() {
     category: PhotoCategory,
     caption: string,
     furnitureLabel: string,
-    existingFailedPhotoId?: string
+    existingFailedPhotoId?: string,
+    // Normalmente envia pro atendimento ativo (activeAttendance); um id explícito permite
+    // enviar fotos logo após criar um atendimento novo (ex.: cadastro na mesa da Carla),
+    // antes dele virar o atendimento ativo na tela.
+    targetAttendanceId?: string,
+    // Produto adicional (além do principal) ao qual esta foto pertence, quando o pedido
+    // tiver mais de um produto (additionalProducts). Ausente = foto do produto principal.
+    productId?: string
   ) => {
-    if (!activeAttendance) return;
+    const attendanceId = targetAttendanceId || activeAttendance?.id;
+    if (!attendanceId) return;
 
+    // Sempre lê o atendimento mais atual da ref (não o `activeAttendance` fechado
+    // nesta função) — essencial quando várias fotos são enviadas em sequência:
+    // sem isso, cada chamada ignoraria as fotos já salvas pelas chamadas
+    // anteriores do mesmo lote e as sobrescreveria ao gravar no servidor.
+    const readCurrentAttendance = (): AttendanceRecord | undefined =>
+      attendancesRef.current.find((a) => a.id === attendanceId) ||
+      (targetAttendanceId ? undefined : activeAttendance || undefined);
+
+    const baseAttendance = readCurrentAttendance();
+    if (!baseAttendance) return;
     const photoId = existingFailedPhotoId || `photo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const nextPhotoNumber = activeAttendance.photos.length + 1;
+    const nextPhotoNumber = baseAttendance.photos.length + 1;
     const code = `F-${String(nextPhotoNumber).padStart(2, '0')}`;
 
     const { fullDataUrl, thumbnailDataUrl, mimeType } =
@@ -696,7 +816,8 @@ export default function App() {
     const optimisticPhoto: AttendancePhoto = {
       id: photoId,
       code,
-      attendanceId: activeAttendance.id,
+      attendanceId,
+      productId,
       furnitureLabel,
       category,
       caption,
@@ -707,26 +828,29 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
 
+    // Reler aqui (depois do await de compressão da miniatura) para incluir
+    // qualquer foto que outra chamada já tenha salvo nesse meio-tempo.
+    const preUploadAttendance = readCurrentAttendance() || baseAttendance;
     const updatedPhotosUploading = existingFailedPhotoId
-      ? activeAttendance.photos.map((p) =>
+      ? preUploadAttendance.photos.map((p) =>
           p.id === existingFailedPhotoId
             ? { ...p, uploadStatus: 'uploading' as const, errorMessage: undefined }
             : p
         )
-      : [...activeAttendance.photos, optimisticPhoto];
+      : [...preUploadAttendance.photos, optimisticPhoto];
 
     const hasExistingAnalysis =
-      activeAttendance.defectFindings.length > 0 || activeAttendance.reviewCompleted;
+      preUploadAttendance.defectFindings.length > 0 || preUploadAttendance.reviewCompleted;
 
     const draftUploading: AttendanceRecord = {
-      ...activeAttendance,
+      ...preUploadAttendance,
       photos: updatedPhotosUploading,
       status:
-        activeAttendance.status === 'Rascunho' ||
-        activeAttendance.status === 'Aguardando fotos'
+        preUploadAttendance.status === 'Rascunho' ||
+        preUploadAttendance.status === 'Aguardando fotos'
           ? 'Pronto para análise'
-          : activeAttendance.status,
-      reviewCompleted: hasExistingAnalysis ? false : activeAttendance.reviewCompleted,
+          : preUploadAttendance.status,
+      reviewCompleted: hasExistingAnalysis ? false : preUploadAttendance.reviewCompleted,
       staleness: hasExistingAnalysis
         ? {
             defectsAnalysisNeedsReview: true,
@@ -737,7 +861,7 @@ export default function App() {
             staleReason:
               'Novas fotos foram adicionadas ao atendimento. Reexecute ou revise a análise técnica.',
           }
-        : activeAttendance.staleness,
+        : preUploadAttendance.staleness,
     };
 
     setAttendances((prev) =>
@@ -749,7 +873,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          attendanceId: activeAttendance.id,
+          attendanceId,
           photoId,
           dataUrl: fullDataUrl,
           mimeType,
@@ -760,7 +884,13 @@ export default function App() {
         throw new Error(uploadData.error || 'Falha no envio da imagem.');
       }
 
-      const finalPhotos = draftUploading.photos.map((p) =>
+      // Lê de novo após o upload: outras fotos do mesmo lote podem ter
+      // terminado de salvar enquanto esta estava sendo enviada ao servidor.
+      const postUploadAttendance = readCurrentAttendance() || draftUploading;
+      const photosForFinalSave = postUploadAttendance.photos.some((p) => p.id === photoId)
+        ? postUploadAttendance.photos
+        : draftUploading.photos;
+      const finalPhotos = photosForFinalSave.map((p) =>
         p.id === photoId
           ? {
               ...p,
@@ -771,7 +901,7 @@ export default function App() {
       );
 
       const finalRecord: AttendanceRecord = {
-        ...draftUploading,
+        ...postUploadAttendance,
         photos: finalPhotos,
       };
 
@@ -781,7 +911,11 @@ export default function App() {
         'Fotos'
       );
     } catch (err) {
-      const failedPhotos = draftUploading.photos.map((p) =>
+      const errorAttendance = readCurrentAttendance() || draftUploading;
+      const photosForErrorSave = errorAttendance.photos.some((p) => p.id === photoId)
+        ? errorAttendance.photos
+        : draftUploading.photos;
+      const failedPhotos = photosForErrorSave.map((p) =>
         p.id === photoId
           ? {
               ...p,
@@ -793,7 +927,7 @@ export default function App() {
       );
       setAttendances((prev) =>
         prev.map((a) =>
-          a.id === draftUploading.id ? { ...draftUploading, photos: failedPhotos } : a
+          a.id === errorAttendance.id ? { ...errorAttendance, photos: failedPhotos } : a
         )
       );
     }
@@ -1182,21 +1316,47 @@ export default function App() {
     );
   });
 
-  // Group unique clients from attendances
+  // Base de clientes: fonte principal é o cadastro geral (clients, vindo do servidor),
+  // ligado aos atendimentos por clientId — assim o endereço completo cadastrado aparece
+  // aqui também, não só na mesa da Carla. Atendimentos sem clientId (dado antigo que por
+  // algum motivo não foi vinculado) ainda aparecem, agrupados por nome+telefone, pra não
+  // sumir nenhum registro existente da lista.
   const clientsSummary = React.useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        name: string;
-        phone: string;
-        attendancesCount: number;
-        lastUpdate: string;
-        attendances: AttendanceRecord[];
-      }
-    >();
+    type ClientSummaryRow = {
+      id: string;
+      name: string;
+      phone: string;
+      address?: ClientRecord['address'];
+      attendancesCount: number;
+      lastUpdate: string;
+      attendances: AttendanceRecord[];
+    };
+    const byClientId = new Map<string, ClientSummaryRow>();
+    clients.forEach((c) => {
+      byClientId.set(c.id, {
+        id: c.id,
+        name: formatMissingText(c.name),
+        phone: formatMissingText(c.phone),
+        address: c.address,
+        attendancesCount: 0,
+        lastUpdate: c.updatedAt,
+        attendances: [],
+      });
+    });
+
+    const orphansByKey = new Map<string, ClientSummaryRow>();
     attendances.forEach((a) => {
+      const row = a.clientId ? byClientId.get(a.clientId) : undefined;
+      if (row) {
+        row.attendancesCount += 1;
+        row.attendances.push(a);
+        if (new Date(a.updatedAt) > new Date(row.lastUpdate)) {
+          row.lastUpdate = a.updatedAt;
+        }
+        return;
+      }
       const key = `${(a.clientName || '').trim().toLowerCase()}|${(a.clientPhone || '').trim()}`;
-      const existing = map.get(key);
+      const existing = orphansByKey.get(key);
       if (existing) {
         existing.attendancesCount += 1;
         existing.attendances.push(a);
@@ -1204,7 +1364,8 @@ export default function App() {
           existing.lastUpdate = a.updatedAt;
         }
       } else {
-        map.set(key, {
+        orphansByKey.set(key, {
+          id: `orphan-${key}`,
           name: formatMissingText(a.clientName),
           phone: formatMissingText(a.clientPhone),
           attendancesCount: 1,
@@ -1213,13 +1374,15 @@ export default function App() {
         });
       }
     });
-    return Array.from(map.values()).filter((c) =>
+
+    const all = [...byClientId.values(), ...orphansByKey.values()].filter((c) => c.attendancesCount > 0);
+    return all.filter((c) =>
       !clientSearch.trim()
         ? true
         : c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
           c.phone.toLowerCase().includes(clientSearch.toLowerCase())
     );
-  }, [attendances, clientSearch]);
+  }, [attendances, clients, clientSearch]);
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F9F6F0] text-[#1C1917]">
@@ -1232,9 +1395,9 @@ export default function App() {
             e.preventDefault();
             setActiveTab('painel');
           }}
-          className="text-xl font-serif-display font-bold tracking-wide text-[#181512] whitespace-nowrap shrink-0"
+          className="shrink-0"
         >
-          CASTROS INTERIORES
+          <CastrosLogo variant="header" size={38} />
         </a>
 
         {/* Zone 2: Concise single-line navigation links */}
@@ -1319,6 +1482,17 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveTab('manual')}
+            className={`hover:text-[#181512] transition-colors whitespace-nowrap shrink-0 py-1 ${
+              activeTab === 'manual'
+                ? 'text-[#181512] font-semibold underline underline-offset-8 decoration-2 decoration-[#9A7138]'
+                : ''
+            }`}
+          >
+            Manual e Ajuda
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveTab('configuracoes')}
             className={`hover:text-[#181512] transition-colors whitespace-nowrap shrink-0 py-1 ${
               activeTab === 'configuracoes'
@@ -1362,6 +1536,7 @@ export default function App() {
               ['clientes', 'Clientes'],
               ['materiais', 'Materiais e serviços'],
               ['relatorios', 'Relatórios'],
+              ['manual', 'Manual e Ajuda'],
               ['configuracoes', 'Configurações'],
             ] as const
           ).map(([key, label]) => (
@@ -1534,9 +1709,12 @@ export default function App() {
                   }
                 >
                   <div className="px-6 py-8 sm:px-10 sm:py-10">
-                    <h1 className="text-2xl sm:text-3xl font-serif-display font-bold text-white">
-                      Castros Interiores — Escritório de Agentes
-                    </h1>
+                    <div className="flex items-center gap-4 sm:gap-5">
+                      <CastrosLogo variant="mark" size={56} className="hidden sm:flex" />
+                      <h1 className="text-2xl sm:text-3xl font-serif-display font-bold text-white">
+                        Castros Interiores — Escritório de Agentes
+                      </h1>
+                    </div>
                     <p className="text-sm text-[#E5DEC9] mt-2 max-w-xl">
                       Oito assistentes virtuais cuidam do atendimento, da avaliação técnica, das compras, do financeiro, da fabricação, do marketing, da estratégia e da supervisão — cada um na sua mesa.
                     </p>
@@ -1559,7 +1737,7 @@ export default function App() {
                   isSaving={isSaving}
                   isAnalyzingDefects={isAnalyzingDefects}
                   isAnalyzingReuse={isAnalyzingReuse}
-                  onSelectAttendance={(id) => setActiveAttendanceId(id)}
+                  onSelectAttendance={(id) => focusAttendanceLocally(id)}
                   onNewAttendance={handleCreateNewAttendance}
                   onJumpToStep={(step) => {
                     if (activeAttendance) {
@@ -1780,13 +1958,14 @@ export default function App() {
                 materialsCatalog={materials}
                 settings={settings}
                 activeAttendanceId={activeAttendanceId}
-                onSelectAttendance={(id) => setActiveAttendanceId(id)}
+                onSelectAttendance={(id) => focusAttendanceLocally(id)}
                 onUpdateAttendance={(updated) => {
                   setAttendances((prev) =>
                     prev.map((a) => (a.id === updated.id ? updated : a))
                   );
                 }}
                 onNavigateTab={(tab) => setActiveTab(tab)}
+                onCreateOrder={handleCreateOrderFromCarla}
                 onJumpToStep={(step) => {
                   if (activeAttendance) {
                     handleUpdateDraftLocal({
@@ -1954,7 +2133,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    setActiveAttendanceId(att.id);
+                                    focusAttendanceLocally(att.id);
                                     setActiveTab('painel');
                                   }}
                                   className="px-3 py-1.5 rounded bg-[#181512] hover:bg-[#2E2722] text-white font-medium flex items-center gap-1"
@@ -2081,9 +2260,9 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {clientsSummary.map((client, idx) => (
+                  {clientsSummary.map((client) => (
                     <div
-                      key={idx}
+                      key={client.id}
                       className="p-5 rounded-xl bg-[#FAF8F5] border border-[#E5DEC9] flex flex-col justify-between space-y-4"
                     >
                       <div>
@@ -2095,6 +2274,21 @@ export default function App() {
                             {client.phone}
                           </span>
                         </div>
+                        {client.address && (client.address.street || client.address.neighborhood || client.address.city) ? (
+                          <p className="text-[11px] text-[#6B6257] mt-0.5">
+                            {[
+                              [client.address.street, client.address.number].filter(Boolean).join(', '),
+                              client.address.complement,
+                              client.address.neighborhood,
+                              [client.address.city, client.address.state].filter(Boolean).join('/'),
+                              client.address.cep ? `CEP ${client.address.cep}` : undefined,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-amber-700 mt-0.5">Endereço não cadastrado</p>
+                        )}
                         <p className="text-xs text-[#57534E] mt-1">
                           {client.attendancesCount} atendimento(s) registrado(s) · Última atualização em{' '}
                           {new Date(client.lastUpdate).toLocaleDateString('pt-BR')}
@@ -2118,7 +2312,7 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setActiveAttendanceId(att.id);
+                                  focusAttendanceLocally(att.id);
                                   setActiveTab('painel');
                                 }}
                                 className="text-xs font-semibold text-[#181512] underline hover:text-[#9A7138]"
@@ -2221,7 +2415,7 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => {
-                              setActiveAttendanceId(att.id);
+                              focusAttendanceLocally(att.id);
                               setActiveTab('painel');
                             }}
                             className="px-3.5 py-2 rounded-lg border border-[#D6CFC5] bg-white hover:bg-[#F3EFE6] text-xs font-medium text-[#181512]"
@@ -2257,7 +2451,7 @@ export default function App() {
               <AgentsControlPanel
                 attendances={attendances}
                 activeAttendance={activeAttendance}
-                onSelectAttendance={(id) => setActiveAttendanceId(id)}
+                onSelectAttendance={(id) => focusAttendanceLocally(id)}
                 settings={settings}
                 onSaveSettings={handlePersistSettings}
                 isSavingSettings={isSaving}
@@ -2281,6 +2475,9 @@ export default function App() {
                 }}
               />
             )}
+
+            {/* ABA: MANUAL E AJUDA */}
+            {activeTab === 'manual' && <ManualAjuda />}
 
             {/* ABA 6: CONFIGURAÇÕES */}
             {activeTab === 'configuracoes' && (
@@ -2388,6 +2585,67 @@ export default function App() {
                         claude-haiku-5-5 (Ultra-rápido e leve para alta demanda)
                       </option>
                     </select>
+                  </div>
+
+                  <div className="pt-2 border-t border-[#EFECE6]">
+                    <h3 className="text-sm font-bold text-[#181512] mb-1">Política de Negociação (aprovada pelo proprietário)</h3>
+                    <p className="text-[11px] text-[#6B6257] mb-3">
+                      Usada pela Mila para sugerir preço no orçamento itemizado e para travar descontos fora do
+                      combinado (exige sua aprovação explícita nesse caso).
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-[#57534E] mb-1">Margem padrão (%)</label>
+                        <input
+                          type="number"
+                          value={settings.negotiationPolicy?.defaultMarginPercent ?? ''}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              negotiationPolicy: {
+                                ...settings.negotiationPolicy,
+                                defaultMarginPercent: e.target.value === '' ? undefined : parseFloat(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full rounded-lg border border-[#D6CFC5] px-3.5 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-[#57534E] mb-1">Desconto máximo (%)</label>
+                        <input
+                          type="number"
+                          value={settings.negotiationPolicy?.maxDiscountPercent ?? ''}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              negotiationPolicy: {
+                                ...settings.negotiationPolicy,
+                                maxDiscountPercent: e.target.value === '' ? undefined : parseFloat(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full rounded-lg border border-[#D6CFC5] px-3.5 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-[#57534E] mb-1">Taxa (%)</label>
+                        <input
+                          type="number"
+                          value={settings.negotiationPolicy?.feePercent ?? ''}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              negotiationPolicy: {
+                                ...settings.negotiationPolicy,
+                                feePercent: e.target.value === '' ? undefined : parseFloat(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full rounded-lg border border-[#D6CFC5] px-3.5 py-2 text-sm"
+                        />
+                      </div>
+                    </div>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3 pt-2">

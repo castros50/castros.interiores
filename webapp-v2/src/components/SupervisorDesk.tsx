@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   FolderOpen,
   Calendar,
@@ -16,6 +16,10 @@ import {
   RotateCcw,
   RefreshCw,
   Search,
+  XCircle,
+  PauseCircle,
+  PlayCircle,
+  ListChecks,
 } from 'lucide-react';
 import {
   BarChart,
@@ -34,10 +38,63 @@ import {
   DepartmentId,
   OrderHandoffEntry,
   WorkshopSettings,
+  BackgroundTask,
+  AgentChatMessage,
+  PaidAdBudgetProposal,
 } from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
 import { AgentVoiceTextChat } from './AgentVoiceTextChat';
 import { AgentPortrait } from './AgentPortrait';
+
+const DESK_LABELS: Record<DepartmentId, string> = {
+  carla_atendimento: 'Carla (Atendimento)',
+  pedro_avaliacao: 'Pedro (Avaliação)',
+  lucas_projetos: 'Lucas (Projetos & Fabricação)',
+  ana_compras: 'Ana (Compras)',
+  mila_financeiro: 'Mila (Financeiro)',
+  castro_estrategia: 'Castro (Estratégia)',
+  julia_marketing: 'Júlia (Marketing)',
+  supervisora_geral: 'Helena (Supervisora)',
+  tapeceiro_tecnico: 'Tapeceiro Técnico',
+};
+
+const TASK_STATUS_LABELS: Record<string, string> = {
+  aguardando_aprovacao: 'Aguardando Aprovação',
+  na_fila: 'Na Fila',
+  executando: 'Executando',
+  concluida: 'Concluída',
+  falhou: 'Falhou',
+  cancelada: 'Cancelada',
+};
+
+// Exibição de horários sempre no fuso de Fortaleza (America/Fortaleza), conforme
+// pedido — os dados ficam armazenados em ISO/UTC, só a exibição muda.
+const formatFortalezaDateTime = (iso?: string): string => {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString('pt-BR', {
+      timeZone: 'America/Fortaleza',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
+};
+
+const isTodayInFortaleza = (iso?: string): boolean => {
+  if (!iso) return false;
+  try {
+    const todayKey = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Fortaleza' });
+    const dateKey = new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Fortaleza' });
+    return todayKey === dateKey;
+  } catch {
+    return false;
+  }
+};
 
 interface SupervisorDeskProps {
   attendances: AttendanceRecord[];
@@ -69,8 +126,169 @@ export const SupervisorDesk: React.FC<SupervisorDeskProps> = ({
   className = '',
 }) => {
   const handleOpenAttendance = onOpenOrder || onOpenOrderWorkflow;
-  const [activeTab, setActiveTab] = useState<'painel' | 'pedidos' | 'campanhas' | 'compras' | 'chat'>('painel');
+  const [activeTab, setActiveTab] = useState<
+    'painel' | 'pedidos' | 'campanhas' | 'compras' | 'automacao' | 'chat'
+  >('painel');
   const [searchTerm, setSearchTerm] = useState('');
+
+  // --- Automação & Tarefas (seção real, nunca simulada — ver /api/tasks e
+  // /api/chat/history no servidor) ---
+  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
+  const [agentChatsByDesk, setAgentChatsByDesk] = useState<Record<string, AgentChatMessage[]>>({});
+  const [isLoadingAutomation, setIsLoadingAutomation] = useState(false);
+  const [automationSettings, setAutomationSettings] = useState<WorkshopSettings>(settings);
+  const [isTogglingAutomation, setIsTogglingAutomation] = useState(false);
+
+  // --- Anúncios pagos aguardando aprovação de orçamento (ver /api/julia/paid-ads/*) ---
+  const [paidAdProposals, setPaidAdProposals] = useState<PaidAdBudgetProposal[]>([]);
+  const [paidAdActionTarget, setPaidAdActionTarget] = useState<{ id: string; action: 'approve' | 'reject' } | null>(
+    null
+  );
+  const [paidAdActorName, setPaidAdActorName] = useState('');
+  const [paidAdActionNotes, setPaidAdActionNotes] = useState('');
+  const [isSubmittingPaidAdAction, setIsSubmittingPaidAdAction] = useState(false);
+
+  useEffect(() => {
+    setAutomationSettings(settings);
+  }, [settings]);
+
+  const loadAutomationData = useCallback(async () => {
+    setIsLoadingAutomation(true);
+    try {
+      const [tasksRes, chatRes, juliaRes] = await Promise.all([
+        fetch('/api/tasks'),
+        fetch('/api/chat/history'),
+        fetch('/api/julia'),
+      ]);
+      if (tasksRes.ok) {
+        const tasksData = await tasksRes.json();
+        if (tasksData.ok) setBackgroundTasks(tasksData.tasks || []);
+      }
+      if (chatRes.ok) {
+        const chatData = await chatRes.json();
+        if (chatData.ok) setAgentChatsByDesk(chatData.agentChats || {});
+      }
+      if (juliaRes.ok) {
+        const juliaData = await juliaRes.json();
+        if (juliaData.ok) setPaidAdProposals(juliaData.juliaData?.paidAdProposals || []);
+      }
+    } catch {
+      // painel segue mostrando o último dado carregado — sem fingir sucesso
+    } finally {
+      setIsLoadingAutomation(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'automacao') {
+      loadAutomationData();
+    }
+  }, [activeTab, loadAutomationData]);
+
+  const handleCancelTask = async (taskId: string) => {
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/cancel`, { method: 'POST' });
+      if (res.ok) {
+        await loadAutomationData();
+      }
+    } catch {
+      // mantém o estado anterior visível em caso de falha de rede
+    }
+  };
+
+  // Aprovar/rejeitar uma proposta de orçamento de anúncio pago — sempre uma
+  // ação humana explícita, com nome de quem decidiu obrigatório; nunca chamado
+  // pelo chat da Júlia.
+  const handleSubmitPaidAdAction = async () => {
+    if (!paidAdActionTarget) return;
+    if (!paidAdActorName.trim()) return;
+    setIsSubmittingPaidAdAction(true);
+    try {
+      const endpoint =
+        paidAdActionTarget.action === 'approve'
+          ? `/api/julia/paid-ads/${paidAdActionTarget.id}/approve`
+          : `/api/julia/paid-ads/${paidAdActionTarget.id}/reject`;
+      const bodyKey = paidAdActionTarget.action === 'approve' ? 'approvedBy' : 'rejectedBy';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [bodyKey]: paidAdActorName.trim(), notes: paidAdActionNotes.trim() }),
+      });
+      if (res.ok) {
+        setPaidAdActionTarget(null);
+        setPaidAdActorName('');
+        setPaidAdActionNotes('');
+        await loadAutomationData();
+      }
+    } catch {
+      // mantém o estado anterior visível em caso de falha de rede
+    } finally {
+      setIsSubmittingPaidAdAction(false);
+    }
+  };
+
+  const handleToggleAutomationPaused = async () => {
+    setIsTogglingAutomation(true);
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ automationPaused: !automationSettings.automationPaused }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) setAutomationSettings(data.settings);
+    } finally {
+      setIsTogglingAutomation(false);
+    }
+  };
+
+  const handleToggleCarlaAutoReply = async () => {
+    setIsTogglingAutomation(true);
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          carlaAutoReply: {
+            ...(automationSettings.carlaAutoReply || {}),
+            enabled: !automationSettings.carlaAutoReply?.enabled,
+            updatedAt: new Date().toISOString(),
+          },
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) setAutomationSettings(data.settings);
+    } finally {
+      setIsTogglingAutomation(false);
+    }
+  };
+
+  // Última atividade real por mesa (última mensagem registrada no chat da mesa).
+  const lastActivityByDesk = useMemo(() => {
+    const result: Partial<Record<DepartmentId, AgentChatMessage>> = {};
+    for (const deskId of Object.keys(DESK_LABELS) as DepartmentId[]) {
+      const msgs = agentChatsByDesk[deskId] || [];
+      if (msgs.length > 0) {
+        result[deskId] = msgs[msgs.length - 1];
+      }
+    }
+    return result;
+  }, [agentChatsByDesk]);
+
+  // Resumo do dia (fuso America/Fortaleza) a partir de registros reais — nunca
+  // inventa atividade quando não houver nada registrado hoje.
+  const todaySummary = useMemo(() => {
+    const tasksToday = backgroundTasks.filter((t) => isTodayInFortaleza(t.createdAt));
+    const completedToday = tasksToday.filter((t) => t.status === 'concluida').length;
+    const failedToday = tasksToday.filter((t) => t.status === 'falhou').length;
+    const pendingToday = tasksToday.filter((t) => t.status === 'na_fila' || t.status === 'executando').length;
+    let messagesToday = 0;
+    for (const msgs of Object.values(agentChatsByDesk)) {
+      messagesToday += msgs.filter((m) => isTodayInFortaleza(m.timestamp)).length;
+    }
+    const hasAnyActivity = tasksToday.length > 0 || messagesToday > 0;
+    return { completedToday, failedToday, pendingToday, messagesToday, hasAnyActivity, totalTasksToday: tasksToday.length };
+  }, [backgroundTasks, agentChatsByDesk]);
 
   // Cálculos para o Gráfico de Atendimentos por Mês
   const last12MonthsData = useMemo(() => {
@@ -310,7 +528,8 @@ export const SupervisorDesk: React.FC<SupervisorDeskProps> = ({
           { id: 'pedidos', label: `2. Todos os Pedidos (${totalOrders})` },
           { id: 'campanhas', label: `3. Campanhas Marketing (${scheduledCampaigns.length})` },
           { id: 'compras', label: `4. Compras & Estoque Crítico (${criticalMaterials.length})` },
-          { id: 'chat', label: '5. Chat de Voz & Texto com Helena' },
+          { id: 'automacao', label: `5. Automação & Tarefas (${backgroundTasks.filter((t) => t.status === 'na_fila' || t.status === 'executando').length})` },
+          { id: 'chat', label: '6. Chat de Voz & Texto com Helena' },
         ].map((t) => (
           <button
             key={t.id}
@@ -659,6 +878,385 @@ export const SupervisorDesk: React.FC<SupervisorDeskProps> = ({
                   })}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* ABA 5: AUTOMAÇÃO & TAREFAS — dados reais de BackgroundTask e agentChats,
+             nunca uma simulação. "Concluída" só aparece quando a própria tarefa
+             registrou um resultado comprovado (ver executeBackgroundTask no servidor). */}
+        {activeTab === 'automacao' && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="font-bold text-sm text-[#181512]">
+                Automação do Escritório — Estado Real do Sistema
+              </h3>
+              <button
+                type="button"
+                onClick={loadAutomationData}
+                disabled={isLoadingAutomation}
+                className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] text-xs font-semibold text-[#181512] hover:bg-[#FAF8F5] flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingAutomation ? 'animate-spin' : ''}`} />
+                <span>Atualizar</span>
+              </button>
+            </div>
+
+            {/* Controles de pausa/retomada — nunca reenvia tarefas já concluídas */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 rounded-xl border border-[#E5DEC9] bg-[#FAF8F5] flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold text-[#181512]">Automação Geral do Escritório</p>
+                  <p className="text-[11px] text-[#6B6257] mt-0.5">
+                    {automationSettings.automationPaused
+                      ? 'Pausada — nenhuma tarefa nova será processada até retomar.'
+                      : 'Em funcionamento (depende do gatilho externo estar configurado — ver seção 5 da documentação).'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleAutomationPaused}
+                  disabled={isTogglingAutomation}
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 ${
+                    automationSettings.automationPaused
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                      : 'bg-[#2E2722] hover:bg-[#3D352E] text-white'
+                  }`}
+                >
+                  {automationSettings.automationPaused ? (
+                    <>
+                      <PlayCircle className="w-3.5 h-3.5" />
+                      <span>Retomar</span>
+                    </>
+                  ) : (
+                    <>
+                      <PauseCircle className="w-3.5 h-3.5" />
+                      <span>Pausar</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="p-4 rounded-xl border border-[#E5DEC9] bg-[#FAF8F5] flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold text-[#181512]">Resposta Automática da Carla (WhatsApp)</p>
+                  <p className="text-[11px] text-[#6B6257] mt-0.5">
+                    {automationSettings.carlaAutoReply?.enabled
+                      ? 'Ligada — Carla responde sozinha mensagens novas, salvo conversas pausadas para atendimento humano.'
+                      : 'Desligada — nenhuma resposta automática é enviada; só o atendimento manual.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleCarlaAutoReply}
+                  disabled={isTogglingAutomation}
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 ${
+                    automationSettings.carlaAutoReply?.enabled
+                      ? 'bg-[#2E2722] hover:bg-[#3D352E] text-white'
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  }`}
+                >
+                  {automationSettings.carlaAutoReply?.enabled ? (
+                    <>
+                      <PauseCircle className="w-3.5 h-3.5" />
+                      <span>Desligar</span>
+                    </>
+                  ) : (
+                    <>
+                      <PlayCircle className="w-3.5 h-3.5" />
+                      <span>Ligar</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Status real das integrações oficiais por canal */}
+            <div className="space-y-2">
+              <h4 className="font-bold text-xs text-[#181512] uppercase tracking-wider">Integrações Oficiais por Canal</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {(['whatsapp', 'instagram', 'facebook'] as const).map((channel) => {
+                  const status = automationSettings.integrations?.[channel];
+                  const state = status?.state || 'nao_configurado';
+                  const badgeClass =
+                    state === 'conectado'
+                      ? 'bg-emerald-100 text-emerald-900'
+                      : state === 'pendente'
+                      ? 'bg-amber-100 text-amber-900'
+                      : state === 'erro'
+                      ? 'bg-red-100 text-red-900'
+                      : 'bg-stone-100 text-stone-700';
+                  const label =
+                    state === 'conectado' ? 'Conectado' : state === 'pendente' ? 'Pendente' : state === 'erro' ? 'Erro' : 'Não Configurado';
+                  return (
+                    <div key={channel} className="p-3 rounded-xl border border-[#E5DEC9] bg-white">
+                      <p className="text-xs font-bold text-[#181512] capitalize">{channel}</p>
+                      <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${badgeClass}`}>
+                        {label}
+                      </span>
+                      {status?.lastCheckedAt && (
+                        <p className="text-[10px] text-[#6B6257] mt-1">
+                          Última verificação: {formatFortalezaDateTime(status.lastCheckedAt)}
+                        </p>
+                      )}
+                      {status?.errorMessage && (
+                        <p className="text-[10px] text-red-700 mt-1">{status.errorMessage}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Resumo do dia — sempre a partir de registros reais */}
+            <div className="p-4 rounded-xl border border-[#E5DEC9] bg-[#FAF8F5]">
+              <h4 className="font-bold text-xs text-[#181512] uppercase tracking-wider mb-2">
+                Resumo de Hoje ({new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Fortaleza' })} — horário de Fortaleza)
+              </h4>
+              {!todaySummary.hasAnyActivity ? (
+                <p className="text-xs text-[#6B6257]">Sem atividade registrada hoje.</p>
+              ) : (
+                <p className="text-xs text-[#57534E]">
+                  <strong className="text-emerald-700">{todaySummary.completedToday}</strong> tarefa(s) concluída(s) ·{' '}
+                  <strong className="text-red-700">{todaySummary.failedToday}</strong> falhou(aram) ·{' '}
+                  <strong className="text-amber-700">{todaySummary.pendingToday}</strong> na fila/executando ·{' '}
+                  <strong className="text-[#181512]">{todaySummary.messagesToday}</strong> mensagem(ns) recebida(s)/enviada(s) nos
+                  chats dos agentes.
+                </p>
+              )}
+            </div>
+
+            {/* Última atividade por mesa */}
+            <div className="space-y-2">
+              <h4 className="font-bold text-xs text-[#181512] uppercase tracking-wider">Última Atividade por Mesa</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {(Object.keys(DESK_LABELS) as DepartmentId[]).map((deskId) => {
+                  const last = lastActivityByDesk[deskId];
+                  return (
+                    <div key={deskId} className="p-3 rounded-xl border border-[#E5DEC9] bg-white">
+                      <p className="text-xs font-bold text-[#181512]">{DESK_LABELS[deskId]}</p>
+                      {last ? (
+                        <>
+                          <p className="text-[10px] text-[#6B6257] mt-1">{formatFortalezaDateTime(last.timestamp)}</p>
+                          <p className="text-[11px] text-[#57534E] mt-0.5 line-clamp-2">
+                            {last.sender === 'agent' ? `${last.agentName}: ` : 'Cliente/Usuário: '}
+                            {last.text}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-[11px] text-[#6B6257] mt-1">Sem atividade registrada.</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Anúncios pagos aguardando aprovação de orçamento — nunca aprovados pela
+                Júlia nem por qualquer automação; só por um humano aqui ou em Castro. */}
+            <div className="space-y-2">
+              <h4 className="font-bold text-xs text-[#181512] uppercase tracking-wider flex items-center gap-1.5">
+                <Megaphone className="w-4 h-4 text-[#9A7138]" />
+                <span>
+                  Anúncios Pagos Aguardando Aprovação (
+                  {paidAdProposals.filter((p) => p.status === 'aguardando_aprovacao').length})
+                </span>
+              </h4>
+              {paidAdProposals.length === 0 ? (
+                <div className="p-4 rounded-xl bg-[#FAF8F5] border border-[#E5DEC9] text-xs text-[#6B6257] text-center">
+                  Nenhuma proposta de anúncio pago registrada ainda.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {paidAdProposals.map((p) => (
+                    <div key={p.id} className="p-3 rounded-xl border border-[#E5DEC9] bg-white text-xs space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="font-semibold text-[#181512]">
+                            {p.objective} · {p.channel} · R$ {(p.budgetCents / 100).toFixed(2)} ({p.budgetPeriod}) ·{' '}
+                            {p.durationDays} dia(s)
+                          </p>
+                          <p className="text-[11px] text-[#57534E] mt-0.5">
+                            Público: {p.targetAudienceDescription}
+                          </p>
+                          <p className="text-[10px] text-[#6B6257] mt-0.5">
+                            Proposto por {p.proposedBy} em {formatFortalezaDateTime(p.proposedAt)}
+                          </p>
+                          {p.approval && (
+                            <p className="text-[10px] text-[#6B6257] mt-0.5">
+                              {p.approval.approved ? 'Aprovado' : 'Rejeitado'} por {p.approval.approvedBy} em{' '}
+                              {formatFortalezaDateTime(p.approval.approvedAt)}
+                              {p.approval.notes ? ` — "${p.approval.notes}"` : ''}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              p.status === 'aprovado' || p.status === 'em_veiculacao'
+                                ? 'bg-emerald-100 text-emerald-900'
+                                : p.status === 'rejeitado' || p.status === 'falhou'
+                                ? 'bg-red-100 text-red-900'
+                                : 'bg-amber-100 text-amber-900'
+                            }`}
+                          >
+                            {p.status.replace(/_/g, ' ')}
+                          </span>
+                          {p.status === 'aguardando_aprovacao' && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setPaidAdActionTarget({ id: p.id, action: 'approve' })}
+                                className="px-2.5 py-1 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] text-white text-[11px] font-semibold"
+                              >
+                                Aprovar Orçamento
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPaidAdActionTarget({ id: p.id, action: 'reject' })}
+                                className="px-2.5 py-1 rounded-lg border border-red-300 text-red-700 hover:bg-red-50 text-[11px] font-semibold"
+                              >
+                                Rejeitar
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {paidAdActionTarget?.id === p.id && (
+                        <div className="p-3 rounded-lg bg-[#FAF8F5] border border-[#E5DEC9] space-y-2">
+                          <p className="text-[11px] font-semibold text-[#181512]">
+                            {paidAdActionTarget.action === 'approve'
+                              ? 'Confirmar aprovação do orçamento'
+                              : 'Confirmar rejeição da proposta'}
+                          </p>
+                          <input
+                            type="text"
+                            value={paidAdActorName}
+                            onChange={(e) => setPaidAdActorName(e.target.value)}
+                            placeholder="Seu nome (obrigatório)"
+                            className="w-full p-2 rounded-lg border border-[#D6CFC5] text-xs"
+                          />
+                          <textarea
+                            value={paidAdActionNotes}
+                            onChange={(e) => setPaidAdActionNotes(e.target.value)}
+                            placeholder="Observações (opcional)"
+                            rows={2}
+                            className="w-full p-2 rounded-lg border border-[#D6CFC5] text-xs"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setPaidAdActionTarget(null)}
+                              className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] text-[#57534E] text-[11px] font-medium"
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleSubmitPaidAdAction}
+                              disabled={!paidAdActorName.trim() || isSubmittingPaidAdAction}
+                              className="px-3 py-1.5 rounded-lg bg-[#181512] hover:bg-[#2E2722] text-white text-[11px] font-semibold disabled:opacity-40"
+                            >
+                              {isSubmittingPaidAdAction ? 'Enviando...' : 'Confirmar'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Fila de tarefas em segundo plano */}
+            <div className="space-y-2">
+              <h4 className="font-bold text-xs text-[#181512] uppercase tracking-wider flex items-center gap-1.5">
+                <ListChecks className="w-4 h-4 text-[#9A7138]" />
+                <span>Fila de Tarefas em Segundo Plano ({backgroundTasks.length})</span>
+              </h4>
+              {backgroundTasks.length === 0 ? (
+                <div className="p-4 rounded-xl bg-[#FAF8F5] border border-[#E5DEC9] text-xs text-[#6B6257] text-center">
+                  Nenhuma tarefa registrada ainda.
+                </div>
+              ) : (
+                <div className="border border-[#E5DEC9] rounded-xl overflow-hidden overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-[#181512] text-[#F9F6F0]">
+                        <th className="py-2 px-3">Ação</th>
+                        <th className="py-2 px-3">Mesa</th>
+                        <th className="py-2 px-3">Agendada para</th>
+                        <th className="py-2 px-3">Status</th>
+                        <th className="py-2 px-3">Resultado / Motivo</th>
+                        <th className="py-2 px-3 text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#EFECE6]">
+                      {[...backgroundTasks]
+                        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                        .map((task) => (
+                          <tr key={task.id} className="hover:bg-[#FAF8F5] align-top">
+                            <td className="py-2 px-3">
+                              <p className="font-semibold text-[#181512]">{task.action}</p>
+                              <p className="text-[10px] text-[#6B6257]">{task.authorization}</p>
+                            </td>
+                            <td className="py-2 px-3">{DESK_LABELS[task.agentId] || task.agentId}</td>
+                            <td className="py-2 px-3 whitespace-nowrap">{formatFortalezaDateTime(task.scheduledFor)}</td>
+                            <td className="py-2 px-3">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                  task.status === 'concluida'
+                                    ? 'bg-emerald-100 text-emerald-900'
+                                    : task.status === 'falhou'
+                                    ? 'bg-red-100 text-red-900'
+                                    : task.status === 'cancelada'
+                                    ? 'bg-stone-200 text-stone-700'
+                                    : task.status === 'executando'
+                                    ? 'bg-blue-100 text-blue-900'
+                                    : 'bg-amber-100 text-amber-900'
+                                }`}
+                              >
+                                {TASK_STATUS_LABELS[task.status] || task.status}
+                              </span>
+                              <p className="text-[10px] text-[#6B6257] mt-1">
+                                Tentativa {task.attempts}/{task.maxAttempts}
+                              </p>
+                            </td>
+                            <td className="py-2 px-3 max-w-xs">
+                              {task.result && <p className="text-emerald-800">{task.result}</p>}
+                              {task.errorMessage && <p className="text-red-700">{task.errorMessage}</p>}
+                              {!task.result && !task.errorMessage && <span className="text-[#6B6257]">—</span>}
+                            </td>
+                            <td className="py-2 px-3 text-right">
+                              <div className="flex flex-col items-end gap-1">
+                                {task.relatedOrderId && handleOpenAttendance && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenAttendance(task.relatedOrderId!)}
+                                    className="text-[#9A7138] font-semibold hover:underline text-[11px]"
+                                  >
+                                    Ver Pedido
+                                  </button>
+                                )}
+                                {(task.status === 'na_fila' || task.status === 'executando') && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCancelTask(task.id)}
+                                    className="text-red-700 font-semibold hover:underline text-[11px] flex items-center gap-1"
+                                  >
+                                    <XCircle className="w-3 h-3" />
+                                    <span>Cancelar</span>
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}

@@ -234,6 +234,7 @@ export interface AttendancePhoto {
   id: string;
   code: string; // F-01, F-02...
   attendanceId: string;
+  productId?: string; // id de um OrderProduct — ausente = foto do produto principal
   furnitureLabel: string;
   category: PhotoCategory;
   caption: string;
@@ -284,6 +285,309 @@ export type AttendanceRequestType =
   | 'acompanhamento'
   | 'reclamacao';
 
+// Cadastro geral de clientes (mesa da Carla e área Clientes) — reutilizado em qualquer
+// atendimento novo, para não recadastrar a mesma pessoa a cada pedido.
+export interface ClientAddress {
+  cep?: string;
+  street?: string; // rua
+  number?: string;
+  complement?: string;
+  neighborhood?: string; // bairro
+  city?: string;
+  state?: string; // UF
+  referencePoint?: string; // ponto de referência (opcional)
+}
+
+export interface ClientRecord {
+  id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  address: ClientAddress;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Produtos além do principal, no mesmo pedido (ex.: Carla cadastra sofá + 2 poltronas
+// num só atendimento). O produto principal continua sendo os campos já existentes
+// (furnitureType/piecesCount/approxMeasurements/photos sem productId) — isto é só a
+// lista de produtos ADICIONAIS, para não exigir migração de nenhum registro antigo.
+export interface OrderProduct {
+  id: string;
+  description: string;
+  quantity: string; // texto livre, igual a piecesCount
+  measurements?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+// Avaliação técnica enxuta por produto (Pedro/Lucas), identificada por productId:
+// 'primary' para o produto principal, ou o id de um OrderProduct.
+export interface ProductMaterialNeed {
+  catalogItemId?: string;
+  name: string;
+  quantity: number | null; // null = a levantar
+  unit: string;
+  unitCostCents: number | null; // null = pendente — nunca inventado
+}
+
+export interface ProductTechnicalEvaluation {
+  productId: string; // 'primary' | OrderProduct.id
+  servicesNeeded: string;
+  materials: ProductMaterialNeed[];
+  laborHours?: number | null;
+  laborCostCents?: number | null;
+  estimatedDeadlineDays?: number | null;
+  notes?: string;
+  evaluatedBy?: string;
+  evaluatedAt?: string;
+}
+
+// Orçamento itemizado (Mila), paralelo a BudgetData/OrderFinancialData — não os
+// substitui. Só existe quando o atendimento passa pelo fluxo de negociação novo.
+export interface ItemizedBudgetEntry {
+  productId: string; // 'primary' | OrderProduct.id
+  items: BudgetLineItem[];
+  sellingPriceCents: number | null;
+  costsPending: boolean; // true se algum item tiver unitCostCents: null
+}
+
+export interface ItemizedBudget {
+  byProduct: ItemizedBudgetEntry[];
+  appliedMarginPercent?: number;
+  appliedFeeCents?: number;
+  discountCents?: number;
+  totalSellingPriceCents: number | null;
+  confirmedByResponsible: boolean;
+  responsibleName?: string;
+  confirmedAt?: string;
+}
+
+// Negociação + acompanhamento de pagamento — uma única área, usada tanto na mesa da
+// Carla quanto na mesa da Mila (mesmos dados, mesmas rotas, sem duplicar).
+export type PaymentMethod = 'pix' | 'dinheiro' | 'cartao' | 'outro';
+export type OrderPaymentStatus = 'combinada' | 'informada_aguardando_confirmacao' | 'confirmada';
+
+export interface OrderInstallment {
+  index: number;
+  valueCents: number;
+  dueDate: string;
+  method: PaymentMethod;
+  status: OrderPaymentStatus;
+}
+
+export interface OrderNegotiation {
+  finalPriceCents: number;
+  discountCents: number;
+  downPayment?: {
+    amountCents: number;
+    method: PaymentMethod;
+    status: OrderPaymentStatus;
+  };
+  balanceMode: 'parcelado' | 'integral' | 'na_entrega';
+  installments: OrderInstallment[];
+  deliveryDate?: string;
+  deliveryDateValidatedBy?: string;
+  // Trava de exceção: true quando o desconto/preço sai da política configurada em
+  // WorkshopSettings.negotiationPolicy — bloqueia clientDecision até aprovação do dono.
+  requiresOwnerApproval: boolean;
+  ownerApproval?: { approved: boolean; approvedBy: string; approvedAt: string; notes?: string };
+  clientDecision?: 'aceito' | 'recusado';
+  clientDecisionAt?: string;
+  clientDecisionBy?: string;
+  // Mesmo padrão de "staleness" já usado em BudgetData.clientDecisionPriceCentsSnapshot.
+  clientDecisionPriceCentsSnapshot?: number | null;
+  transactions: FinancialTransaction[];
+  updatedAt: string;
+}
+
+// Vistoria presencial, reavaliação técnica, manual de execução e controle de
+// qualidade — tudo aditivo, por produto (productId: 'primary' | OrderProduct.id)
+// e por peça individual dentro da quantidade (unitIndex), integrado às mesas
+// de Pedro e Lucas sem alterar o fluxo de 11 áreas nem o de negociação já
+// existentes.
+
+// Componentes aplicáveis à vistoria (14 itens), reaproveitando nomes já
+// usados em FurnitureArea/ReuseComponentType onde fazem sentido.
+export type InspectionComponentKey =
+  | 'estrutura' | 'base' | 'assento' | 'encosto' | 'bracos' | 'pes'
+  | 'percintas' | 'molas' | 'mecanismos' | 'espumas' | 'enchimentos'
+  | 'revestimento' | 'costuras' | 'fixacoes';
+
+export const INSPECTION_COMPONENT_LABELS: Record<InspectionComponentKey, string> = {
+  estrutura: 'Estrutura',
+  base: 'Base',
+  assento: 'Assento',
+  encosto: 'Encosto',
+  bracos: 'Braços',
+  pes: 'Pés',
+  percintas: 'Percintas',
+  molas: 'Molas',
+  mecanismos: 'Mecanismos',
+  espumas: 'Espumas',
+  enchimentos: 'Enchimentos',
+  revestimento: 'Revestimento',
+  costuras: 'Costuras',
+  fixacoes: 'Fixações',
+};
+
+export type InspectionMarking =
+  | 'bom' | 'reparar' | 'substituir' | 'reaproveitar' | 'nao_verificado' | 'nao_se_aplica';
+
+export const INSPECTION_MARKING_LABELS: Record<InspectionMarking, string> = {
+  bom: 'Bom',
+  reparar: 'Reparar',
+  substituir: 'Substituir',
+  reaproveitar: 'Reaproveitar',
+  nao_verificado: 'Não verificado',
+  nao_se_aplica: 'Não se aplica',
+};
+
+// Reforma: um registro por componente aplicável, por peça individual.
+export interface InspectionComponentEntry {
+  id: string;
+  component: InspectionComponentKey;
+  locationLabel?: string;              // identificação/localização na peça
+  materialSpecification?: string;      // material e especificação verificados
+  quantity?: number | null;
+  unit?: string;
+  measurementValue?: string;           // medida real, com unidade explícita no texto
+  measurementStatus: 'medido' | 'a_medir'; // nunca "medido" só por foto
+  condition: InspectionMarking;
+  defectObserved?: string;
+  possibleCause?: string;
+  causeConfirmed: boolean;             // hipótese vs. confirmado presencialmente
+  discoveredAfterDisassembly: boolean; // dano descoberto após desmontagem
+  detailPhotoId?: string;              // referencia AttendancePhoto.id
+  actionRequired?: string;
+  responsibleForCheck?: string;
+  notes?: string;
+  origin: InformationOrigin;           // reaproveita o enum já existente
+}
+
+// Fabricação nova: ficha própria conferindo projeto/medidas/componentes/
+// materiais/requisitos — defeitos encontrados viram não conformidade.
+export interface ManufacturingInspectionEntry {
+  id: string;
+  item: string;
+  specification?: string;  // o que a ficha técnica/projeto pede
+  found?: string;           // o que foi conferido de fato
+  status: InspectionMarking;
+  isNonConformance: boolean;
+  detailPhotoId?: string;
+  notes?: string;
+}
+
+export interface InspectionSheet {
+  id: string;
+  orderId: string;
+  productId: string;   // 'primary' | OrderProduct.id
+  unitIndex: number;   // identifica a peça individual dentro da quantidade do produto
+  unitLabel?: string;  // ex.: "Cadeira 1 de 4"
+  kind: 'reforma' | 'fabricacao_nova';
+  responsibleName?: string;
+  version: number;     // nunca sobrescrita — nova versão arquiva a anterior
+  status: 'gerada' | 'enviada_para_reavaliacao' | 'reavaliada';
+  components?: InspectionComponentEntry[];              // reforma
+  manufacturingChecks?: ManufacturingInspectionEntry[];  // fabricação nova
+  createdAt: string;
+  submittedPhotoIds?: string[];     // novas fotos enviadas junto com a devolução
+  submittedFormImageId?: string;    // foto da ficha marcada manualmente
+  aiReadResult?: InspectionFormReadResult;
+  confirmedAt?: string;
+  confirmedBy?: string;
+}
+
+export type ChecklistFieldReadStatus = 'lido' | 'ilegivel' | 'ausente';
+export interface InspectionFormReadField {
+  entryId: string; // id do InspectionComponentEntry/ManufacturingInspectionEntry correspondente
+  readStatus: ChecklistFieldReadStatus;
+  readCondition?: InspectionMarking;
+  readMeasurement?: string;
+  readNotes?: string;
+}
+export interface InspectionFormReadResult {
+  readAt: string;
+  fields: InspectionFormReadField[];
+  overallNotes?: string;
+  pdfReadUnavailable?: boolean; // true quando a tentativa de leitura de PDF falhou (fallback honesto)
+}
+
+// Reavaliação técnica: compara avaliação inicial x dados confirmados na devolução.
+export interface TechnicalReassessment {
+  id: string;
+  inspectionSheetId: string;
+  productId: string;
+  unitIndex: number;
+  version: number;
+  comparedToSheetVersion: number;
+  revisedDiagnosis: string;
+  updatedServicesNeeded: string;
+  updatedMaterials: ProductMaterialNeed[];
+  pendingItems: string[];
+  changesFromPrevious: string[];
+  costImpact: 'sem_impacto' | 'aumento' | 'reducao' | 'a_avaliar';
+  deadlineImpactDays?: number | null;
+  requiresNegotiationReview: boolean; // true se escopo/preço já aceitos mudam
+  createdBy: string;
+  createdAt: string;
+}
+
+// Manual de execução — PDF A4, rascunho até aprovação.
+export interface ExecutionManualStep {
+  stepNumber: number;
+  stage: 'preparacao' | 'montagem' | 'estofamento' | 'acabamento';
+  title: string;
+  description: string;
+  isIllustrative: boolean; // true = desenho ilustrativo, identificado como tal no PDF
+  referencePhotoId?: string;
+  inspectionPoints: string[];
+}
+export interface ExecutionManual {
+  id: string;
+  orderId: string;
+  productId: string;
+  version: number;
+  status: 'rascunho' | 'aprovado';
+  approvedBy?: string;
+  approvedAt?: string;
+  coverResponsibles: string[];
+  views: Array<{ label: string; photoId?: string; isIllustrative: boolean }>;
+  explodedView?: { available: boolean; note: string };
+  partsList: BudgetLineItem[];
+  cuttingPlanNote: string;
+  fabricGrainDirection?: 'Vertical' | 'Horizontal' | 'Indiferente';
+  sewingInstructions: { seamType?: string; thread?: string; stitch?: string; marginsNote?: string; notes?: string };
+  steps: ExecutionManualStep[];
+  createdAt: string;
+}
+
+// Controle de qualidade — resultado fechado, nunca "aprovado" com pendência.
+export type QcResult = 'conforme' | 'nao_conforme' | 'nao_se_aplica';
+export interface QcCheckEntry {
+  id: string;
+  item: string;
+  plannedValue?: string;  // vem só da ficha técnica/manual já validados
+  foundValue?: string;
+  toleranceFromManual?: string;
+  result?: QcResult; // ausente = ainda não verificado; servidor exige todos preenchidos para aprovar
+  photoId?: string;
+  notes?: string;
+}
+export interface QualityControlInspection {
+  id: string;
+  orderId: string;
+  productId: string;
+  unitIndex: number;
+  manualVersion: number;
+  checks: QcCheckEntry[];
+  responsibleName: string;
+  date: string;
+  outcome: 'aprovado' | 'retrabalho' | 'aguardando_verificacao';
+  reworkOfInspectionId?: string;
+}
+
 export interface ComplaintEntry {
   id: string;
   createdAt: string;
@@ -322,10 +626,18 @@ export interface AttendanceRecord {
 
   // Cadastro inicial feito pela Carla (Atendimento ao Cliente)
   requestType?: AttendanceRequestType;
+  clientId?: string; // vínculo com o cadastro geral de clientes (ClientRecord), quando houver
   neighborhood?: string; // bairro
   city?: string;
   fullAddress?: string; // endereço completo, quando necessário para retirada/entrega
   complaints?: ComplaintEntry[];
+
+  // Origem do contato quando vindo de um canal integrado (ex.: WhatsApp). Só preenchido
+  // quando a origem puder ser identificada de verdade — nunca "chute" a partir de um clique
+  // no anúncio, que não é mensagem enviada pelo cliente.
+  originChannel?: 'whatsapp' | 'manual';
+  originCampaignId?: string;
+  originIdentified?: boolean; // false => exibir "origem não identificada"
 
   // 4. Fotos
   photos: AttendancePhoto[];
@@ -380,6 +692,22 @@ export interface AttendanceRecord {
   technicalPlanRevisions?: ManufacturingProjectData[];
   financialData?: OrderFinancialData;
   isTestScenario?: boolean;
+
+  // Vários produtos no mesmo pedido (além do principal, que são os campos já
+  // existentes acima). Avaliação técnica/orçamento por produto e a negociação são
+  // aditivos — um atendimento sem nenhum desses campos continua funcionando
+  // exatamente como hoje, usando budget/financialData normalmente.
+  additionalProducts?: OrderProduct[];
+  productEvaluations?: Record<string, ProductTechnicalEvaluation>; // chave: 'primary' | OrderProduct.id
+  itemizedBudget?: ItemizedBudget;
+  negotiation?: OrderNegotiation;
+
+  // Vistoria presencial, reavaliação, manual de execução e controle de
+  // qualidade — todos acumulados (nenhuma versão é sobrescrita/perdida).
+  inspectionSheets?: InspectionSheet[];
+  technicalReassessments?: TechnicalReassessment[];
+  executionManuals?: ExecutionManual[];
+  qualityControlHistory?: QualityControlInspection[];
 }
 
 export type RawMaterialCategory =
@@ -606,6 +934,75 @@ export interface AgentChatMessage {
     executedAt: string;
     executedBy: string;
   };
+  // Id da mensagem no canal externo (ex.: WhatsApp Cloud API) — usado só para evitar
+  // processar o mesmo evento de webhook duas vezes, nunca para provar nada por si só.
+  externalMessageId?: string;
+  externalChannel?: 'whatsapp';
+}
+
+// ----------------------------------------------------------------------------
+// TAREFAS EM SEGUNDO PLANO — execução persistente no servidor, independente de
+// qualquer página aberta. Ver processBackgroundTasks() em server.ts.
+// ----------------------------------------------------------------------------
+export type BackgroundTaskType =
+  | 'publicar_campanha'
+  | 'enviar_resposta_whatsapp'
+  | 'verificar_integracao'
+  | 'iniciar_campanha_paga';
+
+export type BackgroundTaskStatus =
+  | 'aguardando_aprovacao'
+  | 'na_fila'
+  | 'executando'
+  | 'concluida'
+  | 'falhou'
+  | 'cancelada';
+
+export interface BackgroundTask {
+  id: string;
+  type: BackgroundTaskType;
+  agentId: DepartmentId;
+  relatedOrderId?: string;
+  relatedCampaignId?: string;
+  channel?: 'whatsapp' | 'instagram' | 'facebook'; // canal afetado, quando aplicável
+  action: string; // descrição curta da ação solicitada
+  authorization: string; // quem/o que autorizou (ex.: "Aprovado por Edson em 30/10")
+  scheduledFor: string; // ISO — horário previsto de execução
+  startedAt?: string;
+  completedAt?: string;
+  status: BackgroundTaskStatus;
+  result?: string;
+  errorMessage?: string;
+  attempts: number;
+  maxAttempts: number;
+  idempotencyKey: string; // evita duplicar a mesma tarefa em reprocessamentos
+  createdAt: string;
+  createdBy?: string;
+  // Dados específicos de execução por tipo (ex.: telefone/texto de uma mensagem de
+  // WhatsApp a enviar) — evita um campo dedicado por tipo de tarefa.
+  payload?: Record<string, unknown>;
+}
+
+// Voz própria de um agente — uma voz REAL e distinta do sintetizador do navegador
+// (nunca apenas velocidade/tom diferentes de uma voz compartilhada).
+export interface AgentVoiceConfig {
+  voiceURI: string;
+  voiceName: string;
+  lang: string;
+  gender?: 'feminina' | 'masculina';
+  updatedAt: string;
+}
+
+// Status de uma integração oficial externa (WhatsApp Cloud API, Meta Graph API para
+// Instagram/Facebook, etc.). "conectado" só pode ser true depois de uma verificação real
+// contra o serviço — nunca setado manualmente "porque deveria funcionar".
+export type IntegrationConnectionState = 'nao_configurado' | 'pendente' | 'conectado' | 'erro';
+
+export interface IntegrationStatus {
+  state: IntegrationConnectionState;
+  lastCheckedAt?: string;
+  errorMessage?: string;
+  accountLabel?: string; // ex.: número do WhatsApp conectado, sem expor token
 }
 
 export interface WorkshopSettings {
@@ -620,6 +1017,37 @@ export interface WorkshopSettings {
   // Identidade Visual dos Agentes
   agentPortraitUpdatedAt?: Partial<Record<DepartmentId, string>>;
   officeCoverImageUpdatedAt?: string;
+  // Voz individual por agente (ver AgentVoiceConfig)
+  agentVoiceSettings?: Partial<Record<DepartmentId, AgentVoiceConfig>>;
+  // Status real das integrações oficiais externas, por canal
+  integrations?: {
+    whatsapp?: IntegrationStatus;
+    instagram?: IntegrationStatus;
+    facebook?: IntegrationStatus;
+  };
+  // Controles globais de automação (pausar/retomar sem reenviar tarefas concluídas)
+  automationPaused?: boolean;
+  automationPausedAt?: string;
+  automationPausedBy?: string;
+  // Atendimento automático da Carla: escopo, autorização e pausa — carla pode estar
+  // pausada mesmo com o resto da automação ativo (e vice-versa).
+  carlaAutoReply?: {
+    enabled: boolean;
+    scopeNote?: string;
+    pausedConversationIds?: string[]; // atendimentos com humano assumindo a conversa
+    updatedAt?: string;
+    updatedBy?: string;
+  };
+  // Política de margem/desconto/taxa aprovada pelo proprietário, aplicada pela Mila
+  // ao montar o orçamento itemizado. Sem isso configurado, a Mila usa os valores que
+  // digitar manualmente por pedido — nada é assumido silenciosamente.
+  negotiationPolicy?: {
+    defaultMarginPercent?: number;
+    maxDiscountPercent?: number;
+    feePercent?: number;
+    updatedAt?: string;
+    updatedBy?: string;
+  };
 }
 
 export type DeviceFormFactor = 'Computador' | 'Tablet' | 'Celular';
@@ -771,10 +1199,33 @@ export interface JuliaVoiceTextMessage {
 export type JuliaCampaignStatus =
   | 'Planejada'
   | 'Agendada'
+  | 'Enviada Manualmente'
   | 'Concluída'
   | 'Com Erro'
+  | 'Cancelada'
+  // valores legados — mantidos só para não quebrar dados antigos; normalizedCampaignStatus()
+  // os trata como sinônimos de 'Planejada'/'Concluída' na exibição.
   | 'Programada'
   | 'Publicada';
+
+// Confirmação de que a publicação realmente saiu no canal externo — só preenchido pelo
+// processador de tarefas em segundo plano (BackgroundTask), nunca por um clique humano direto.
+// "Concluída" sem este campo não deveria existir; é o que distingue uma publicação
+// comprovada de uma mensagem de intenção.
+export interface ExternalPublicationConfirmation {
+  confirmedAt: string; // quando o serviço externo confirmou (não quando o humano clicou)
+  externalId?: string; // id do post/mensagem no serviço externo, quando disponível
+  externalLink?: string; // link público do post, quando disponível
+  source: string; // ex.: "Meta Graph API", "WhatsApp Cloud API"
+}
+
+// Confirmação de que um humano enviou manualmente (ex.: abriu o WhatsApp Web e mandou na mão).
+// Distinta de ExternalPublicationConfirmation: é uma autodeclaração do humano, não uma prova
+// do serviço externo — por isso o status correspondente é "Enviada Manualmente", nunca "Concluída".
+export interface ManualSendConfirmation {
+  confirmedAt: string;
+  confirmedBy?: string;
+}
 
 export interface JuliaCampaignScheduleItem {
   id: string;
@@ -794,6 +1245,60 @@ export interface JuliaCampaignScheduleItem {
   integrationNote?: string;
   captionPreview: string;
   photoId?: string;
+  createdAt: string;
+  // Código de referência embutido no link/mensagem do anúncio, usado para identificar a
+  // campanha de origem quando o cliente responde (ver AttendanceRecord.originCampaignId).
+  referenceCode?: string;
+  externalConfirmation?: ExternalPublicationConfirmation;
+  manualSendConfirmation?: ManualSendConfirmation;
+  // Tarefa em segundo plano vinculada (quando agendada para publicação automática).
+  backgroundTaskId?: string;
+}
+
+// ----------------------------------------------------------------------------
+// ANÚNCIOS PAGOS — distintos da publicação orgânica acima. Uma proposta nasce
+// sempre travada ('aguardando_aprovacao'); só uma pessoa, nunca a IA, pode
+// aprovar (ver approval abaixo). Só depois de aprovada nasce uma BackgroundTask
+// do tipo 'iniciar_campanha_paga', e mesmo essa só executa de verdade quando
+// houver uma conta de anúncios da Meta conectada — sem isso, falha honestamente
+// como "aguardando_integracao", nunca finge veiculação nem gasta dinheiro.
+// ----------------------------------------------------------------------------
+export type PaidAdApprovalStatus =
+  | 'aguardando_aprovacao'
+  | 'aprovado'
+  | 'rejeitado'
+  | 'aguardando_integracao'
+  | 'em_veiculacao'
+  | 'pausado'
+  | 'encerrado'
+  | 'falhou';
+
+export type PaidAdObjective = 'Alcance' | 'Tráfego' | 'Mensagens' | 'Conversões';
+
+export interface PaidAdBudgetApproval {
+  approved: boolean;
+  approvedBy: string;
+  approvedAt: string;
+  notes: string;
+}
+
+export interface PaidAdBudgetProposal {
+  id: string;
+  projectId: string;
+  campaignScheduleItemId?: string;
+  objective: PaidAdObjective;
+  targetAudienceDescription: string;
+  budgetCents: number;
+  budgetPeriod: 'diario' | 'total';
+  durationDays: number;
+  channel: JuliaCampaignScheduleItem['channel'];
+  status: PaidAdApprovalStatus;
+  proposedBy: string;
+  proposedAt: string;
+  approval?: PaidAdBudgetApproval;
+  backgroundTaskId?: string;
+  // Só preenchido depois de uma confirmação real da Meta — nunca estimado.
+  externalCampaignId?: string;
   createdAt: string;
 }
 
@@ -822,6 +1327,7 @@ export interface JuliaDepartmentData {
   chatHistory: JuliaVoiceTextMessage[];
   campaigns: JuliaCampaignScheduleItem[];
   dailyReports: JuliaDailyReport[];
+  paidAdProposals?: PaidAdBudgetProposal[];
 }
 
 export interface RealtimeSyncEvent {
@@ -870,7 +1376,8 @@ export type OrderDeskStatus =
   | 'concluido_mesa'
   | 'aceito'
   | 'transferido'
-  | 'novo';
+  | 'novo'
+  | 'aguardando_negociacao_cliente';
 
 export interface OrderHandoffEntry {
   id: string;

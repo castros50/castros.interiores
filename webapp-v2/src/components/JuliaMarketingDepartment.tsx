@@ -34,6 +34,7 @@ import {
   Archive,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
+import { drawCastrosLogoMark } from '../utils/pdfGenerator';
 import JSZip from 'jszip';
 import {
   JuliaCampaignScheduleItem,
@@ -47,6 +48,9 @@ import {
   JuliaSmartAdProject,
   JuliaSocialMediaVersions,
   JuliaTargetChannel,
+  WorkshopSettings,
+  PaidAdObjective,
+  PaidAdBudgetProposal,
 } from '../types';
 import { ResilientImage } from './ResilientImage';
 
@@ -55,6 +59,7 @@ interface JuliaMarketingDepartmentProps {
   stationName: string;
   workshopPhone: string;
   externalJuliaData?: JuliaDepartmentData | null;
+  integrations?: WorkshopSettings['integrations'];
 }
 
 interface OfficialIntegrationsStatus {
@@ -637,6 +642,7 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
   stationName,
   workshopPhone,
   externalJuliaData,
+  integrations,
 }) => {
   const [juliaData, setJuliaData] = useState<JuliaDepartmentData | null>(
     externalJuliaData || null
@@ -647,26 +653,47 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
-  // Official external integrations status (Instagram, Facebook, WhatsApp)
-  const [integrationsStatus, setIntegrationsStatus] =
-    useState<OfficialIntegrationsStatus>({
+  // Official external integrations status (Instagram, Facebook, WhatsApp) — derivado
+  // do estado real persistido em settings.integrations. Nunca assumir "conectado" sem
+  // uma verificação real contra o serviço externo (ver IntegrationStatus em types.ts).
+  const deriveIntegrationsStatus = (
+    integ?: WorkshopSettings['integrations']
+  ): OfficialIntegrationsStatus => {
+    const statusMessageFor = (state?: string, errorMessage?: string): string => {
+      if (state === 'conectado') return 'Conectado. Publicação automática disponível.';
+      if (state === 'pendente') return 'Conexão pendente de confirmação.';
+      if (state === 'erro') return `Erro de conexão${errorMessage ? `: ${errorMessage}` : '.'}`;
+      return 'Integração oficial não configurada. Envio manual necessário.';
+    };
+    const ig = integ?.instagram;
+    const fb = integ?.facebook;
+    const wa = integ?.whatsapp;
+    return {
       instagram: {
-        connected: false,
-        autoPublishSupported: false,
-        statusMessage: 'Publicação planejada. Envio manual necessário.',
+        connected: ig?.state === 'conectado',
+        autoPublishSupported: ig?.state === 'conectado',
+        statusMessage: statusMessageFor(ig?.state, ig?.errorMessage),
       },
       facebook: {
-        connected: false,
-        autoPublishSupported: false,
-        statusMessage: 'Publicação planejada. Envio manual necessário.',
+        connected: fb?.state === 'conectado',
+        autoPublishSupported: fb?.state === 'conectado',
+        statusMessage: statusMessageFor(fb?.state, fb?.errorMessage),
       },
       whatsapp: {
-        connected: false,
-        autoPublishSupported: false,
+        connected: wa?.state === 'conectado',
+        autoPublishSupported: wa?.state === 'conectado',
         directShareSupported: true,
-        statusMessage: 'Publicação planejada. Envio manual necessário.',
+        statusMessage: statusMessageFor(wa?.state, wa?.errorMessage),
       },
-    });
+    };
+  };
+
+  const [integrationsStatus, setIntegrationsStatus] =
+    useState<OfficialIntegrationsStatus>(deriveIntegrationsStatus(integrations));
+
+  useEffect(() => {
+    setIntegrationsStatus(deriveIntegrationsStatus(integrations));
+  }, [integrations]);
 
   // Correction mode state for the "Corrigí" button
   const [correctionModeOpen, setCorrectionModeOpen] = useState(false);
@@ -725,6 +752,16 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
   const [calendarStatusFilter, setCalendarStatusFilter] = useState<
     'TODAS' | 'Planejada' | 'Agendada' | 'Concluída' | 'Com Erro'
   >('TODAS');
+
+  // Proposta de orçamento de anúncio pago — nasce sempre travada, aprovação só
+  // acontece numa mesa de humano (Helena/Castro), nunca aqui. Ver /api/julia/paid-ads/propose.
+  const [paidAdFormOpen, setPaidAdFormOpen] = useState(false);
+  const [paidAdObjective, setPaidAdObjective] = useState<PaidAdObjective>('Alcance');
+  const [paidAdAudience, setPaidAdAudience] = useState('');
+  const [paidAdBudgetReais, setPaidAdBudgetReais] = useState('');
+  const [paidAdBudgetPeriod, setPaidAdBudgetPeriod] = useState<'diario' | 'total'>('total');
+  const [paidAdDurationDays, setPaidAdDurationDays] = useState('7');
+  const [isProposingPaidAd, setIsProposingPaidAd] = useState(false);
 
   // WhatsApp direct recipient optional input (Correction 4)
   const [whatsappRecipientPhone, setWhatsappRecipientPhone] = useState('');
@@ -2187,6 +2224,8 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
       doc.setLineWidth(0.3);
       doc.rect(15, 15, 180, 267);
 
+      drawCastrosLogoMark(doc, 105, 22, 8);
+
       doc.setTextColor(216, 197, 163);
       doc.setFontSize(11);
       doc.text(
@@ -2203,7 +2242,7 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
       doc.setTextColor(154, 113, 56);
       doc.setFontSize(12);
       doc.text(
-        'Alta Estofaria Artesanal · Design, Conforto e Acabamento de Atelier',
+        'Qualidade Profissional · Renovação de Estofados Residencial e Comercial',
         105,
         60,
         { align: 'center' }
@@ -2746,11 +2785,72 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
     await handlePersistJuliaData(nextData, integrationNote);
   };
 
+  // Propõe um orçamento de anúncio pago — nasce sempre "Aguardando Aprovação de
+  // Orçamento" no servidor; esta tela NUNCA aprova, só monta a proposta. A
+  // aprovação só pode acontecer nas mesas de Helena ou Castro.
+  const handleProposePaidAd = async () => {
+    if (!activeProject) return;
+    const budgetReaisNumber = Number(paidAdBudgetReais.replace(',', '.'));
+    const durationNumber = Number(paidAdDurationDays);
+    if (!paidAdAudience.trim() || !budgetReaisNumber || budgetReaisNumber <= 0 || !durationNumber || durationNumber <= 0) {
+      showTemporaryNotice('Preencha público-alvo, orçamento e duração (maiores que zero) antes de propor.');
+      return;
+    }
+    setIsProposingPaidAd(true);
+    try {
+      const res = await fetch('/api/julia/paid-ads/propose', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-station-name': stationName },
+        body: JSON.stringify({
+          projectId: activeProject.id,
+          objective: paidAdObjective,
+          targetAudienceDescription: paidAdAudience.trim(),
+          budgetCents: Math.round(budgetReaisNumber * 100),
+          budgetPeriod: paidAdBudgetPeriod,
+          durationDays: durationNumber,
+          channel: newCampChannel,
+          proposedBy: stationName,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        const nextData: JuliaDepartmentData = {
+          ...juliaData!,
+          paidAdProposals: [data.proposal as PaidAdBudgetProposal, ...(juliaData!.paidAdProposals || [])],
+        };
+        setJuliaData(nextData);
+        setPaidAdAudience('');
+        setPaidAdBudgetReais('');
+        setPaidAdFormOpen(false);
+        showTemporaryNotice(
+          'Proposta de anúncio pago registrada como "Aguardando Aprovação de Orçamento" — só Helena ou Castro podem aprovar, nunca esta tela.'
+        );
+      } else {
+        showTemporaryNotice(data.error || 'Não foi possível registrar a proposta agora.');
+      }
+    } catch {
+      showTemporaryNotice('Falha de conexão ao propor o anúncio pago.');
+    } finally {
+      setIsProposingPaidAd(false);
+    }
+  };
+
+  // Só permite ao humano escolher estados que NÃO afirmam publicação confirmada.
+  // "Concluída" exige confirmação do serviço externo (ExternalPublicationConfirmation),
+  // nunca um clique direto — ver handleConfirmManualSend para o caso de envio manual.
+  const HUMAN_SELECTABLE_STATUSES: JuliaCampaignStatus[] = [
+    'Planejada',
+    'Agendada',
+    'Com Erro',
+    'Cancelada',
+  ];
+
   const handleUpdateCampaignStatus = async (
     campId: string,
     nextStatus: JuliaCampaignStatus
   ) => {
     if (!juliaData) return;
+    if (!HUMAN_SELECTABLE_STATUSES.includes(nextStatus)) return;
     const nextCampaigns = juliaData.campaigns.map((c) =>
       c.id === campId ? { ...c, status: nextStatus } : c
     );
@@ -2760,6 +2860,27 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
         campaigns: nextCampaigns,
       },
       `Status da publicação atualizado para "${nextStatus}".`
+    );
+  };
+
+  // Humano confirma que enviou manualmente (ex.: mandou pelo WhatsApp Web na mão).
+  // Isso é uma autodeclaração, não uma prova do canal — por isso vira "Enviada
+  // Manualmente", nunca "Concluída".
+  const handleConfirmManualSend = async (campId: string) => {
+    if (!juliaData) return;
+    const now = new Date().toISOString();
+    const nextCampaigns = juliaData.campaigns.map((c) =>
+      c.id === campId
+        ? {
+            ...c,
+            status: 'Enviada Manualmente' as JuliaCampaignStatus,
+            manualSendConfirmation: { confirmedAt: now, confirmedBy: stationName },
+          }
+        : c
+    );
+    await handlePersistJuliaData(
+      { ...juliaData, campaigns: nextCampaigns },
+      'Envio manual confirmado pelo responsável — isso não é uma confirmação do canal externo.'
     );
   };
 
@@ -2933,10 +3054,12 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
 
   const normalizedCampaignStatus = (
     st: JuliaCampaignStatus
-  ): 'Planejada' | 'Agendada' | 'Concluída' | 'Com Erro' => {
+  ): 'Planejada' | 'Agendada' | 'Enviada Manualmente' | 'Concluída' | 'Com Erro' | 'Cancelada' => {
     if (st === 'Programada' || st === 'Planejada') return 'Planejada';
     if (st === 'Agendada') return 'Agendada';
+    if (st === 'Enviada Manualmente') return 'Enviada Manualmente';
     if (st === 'Concluída' || st === 'Publicada') return 'Concluída';
+    if (st === 'Cancelada') return 'Cancelada';
     return 'Com Erro';
   };
 
@@ -5020,7 +5143,7 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                               <ResilientImage
                                 src={ph.imageUrl || ph.thumbnailDataUrl || ''}
                                 alt={ph.title}
-                                className="w-full h-full object-cover"
+                                className="w-full h-full object-contain"
                               />
                             </div>
                             <div className="text-[10px] font-semibold truncate">
@@ -5510,8 +5633,8 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                 </div>
               </div>
 
-              {/* Duas Funções Claramente Separadas: 1. Planejar Publicação | 2. Agendar Publicação Automática */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* Três Funções Claramente Separadas: 1. Planejar Publicação | 2. Agendar Publicação Automática | 3. Propor Anúncio Pago */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="p-4 rounded-xl bg-white border border-[#E5DEC9] flex flex-col justify-between gap-3">
                   <div className="space-y-1">
                     <div className="text-xs font-bold text-[#181512]">
@@ -5555,7 +5678,131 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                     </span>
                   </button>
                 </div>
+
+                <div className="p-4 rounded-xl bg-white border border-[#E5DEC9] flex flex-col justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="text-xs font-bold text-[#181512]">
+                      Opção 3 — Propor Anúncio Pago
+                    </div>
+                    <p className="text-[11px] text-[#57534E]">
+                      Monta uma proposta de orçamento para impulsionar a campanha. Nunca inicia nada sozinha — a
+                      proposta nasce "Aguardando Aprovação de Orçamento" e só Helena ou Castro podem aprovar.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPaidAdFormOpen((prev) => !prev)}
+                    className="w-full py-2.5 px-4 rounded-lg bg-[#FAF8F5] hover:bg-[#F3EFE6] border border-[#D6CFC5] text-[#181512] text-xs font-semibold flex items-center justify-center gap-2"
+                  >
+                    <Megaphone className="w-4 h-4 text-[#9A7138]" />
+                    <span>3. Propor Anúncio Pago (Requer Aprovação de Orçamento)</span>
+                  </button>
+                </div>
               </div>
+
+              {paidAdFormOpen && (
+                <div className="p-4 rounded-xl border-2 border-dashed border-[#9A7138] bg-[#FAF8F5] space-y-3 text-xs">
+                  <p className="font-bold text-[#9A7138] uppercase tracking-wider text-[10px]">
+                    Proposta de orçamento — ainda não aprovada, nada será veiculado agora
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[#57534E] font-medium mb-1">Objetivo</label>
+                      <select
+                        value={paidAdObjective}
+                        onChange={(e) => setPaidAdObjective(e.target.value as PaidAdObjective)}
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      >
+                        <option value="Alcance">Alcance</option>
+                        <option value="Tráfego">Tráfego</option>
+                        <option value="Mensagens">Mensagens</option>
+                        <option value="Conversões">Conversões</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[#57534E] font-medium mb-1">Duração (dias)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={paidAdDurationDays}
+                        onChange={(e) => setPaidAdDurationDays(e.target.value)}
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[#57534E] font-medium mb-1">Público-alvo</label>
+                      <input
+                        type="text"
+                        value={paidAdAudience}
+                        onChange={(e) => setPaidAdAudience(e.target.value)}
+                        placeholder="Ex: mulheres 30-55 anos, interesse em decoração, raio de 15km"
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[#57534E] font-medium mb-1">Orçamento (R$)</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={paidAdBudgetReais}
+                        onChange={(e) => setPaidAdBudgetReais(e.target.value)}
+                        placeholder="Ex: 150,00"
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[#57534E] font-medium mb-1">Período do Orçamento</label>
+                      <select
+                        value={paidAdBudgetPeriod}
+                        onChange={(e) => setPaidAdBudgetPeriod(e.target.value as 'diario' | 'total')}
+                        className="w-full p-2 rounded-lg border border-[#D6CFC5] bg-white"
+                      >
+                        <option value="total">Total da campanha</option>
+                        <option value="diario">Diário</option>
+                      </select>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleProposePaidAd}
+                    disabled={isProposingPaidAd}
+                    className="px-4 py-2 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] text-white text-xs font-semibold disabled:opacity-50"
+                  >
+                    {isProposingPaidAd ? 'Enviando proposta...' : 'Enviar Proposta para Aprovação'}
+                  </button>
+                </div>
+              )}
+
+              {(juliaData?.paidAdProposals || []).length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="font-bold text-xs text-[#181512] uppercase tracking-wider">
+                    Propostas de Anúncio Pago desta Campanha
+                  </h4>
+                  {(juliaData?.paidAdProposals || [])
+                    .filter((p) => p.projectId === activeProject.id)
+                    .map((p) => (
+                      <div key={p.id} className="p-3 rounded-lg border border-[#E5DEC9] bg-white text-xs flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-[#181512]">
+                            {p.objective} · R$ {(p.budgetCents / 100).toFixed(2)} ({p.budgetPeriod}) · {p.durationDays} dia(s)
+                          </p>
+                          <p className="text-[11px] text-[#57534E]">{p.targetAudienceDescription}</p>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase shrink-0 ${
+                            p.status === 'aprovado' || p.status === 'em_veiculacao'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : p.status === 'rejeitado' || p.status === 'falhou'
+                              ? 'bg-red-100 text-red-900'
+                              : 'bg-amber-100 text-amber-900'
+                          }`}
+                        >
+                          {p.status.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -6318,31 +6565,57 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                           {camp.integrationNote ||
                             'Publicação planejada. Envio manual necessário.'}
                         </div>
+                        {camp.externalConfirmation && (
+                          <div className="text-[11px] font-semibold text-emerald-800">
+                            ✓ Confirmado pelo canal em {new Date(camp.externalConfirmation.confirmedAt).toLocaleString('pt-BR')}
+                            {camp.externalConfirmation.externalLink && (
+                              <> — <a href={camp.externalConfirmation.externalLink} target="_blank" rel="noreferrer" className="underline">ver publicação</a></>
+                            )}
+                          </div>
+                        )}
+                        {camp.manualSendConfirmation && !camp.externalConfirmation && (
+                          <div className="text-[11px] font-semibold text-blue-800">
+                            ✓ Envio manual confirmado por {camp.manualSendConfirmation.confirmedBy || 'responsável'} em{' '}
+                            {new Date(camp.manualSendConfirmation.confirmedAt).toLocaleString('pt-BR')} — não é confirmação do canal
+                          </div>
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
-                        <select
-                          value={normStatus}
-                          onChange={(e) =>
-                            handleUpdateCampaignStatus(
-                              camp.id,
-                              e.target.value as JuliaCampaignStatus
-                            )
-                          }
-                          className={`px-2.5 py-1 rounded text-[11px] font-semibold border ${
-                            normStatus === 'Concluída'
-                              ? 'bg-emerald-800 text-white border-emerald-900'
-                              : normStatus === 'Com Erro'
-                              ? 'bg-red-100 text-red-900 border-red-300'
-                              : normStatus === 'Agendada'
-                              ? 'bg-blue-100 text-blue-900 border-blue-300'
-                              : 'bg-[#EDE7DC] text-[#181512] border-[#D6CFC5]'
-                          }`}
-                        >
-                          <option value="Planejada">Planejada (Manual)</option>
-                          <option value="Agendada">Agendada</option>
-                          <option value="Concluída">Concluída</option>
-                          <option value="Com Erro">Com Erro</option>
-                        </select>
+                        {normStatus === 'Concluída' || normStatus === 'Enviada Manualmente' ? (
+                          <span
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold border ${
+                              normStatus === 'Concluída'
+                                ? 'bg-emerald-800 text-white border-emerald-900'
+                                : 'bg-blue-100 text-blue-900 border-blue-300'
+                            }`}
+                          >
+                            {normStatus}
+                          </span>
+                        ) : (
+                          <select
+                            value={normStatus}
+                            onChange={(e) =>
+                              handleUpdateCampaignStatus(
+                                camp.id,
+                                e.target.value as JuliaCampaignStatus
+                              )
+                            }
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold border ${
+                              normStatus === 'Com Erro'
+                                ? 'bg-red-100 text-red-900 border-red-300'
+                                : normStatus === 'Agendada'
+                                ? 'bg-blue-100 text-blue-900 border-blue-300'
+                                : normStatus === 'Cancelada'
+                                ? 'bg-[#E5DEC9] text-[#57534E] border-[#D6CFC5] line-through'
+                                : 'bg-[#EDE7DC] text-[#181512] border-[#D6CFC5]'
+                            }`}
+                          >
+                            <option value="Planejada">Planejada (Manual)</option>
+                            <option value="Agendada">Agendada</option>
+                            <option value="Com Erro">Com Erro</option>
+                            <option value="Cancelada">Cancelada</option>
+                          </select>
+                        )}
                         <button
                           type="button"
                           onClick={() =>
@@ -6355,10 +6628,20 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                             )
                           }
                           className="px-2.5 py-1 rounded bg-[#1F5E3B] text-white text-[11px] font-semibold"
-                          title="Enviar agora pelo WhatsApp"
+                          title="Abre o WhatsApp com o texto pronto — envio manual, você quem manda"
                         >
                           Enviar WhatsApp
                         </button>
+                        {!camp.externalConfirmation && !camp.manualSendConfirmation && (
+                          <button
+                            type="button"
+                            onClick={() => handleConfirmManualSend(camp.id)}
+                            className="px-2.5 py-1 rounded border border-blue-300 bg-blue-50 text-blue-900 text-[11px] font-semibold"
+                            title="Confirme só depois de ter enviado de verdade — isso fica registrado como autodeclaração, não como confirmação do canal"
+                          >
+                            Confirmar Envio Manual
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleDeleteCampaign(camp.id)}
