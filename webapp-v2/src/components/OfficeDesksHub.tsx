@@ -42,6 +42,7 @@ import { TapeceiroTecnicoDesk } from './TapeceiroTecnicoDesk';
 import { MilaFactoryFinanceView } from './MilaFactoryFinanceView';
 import { CarlaAtendimentoDesk } from './CarlaAtendimentoDesk';
 import { CarlaOrderPanel } from './CarlaOrderPanel';
+import { PedroAvaliacaoDesk } from './PedroAvaliacaoDesk';
 
 interface OfficeDesksHubProps {
   attendances: AttendanceRecord[];
@@ -60,7 +61,8 @@ interface OfficeDesksHubProps {
   // cria o pedido já encaminhado para a mesa certa, e envia as fotos selecionadas).
   onCreateOrder?: (
     payload: Record<string, unknown>,
-    photoFiles: File[]
+    photoFiles: File[],
+    additionalProductPhotos?: Record<string, File[]>
   ) => Promise<{ ok: true; order: AttendanceRecord } | { ok: false; error: string }>;
 }
 
@@ -913,6 +915,15 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                 }}
               />
             </div>
+          )}
+
+          {selectedDeskId === 'pedro_avaliacao' && (
+            <PedroAvaliacaoDesk
+              order={activeOrder}
+              materialsCatalog={materialsCatalog}
+              settings={settings}
+              onUpdateOrder={onUpdateAttendance}
+            />
           )}
 
           {/* Mesas de Atendimento (Carla), Avaliação (Pedro), Compras (Ana) ou Marketing (Júlia) */}

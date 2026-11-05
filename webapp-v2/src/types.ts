@@ -234,6 +234,7 @@ export interface AttendancePhoto {
   id: string;
   code: string; // F-01, F-02...
   attendanceId: string;
+  productId?: string; // id de um OrderProduct — ausente = foto do produto principal
   furnitureLabel: string;
   category: PhotoCategory;
   caption: string;
@@ -305,6 +306,99 @@ export interface ClientRecord {
   address: ClientAddress;
   notes?: string;
   createdAt: string;
+  updatedAt: string;
+}
+
+// Produtos além do principal, no mesmo pedido (ex.: Carla cadastra sofá + 2 poltronas
+// num só atendimento). O produto principal continua sendo os campos já existentes
+// (furnitureType/piecesCount/approxMeasurements/photos sem productId) — isto é só a
+// lista de produtos ADICIONAIS, para não exigir migração de nenhum registro antigo.
+export interface OrderProduct {
+  id: string;
+  description: string;
+  quantity: string; // texto livre, igual a piecesCount
+  measurements?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+// Avaliação técnica enxuta por produto (Pedro/Lucas), identificada por productId:
+// 'primary' para o produto principal, ou o id de um OrderProduct.
+export interface ProductMaterialNeed {
+  catalogItemId?: string;
+  name: string;
+  quantity: number | null; // null = a levantar
+  unit: string;
+  unitCostCents: number | null; // null = pendente — nunca inventado
+}
+
+export interface ProductTechnicalEvaluation {
+  productId: string; // 'primary' | OrderProduct.id
+  servicesNeeded: string;
+  materials: ProductMaterialNeed[];
+  laborHours?: number | null;
+  laborCostCents?: number | null;
+  estimatedDeadlineDays?: number | null;
+  notes?: string;
+  evaluatedBy?: string;
+  evaluatedAt?: string;
+}
+
+// Orçamento itemizado (Mila), paralelo a BudgetData/OrderFinancialData — não os
+// substitui. Só existe quando o atendimento passa pelo fluxo de negociação novo.
+export interface ItemizedBudgetEntry {
+  productId: string; // 'primary' | OrderProduct.id
+  items: BudgetLineItem[];
+  sellingPriceCents: number | null;
+  costsPending: boolean; // true se algum item tiver unitCostCents: null
+}
+
+export interface ItemizedBudget {
+  byProduct: ItemizedBudgetEntry[];
+  appliedMarginPercent?: number;
+  appliedFeeCents?: number;
+  discountCents?: number;
+  totalSellingPriceCents: number | null;
+  confirmedByResponsible: boolean;
+  responsibleName?: string;
+  confirmedAt?: string;
+}
+
+// Negociação + acompanhamento de pagamento — uma única área, usada tanto na mesa da
+// Carla quanto na mesa da Mila (mesmos dados, mesmas rotas, sem duplicar).
+export type PaymentMethod = 'pix' | 'dinheiro' | 'cartao' | 'outro';
+export type OrderPaymentStatus = 'combinada' | 'informada_aguardando_confirmacao' | 'confirmada';
+
+export interface OrderInstallment {
+  index: number;
+  valueCents: number;
+  dueDate: string;
+  method: PaymentMethod;
+  status: OrderPaymentStatus;
+}
+
+export interface OrderNegotiation {
+  finalPriceCents: number;
+  discountCents: number;
+  downPayment?: {
+    amountCents: number;
+    method: PaymentMethod;
+    status: OrderPaymentStatus;
+  };
+  balanceMode: 'parcelado' | 'integral' | 'na_entrega';
+  installments: OrderInstallment[];
+  deliveryDate?: string;
+  deliveryDateValidatedBy?: string;
+  // Trava de exceção: true quando o desconto/preço sai da política configurada em
+  // WorkshopSettings.negotiationPolicy — bloqueia clientDecision até aprovação do dono.
+  requiresOwnerApproval: boolean;
+  ownerApproval?: { approved: boolean; approvedBy: string; approvedAt: string; notes?: string };
+  clientDecision?: 'aceito' | 'recusado';
+  clientDecisionAt?: string;
+  clientDecisionBy?: string;
+  // Mesmo padrão de "staleness" já usado em BudgetData.clientDecisionPriceCentsSnapshot.
+  clientDecisionPriceCentsSnapshot?: number | null;
+  transactions: FinancialTransaction[];
   updatedAt: string;
 }
 
@@ -412,6 +506,15 @@ export interface AttendanceRecord {
   technicalPlanRevisions?: ManufacturingProjectData[];
   financialData?: OrderFinancialData;
   isTestScenario?: boolean;
+
+  // Vários produtos no mesmo pedido (além do principal, que são os campos já
+  // existentes acima). Avaliação técnica/orçamento por produto e a negociação são
+  // aditivos — um atendimento sem nenhum desses campos continua funcionando
+  // exatamente como hoje, usando budget/financialData normalmente.
+  additionalProducts?: OrderProduct[];
+  productEvaluations?: Record<string, ProductTechnicalEvaluation>; // chave: 'primary' | OrderProduct.id
+  itemizedBudget?: ItemizedBudget;
+  negotiation?: OrderNegotiation;
 }
 
 export type RawMaterialCategory =
@@ -739,6 +842,16 @@ export interface WorkshopSettings {
     enabled: boolean;
     scopeNote?: string;
     pausedConversationIds?: string[]; // atendimentos com humano assumindo a conversa
+    updatedAt?: string;
+    updatedBy?: string;
+  };
+  // Política de margem/desconto/taxa aprovada pelo proprietário, aplicada pela Mila
+  // ao montar o orçamento itemizado. Sem isso configurado, a Mila usa os valores que
+  // digitar manualmente por pedido — nada é assumido silenciosamente.
+  negotiationPolicy?: {
+    defaultMarginPercent?: number;
+    maxDiscountPercent?: number;
+    feePercent?: number;
     updatedAt?: string;
     updatedBy?: string;
   };
@@ -1070,7 +1183,8 @@ export type OrderDeskStatus =
   | 'concluido_mesa'
   | 'aceito'
   | 'transferido'
-  | 'novo';
+  | 'novo'
+  | 'aguardando_negociacao_cliente';
 
 export interface OrderHandoffEntry {
   id: string;

@@ -1,6 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Search, UserPlus, Plus, AlertCircle, Phone, MapPin, Wrench, Hammer, Image as ImageIcon, X } from 'lucide-react';
+import { Search, UserPlus, Plus, AlertCircle, Phone, MapPin, Wrench, Hammer, Image as ImageIcon, X, Trash2 } from 'lucide-react';
 import { AttendanceRecord, AttendanceRequestType, ClientAddress, ClientRecord, OrderType, WorkshopSettings } from '../types';
+
+interface DraftProduct {
+  id: string;
+  description: string;
+  quantity: string;
+  measurements: string;
+  photoFiles: File[];
+}
+
+function newDraftProductId(): string {
+  return `draft-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
 
 interface CarlaAtendimentoDeskProps {
   attendances: AttendanceRecord[];
@@ -8,7 +20,8 @@ interface CarlaAtendimentoDeskProps {
   onSelectOrder: (id: string) => void;
   onCreateOrder?: (
     payload: Record<string, unknown>,
-    photoFiles: File[]
+    photoFiles: File[],
+    additionalProductPhotos?: Record<string, File[]>
   ) => Promise<{ ok: true; order: AttendanceRecord } | { ok: false; error: string }>;
 }
 
@@ -72,6 +85,31 @@ export const CarlaAtendimentoDesk: React.FC<CarlaAtendimentoDeskProps> = ({
   const [notes, setNotes] = useState('');
   const [photoFiles, setPhotoFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Produtos adicionais no mesmo pedido (ex.: sofá + poltronas num só atendimento) — o
+  // produto principal continua sendo os campos acima (furnitureType/piecesCount/...).
+  const [additionalProducts, setAdditionalProducts] = useState<DraftProduct[]>([]);
+
+  const handleAddProductRow = () => {
+    setAdditionalProducts((prev) => [
+      ...prev,
+      { id: newDraftProductId(), description: '', quantity: '1 unidade', measurements: '', photoFiles: [] },
+    ]);
+  };
+  const handleRemoveProductRow = (id: string) => {
+    setAdditionalProducts((prev) => prev.filter((p) => p.id !== id));
+  };
+  const handleUpdateProductRow = (id: string, patch: Partial<DraftProduct>) => {
+    setAdditionalProducts((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  };
+  const handleProductPhotosSelected = (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    handleUpdateProductRow(id, {
+      photoFiles: [...(additionalProducts.find((p) => p.id === id)?.photoFiles || []), ...Array.from(files)],
+    });
+    e.target.value = '';
+  };
 
   const term = searchTerm.trim().toLowerCase();
   const filtered = term
@@ -139,6 +177,7 @@ export const CarlaAtendimentoDesk: React.FC<CarlaAtendimentoDeskProps> = ({
     setFabricAndComfortPreference('');
     setNotes('');
     setPhotoFiles([]);
+    setAdditionalProducts([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -195,13 +234,20 @@ export const CarlaAtendimentoDesk: React.FC<CarlaAtendimentoDeskProps> = ({
         fullAddress: [address.street, address.number, address.complement].filter(Boolean).join(', ') || undefined,
         address,
         notes: notes || undefined,
+        additionalProducts: additionalProducts
+          .filter((p) => p.description.trim())
+          .map((p) => ({ id: p.id, description: p.description.trim(), quantity: p.quantity, measurements: p.measurements || undefined })),
       };
 
       if (!onCreateOrder) {
         setError('Encaminhamento de cadastro indisponível nesta tela.');
         return;
       }
-      const result = await onCreateOrder(payload, photoFiles);
+      const additionalProductPhotos: Record<string, File[]> = {};
+      additionalProducts.forEach((p) => {
+        if (p.description.trim() && p.photoFiles.length > 0) additionalProductPhotos[p.id] = p.photoFiles;
+      });
+      const result = await onCreateOrder(payload, photoFiles, additionalProductPhotos);
       if (result.ok) {
         resetForm();
         setShowNewForm(false);
@@ -546,6 +592,101 @@ export const CarlaAtendimentoDesk: React.FC<CarlaAtendimentoDeskProps> = ({
                   )}
                 </div>
               </div>
+
+              {/* Produtos adicionais no mesmo pedido (sofá + poltronas, por exemplo) */}
+              {!showOtherContactType && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[#57534E] font-medium text-xs">Outros produtos neste pedido (opcional)</label>
+                    <button
+                      type="button"
+                      onClick={handleAddProductRow}
+                      className="text-[10px] font-semibold text-[#9A7138] underline hover:text-[#845E2B]"
+                    >
+                      + Adicionar outro produto
+                    </button>
+                  </div>
+                  {additionalProducts.map((p, idx) => (
+                    <div key={p.id} className="p-3 rounded-lg bg-white border border-[#E5DEC9] space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-semibold uppercase text-[#9A7138]">Produto adicional {idx + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveProductRow(p.id)}
+                          className="p-1 text-[#6B6257] hover:text-red-700"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                        <div className="sm:col-span-2">
+                          <label className="block text-[#57534E] font-medium mb-1">Descrição *</label>
+                          <input
+                            type="text"
+                            value={p.description}
+                            onChange={(e) => handleUpdateProductRow(p.id, { description: e.target.value })}
+                            placeholder="Ex: Poltrona de canto"
+                            className="w-full p-2 rounded border border-[#D6CFC5]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[#57534E] font-medium mb-1">Quantidade</label>
+                          <input
+                            type="text"
+                            value={p.quantity}
+                            onChange={(e) => handleUpdateProductRow(p.id, { quantity: e.target.value })}
+                            className="w-full p-2 rounded border border-[#D6CFC5]"
+                          />
+                        </div>
+                        <div className="sm:col-span-3">
+                          <label className="block text-[#57534E] font-medium mb-1">Medidas (opcional)</label>
+                          <input
+                            type="text"
+                            value={p.measurements}
+                            onChange={(e) => handleUpdateProductRow(p.id, { measurements: e.target.value })}
+                            className="w-full p-2 rounded border border-[#D6CFC5]"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          onChange={(e) => handleProductPhotosSelected(p.id, e)}
+                          className="hidden"
+                          id={`carla-product-photos-${p.id}`}
+                        />
+                        <label
+                          htmlFor={`carla-product-photos-${p.id}`}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[#D6CFC5] bg-white hover:bg-[#F3EFE6] cursor-pointer text-[10px] font-medium text-[#181512]"
+                        >
+                          <ImageIcon className="w-3 h-3" />
+                          Selecionar fotos deste produto
+                        </label>
+                        {p.photoFiles.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1.5">
+                            {p.photoFiles.map((f, fi) => (
+                              <span key={fi} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#F3EFE6] text-[10px] text-[#181512]">
+                                {f.name}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleUpdateProductRow(p.id, { photoFiles: p.photoFiles.filter((_, i) => i !== fi) })
+                                  }
+                                  className="text-[#6B6257] hover:text-red-700"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {error && <p className="text-xs text-red-700">{error}</p>}
 

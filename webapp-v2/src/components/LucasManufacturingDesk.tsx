@@ -28,6 +28,7 @@ import {
 } from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
 import { AgentPortrait } from './AgentPortrait';
+import { ProductTechnicalEvaluationForm } from './ProductTechnicalEvaluationForm';
 
 interface LucasManufacturingDeskProps {
   order: AttendanceRecord;
@@ -47,7 +48,7 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
   onOpenFullWorkflow,
 }) => {
   const [activeTab, setActiveTab] = useState<
-    'ficha' | 'pecas' | 'materiais' | 'manual' | 'qualidade'
+    'ficha' | 'pecas' | 'materiais' | 'manual' | 'qualidade' | 'avaliacao_produto'
   >('ficha');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -322,6 +323,11 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
             id: 'qualidade',
             label: '5. Conferência de Qualidade',
             count: project.qualityCheckpoints.length,
+          },
+          {
+            id: 'avaliacao_produto',
+            label: '6. Avaliação por Produto',
+            count: Object.keys(order.productEvaluations || {}).length || null,
           },
         ].map((t) => (
           <button
@@ -735,6 +741,33 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {/* ABA 6: AVALIAÇÃO POR PRODUTO (pedidos com mais de um produto no mesmo atendimento) */}
+        {activeTab === 'avaliacao_produto' && (
+          <div className="space-y-4">
+            <h3 className="font-bold text-sm text-[#181512]">Avaliação por Produto — {order.attendanceNumber}</h3>
+            <p className="text-xs text-[#6B6257]">
+              Registro enxuto por produto do pedido (serviços, materiais, mão de obra, prazo) para encaminhar à
+              Mila montar o orçamento. Não substitui a Ficha Técnica do modelo nas abas acima.
+            </p>
+            <ProductTechnicalEvaluationForm
+              order={order}
+              materialsCatalog={materialsCatalog}
+              defaultEvaluatorName={settings.responsibleDefaultName}
+              onUpdateOrder={onUpdateOrder}
+              onForwardToMila={async (orderId, fromDesk) => {
+                const res = await fetch(`/api/orders/${orderId}/forward-to-mila`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ fromDesk }),
+                });
+                const data = await res.json();
+                if (res.ok && data.order) onUpdateOrder(data.order);
+              }}
+              fromDesk="lucas_projetos"
+            />
           </div>
         )}
       </div>

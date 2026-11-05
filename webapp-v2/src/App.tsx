@@ -377,6 +377,16 @@ export default function App() {
   const activeAttendance =
     attendances.find((a) => a.id === activeAttendanceId) || null;
 
+  // Protege uma navegação local recém-feita (ex.: acabou de criar um atendimento na
+  // mesa da Carla) contra ser sobrescrita por um evento attendance:focus que chegue
+  // logo em seguida de outro aparelho (ex.: alguém clicou "Abrir nos 3 Aparelhos" em
+  // outro atendimento por perto) — sem desativar o recurso de sincronização em si.
+  const recentLocalNavigationRef = useRef<{ id: string; at: number } | null>(null);
+  const focusAttendanceLocally = (id: string | null) => {
+    recentLocalNavigationRef.current = id ? { id, at: Date.now() } : null;
+    setActiveAttendanceId(id);
+  };
+
   // Real-time Server-Sent Events (SSE) connection across Computador, Tablet, and Celular
   useEffect(() => {
     const queryParams = new URLSearchParams({
@@ -465,15 +475,23 @@ export default function App() {
                 : a
             );
           });
-          setActiveAttendanceId(focused.id);
-          setActiveTab('painel');
-          if (isFromOtherDevice) {
-            setRealtimeNotice(
-              `Tela sincronizada com ${
-                data.sourceStationName || 'outro aparelho'
-              }: Atendimento ${focused.attendanceNumber} (Etapa ${data.step || focused.currentStep})`
-            );
-            setTimeout(() => setRealtimeNotice(null), 6000);
+          const recentLocal = recentLocalNavigationRef.current;
+          const justNavigatedLocallyElsewhere =
+            isFromOtherDevice &&
+            recentLocal != null &&
+            recentLocal.id !== focused.id &&
+            Date.now() - recentLocal.at < 8000;
+          if (!justNavigatedLocallyElsewhere) {
+            setActiveAttendanceId(focused.id);
+            setActiveTab('painel');
+            if (isFromOtherDevice) {
+              setRealtimeNotice(
+                `Tela sincronizada com ${
+                  data.sourceStationName || 'outro aparelho'
+                }: Atendimento ${focused.attendanceNumber} (Etapa ${data.step || focused.currentStep})`
+              );
+              setTimeout(() => setRealtimeNotice(null), 6000);
+            }
           }
         } else if (data.type === 'materials:updated' && Array.isArray(data.materials)) {
           setMaterials(data.materials);
@@ -588,7 +606,7 @@ export default function App() {
         await syncAttendanceToFirestore(created, false);
       }
       setAttendances((prev) => [created, ...prev]);
-      setActiveAttendanceId(created.id);
+      focusAttendanceLocally(created.id);
       setActiveTab('atendimentos');
       setLastSavedSuccessAt(new Date().toLocaleTimeString('pt-BR'));
     } catch (err) {
@@ -606,7 +624,8 @@ export default function App() {
   // (Pedro/Lucas) depois para repetir o cadastro ou anexar as fotos.
   const handleCreateOrderFromCarla = async (
     payload: Record<string, unknown>,
-    photoFiles: File[]
+    photoFiles: File[],
+    additionalProductPhotos?: Record<string, File[]>
   ): Promise<{ ok: true; order: AttendanceRecord } | { ok: false; error: string }> => {
     try {
       const res = await fetch('/api/orders/create-order', {
@@ -639,6 +658,23 @@ export default function App() {
           undefined,
           created.id
         );
+      }
+      if (additionalProductPhotos) {
+        for (const product of created.additionalProducts || []) {
+          const files = additionalProductPhotos[product.id];
+          if (!files) continue;
+          for (const file of files) {
+            await handleUploadPhotoFile(
+              file,
+              'Frente',
+              `Foto de ${product.description} (${created.attendanceNumber})`,
+              product.description,
+              undefined,
+              created.id,
+              product.id
+            );
+          }
+        }
       }
       return { ok: true, order: created };
     } catch (err) {
@@ -752,7 +788,10 @@ export default function App() {
     // Normalmente envia pro atendimento ativo (activeAttendance); um id explícito permite
     // enviar fotos logo após criar um atendimento novo (ex.: cadastro na mesa da Carla),
     // antes dele virar o atendimento ativo na tela.
-    targetAttendanceId?: string
+    targetAttendanceId?: string,
+    // Produto adicional (além do principal) ao qual esta foto pertence, quando o pedido
+    // tiver mais de um produto (additionalProducts). Ausente = foto do produto principal.
+    productId?: string
   ) => {
     const attendanceId = targetAttendanceId || activeAttendance?.id;
     if (!attendanceId) return;
@@ -778,6 +817,7 @@ export default function App() {
       id: photoId,
       code,
       attendanceId,
+      productId,
       furnitureLabel,
       category,
       caption,
@@ -1697,7 +1737,7 @@ export default function App() {
                   isSaving={isSaving}
                   isAnalyzingDefects={isAnalyzingDefects}
                   isAnalyzingReuse={isAnalyzingReuse}
-                  onSelectAttendance={(id) => setActiveAttendanceId(id)}
+                  onSelectAttendance={(id) => focusAttendanceLocally(id)}
                   onNewAttendance={handleCreateNewAttendance}
                   onJumpToStep={(step) => {
                     if (activeAttendance) {
@@ -1918,7 +1958,7 @@ export default function App() {
                 materialsCatalog={materials}
                 settings={settings}
                 activeAttendanceId={activeAttendanceId}
-                onSelectAttendance={(id) => setActiveAttendanceId(id)}
+                onSelectAttendance={(id) => focusAttendanceLocally(id)}
                 onUpdateAttendance={(updated) => {
                   setAttendances((prev) =>
                     prev.map((a) => (a.id === updated.id ? updated : a))
@@ -2093,7 +2133,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    setActiveAttendanceId(att.id);
+                                    focusAttendanceLocally(att.id);
                                     setActiveTab('painel');
                                   }}
                                   className="px-3 py-1.5 rounded bg-[#181512] hover:bg-[#2E2722] text-white font-medium flex items-center gap-1"
@@ -2272,7 +2312,7 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setActiveAttendanceId(att.id);
+                                  focusAttendanceLocally(att.id);
                                   setActiveTab('painel');
                                 }}
                                 className="text-xs font-semibold text-[#181512] underline hover:text-[#9A7138]"
@@ -2375,7 +2415,7 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => {
-                              setActiveAttendanceId(att.id);
+                              focusAttendanceLocally(att.id);
                               setActiveTab('painel');
                             }}
                             className="px-3.5 py-2 rounded-lg border border-[#D6CFC5] bg-white hover:bg-[#F3EFE6] text-xs font-medium text-[#181512]"
@@ -2411,7 +2451,7 @@ export default function App() {
               <AgentsControlPanel
                 attendances={attendances}
                 activeAttendance={activeAttendance}
-                onSelectAttendance={(id) => setActiveAttendanceId(id)}
+                onSelectAttendance={(id) => focusAttendanceLocally(id)}
                 settings={settings}
                 onSaveSettings={handlePersistSettings}
                 isSavingSettings={isSaving}
@@ -2545,6 +2585,67 @@ export default function App() {
                         claude-haiku-5-5 (Ultra-rápido e leve para alta demanda)
                       </option>
                     </select>
+                  </div>
+
+                  <div className="pt-2 border-t border-[#EFECE6]">
+                    <h3 className="text-sm font-bold text-[#181512] mb-1">Política de Negociação (aprovada pelo proprietário)</h3>
+                    <p className="text-[11px] text-[#6B6257] mb-3">
+                      Usada pela Mila para sugerir preço no orçamento itemizado e para travar descontos fora do
+                      combinado (exige sua aprovação explícita nesse caso).
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-[#57534E] mb-1">Margem padrão (%)</label>
+                        <input
+                          type="number"
+                          value={settings.negotiationPolicy?.defaultMarginPercent ?? ''}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              negotiationPolicy: {
+                                ...settings.negotiationPolicy,
+                                defaultMarginPercent: e.target.value === '' ? undefined : parseFloat(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full rounded-lg border border-[#D6CFC5] px-3.5 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-[#57534E] mb-1">Desconto máximo (%)</label>
+                        <input
+                          type="number"
+                          value={settings.negotiationPolicy?.maxDiscountPercent ?? ''}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              negotiationPolicy: {
+                                ...settings.negotiationPolicy,
+                                maxDiscountPercent: e.target.value === '' ? undefined : parseFloat(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full rounded-lg border border-[#D6CFC5] px-3.5 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-[#57534E] mb-1">Taxa (%)</label>
+                        <input
+                          type="number"
+                          value={settings.negotiationPolicy?.feePercent ?? ''}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              negotiationPolicy: {
+                                ...settings.negotiationPolicy,
+                                feePercent: e.target.value === '' ? undefined : parseFloat(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full rounded-lg border border-[#D6CFC5] px-3.5 py-2 text-sm"
+                        />
+                      </div>
+                    </div>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3 pt-2">

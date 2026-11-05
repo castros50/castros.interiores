@@ -118,6 +118,19 @@ import type {
   JuliaCampaignScheduleItem,
   ClientRecord,
   ClientAddress,
+  OrderProduct,
+  ProductMaterialNeed,
+  ProductTechnicalEvaluation,
+  ItemizedBudgetEntry,
+  ItemizedBudget,
+  PaymentMethod,
+  OrderPaymentStatus,
+  OrderInstallment,
+  OrderNegotiation,
+  BudgetLineItem,
+  BudgetLineCategory,
+  FinancialPaymentEntry,
+  PaymentStatus,
 } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
 import {
@@ -185,6 +198,105 @@ function findClientByPhoneOrName(
   const nameLower = (name || '').trim().toLowerCase();
   if (!nameLower) return undefined;
   return clients.find((c) => c.name.trim().toLowerCase() === nameLower);
+}
+
+const DESK_AGENT_NAMES: Record<string, string> = {
+  carla_atendimento: 'Carla (Atendimento ao Cliente)',
+  pedro_avaliacao: 'Pedro (Avaliação Técnica)',
+  lucas_projetos: 'Lucas (Projetos & Fabricação)',
+  ana_compras: 'Ana (Compras & Suprimentos)',
+  mila_financeiro: 'Mila (Administração Financeira)',
+  castro_estrategia: 'Castro (Estratégia & Negócio)',
+  julia_marketing: 'Júlia (Marketing & Divulgação)',
+  supervisora_geral: 'Helena (Supervisora Geral)',
+  tapeceiro_tecnico: 'Tapeceiro Técnico (Produção e Materiais)',
+};
+
+// Mecanismo genérico de encaminhamento entre mesas: só reatribui currentDesk/deskStatus
+// e registra o histórico — nunca inicia trabalho algum na mesa de destino sozinho. Extraído
+// de POST /api/orders/transfer para ser reaproveitado por outras rotas (ex.: a Mila
+// homologando o orçamento itemizado e encaminhando automaticamente para a Carla).
+// Quem chamar é responsável por dar saveStore(store)/broadcastRealtimeEvent depois, exceto
+// quando alreadyTransferred=true (nada novo foi criado, não há o que salvar/avisar).
+function createOrderHandoff(
+  store: PersistentStore,
+  order: AttendanceRecord,
+  params: {
+    fromDesk: DepartmentId;
+    toDesk: DepartmentId;
+    reason: string;
+    completedSummary: string;
+    pendingItems?: string[];
+    nextActionExpected: string;
+    documentVersion?: string;
+    deskStatusOverride?: OrderDeskStatus;
+  }
+): { handoff: OrderHandoffEntry; alreadyTransferred: boolean } {
+  const { fromDesk, toDesk, reason, completedSummary, pendingItems, nextActionExpected, documentVersion } = params;
+
+  // Prevenção de duplicidade: se o encaminhamento mais recente já é para a mesma mesa,
+  // pela mesma origem, e ainda está pendente de aceite (ninguém mexeu nele ainda), um
+  // novo clique repetido não deve empilhar outro registro idêntico no histórico.
+  const lastHandoff = order.handoffHistory && order.handoffHistory[0];
+  if (
+    lastHandoff &&
+    lastHandoff.fromDesk === fromDesk &&
+    lastHandoff.toDesk === toDesk &&
+    (lastHandoff.status || 'pendente_aceite') === 'pendente_aceite'
+  ) {
+    return { handoff: lastHandoff, alreadyTransferred: true };
+  }
+
+  const now = new Date().toISOString();
+  const entry: OrderHandoffEntry = {
+    id: `hnd-${Date.now()}`,
+    orderId: order.id,
+    fromDesk,
+    toDesk,
+    timestamp: now,
+    reason: reason || 'Transferência entre mesas operacionais',
+    completedSummary: completedSummary || 'Etapa anterior finalizada na mesa.',
+    pendingItems: Array.isArray(pendingItems) ? pendingItems : pendingItems ? [pendingItems] : [],
+    nextActionExpected: nextActionExpected || 'Análise técnica e continuidade dos trabalhos.',
+    documentVersion: documentVersion || order.manufacturingData?.version || 'v1.0',
+    status: 'pendente_aceite',
+  };
+
+  if (!order.handoffHistory) order.handoffHistory = [];
+  order.handoffHistory.unshift(entry);
+
+  order.currentDesk = toDesk;
+  order.deskStatus = params.deskStatusOverride || 'transferido';
+  order.assignedAgentName = DESK_AGENT_NAMES[toDesk] || toDesk;
+  order.updatedAt = now;
+
+  order.auditHistory.unshift({
+    id: `aud-${Date.now()}`,
+    timestamp: now,
+    actor: `${DESK_AGENT_NAMES[fromDesk] || fromDesk} ➔ ${DESK_AGENT_NAMES[toDesk] || toDesk}`,
+    stage: 'Transferência de Mesa',
+    action: `Pedido transferido de ${fromDesk} para ${toDesk}`,
+    details: `Motivo: ${reason}. Próxima ação: ${nextActionExpected}`,
+  });
+
+  if (!store.officeData) {
+    store.officeData = {
+      handoffs: [],
+      generalTransactions: [],
+      strategyRecommendations: [],
+      weeklyStrategyPlans: [],
+      weeklyActionPlans: [],
+      recommendations: [],
+      activeBottlenecks: [],
+      workshopCapacityHoursPerWeek: 80,
+      currentPlannedHoursWeek: 42,
+      lastReconciledAt: now,
+    };
+  }
+  store.officeData.handoffs.unshift(entry);
+  store.officeData.lastReconciledAt = now;
+
+  return { handoff: entry, alreadyTransferred: false };
 }
 
 const DEFAULT_MATERIALS: MaterialCatalogItem[] = [
@@ -7576,105 +7688,27 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         return;
       }
 
-      // Prevenção de duplicidade: se o encaminhamento mais recente já é para a mesma mesa,
-      // pela mesma origem, e ainda está pendente de aceite (ninguém mexeu nele ainda), um
-      // novo clique repetido não deve empilhar outro registro idêntico no histórico.
-      const lastHandoff = order.handoffHistory && order.handoffHistory[0];
-      if (
-        lastHandoff &&
-        lastHandoff.fromDesk === fromDesk &&
-        lastHandoff.toDesk === toDesk &&
-        (lastHandoff.status || 'pendente_aceite') === 'pendente_aceite'
-      ) {
-        res.json({
-          ok: true,
-          handoff: lastHandoff,
-          order,
-          officeData: store.officeData,
-          alreadyTransferred: true,
-        });
-        return;
-      }
-
-      const deskAgentNames: Record<string, string> = {
-        carla_atendimento: 'Carla (Atendimento ao Cliente)',
-        pedro_avaliacao: 'Pedro (Avaliação Técnica)',
-        lucas_projetos: 'Lucas (Projetos & Fabricação)',
-        ana_compras: 'Ana (Compras & Suprimentos)',
-        mila_financeiro: 'Mila (Administração Financeira)',
-        castro_estrategia: 'Castro (Estratégia & Negócio)',
-        julia_marketing: 'Júlia (Marketing & Divulgação)',
-        supervisora_geral: 'Helena (Supervisora Geral)',
-        tapeceiro_tecnico: 'Tapeceiro Técnico (Produção e Materiais)',
-      };
-
-      const now = new Date().toISOString();
-      const handoffId = `hnd-${Date.now()}`;
-      const entry: OrderHandoffEntry = {
-        id: handoffId,
-        orderId,
+      const { handoff, alreadyTransferred } = createOrderHandoff(store, order, {
         fromDesk,
         toDesk,
-        timestamp: now,
-        reason: reason || 'Transferência entre mesas operacionais',
-        completedSummary: completedSummary || 'Etapa anterior finalizada na mesa.',
-        pendingItems: Array.isArray(pendingItems)
-          ? pendingItems
-          : pendingItems
-          ? [pendingItems]
-          : [],
-        nextActionExpected:
-          nextActionExpected || 'Análise técnica e continuidade dos trabalhos.',
-        documentVersion: documentVersion || order.manufacturingData?.version || 'v1.0',
-        status: 'pendente_aceite',
-      };
-
-      if (!order.handoffHistory) order.handoffHistory = [];
-      order.handoffHistory.unshift(entry);
-
-      order.currentDesk = toDesk;
-      order.deskStatus = 'transferido';
-      order.assignedAgentName = deskAgentNames[toDesk] || toDesk;
-      order.updatedAt = now;
-
-      // Registrar auditoria
-      order.auditHistory.unshift({
-        id: `aud-${Date.now()}`,
-        timestamp: now,
-        actor: `${deskAgentNames[fromDesk] || fromDesk} ➔ ${deskAgentNames[toDesk] || toDesk}`,
-        stage: 'Transferência de Mesa',
-        action: `Pedido transferido de ${fromDesk} para ${toDesk}`,
-        details: `Motivo: ${reason}. Próxima ação: ${nextActionExpected}`,
+        reason,
+        completedSummary,
+        pendingItems,
+        nextActionExpected,
+        documentVersion,
       });
 
-      // Atualizar lista central de handoffs no officeData
-      if (!store.officeData) {
-        store.officeData = {
-          handoffs: [],
-          generalTransactions: [],
-          strategyRecommendations: [],
-          weeklyStrategyPlans: [],
-          weeklyActionPlans: [],
-          recommendations: [],
-          activeBottlenecks: [],
-          workshopCapacityHoursPerWeek: 80,
-          currentPlannedHoursWeek: 42,
-          lastReconciledAt: now,
-        };
+      if (!alreadyTransferred) {
+        saveStore(store);
+        broadcastRealtimeEvent({
+          type: 'attendance:updated',
+          timestamp: new Date().toISOString(),
+          sourceStationName: `Mesa ${toDesk}`,
+          attendance: order,
+        });
       }
-      store.officeData.handoffs.unshift(entry);
-      store.officeData.lastReconciledAt = now;
 
-      saveStore(store);
-
-      broadcastRealtimeEvent({
-        type: 'attendance:updated',
-        timestamp: now,
-        sourceStationName: `Mesa ${toDesk}`,
-        attendance: order,
-      });
-
-      res.json({ ok: true, handoff: entry, order, officeData: store.officeData });
+      res.json({ ok: true, handoff, order, officeData: store.officeData, alreadyTransferred });
     } catch (error) {
       console.error('Erro ao transferir pedido entre mesas:', error);
       res.status(500).json({ error: 'Erro ao transferir pedido entre mesas.' });
@@ -8686,6 +8720,7 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         address,
         notes,
         assignedDesk,
+        additionalProducts: incomingAdditionalProducts,
       } = req.body as {
         requestType?: AttendanceRequestType;
         orderType?: OrderType;
@@ -8704,7 +8739,26 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         address?: ClientAddress;
         notes?: string;
         assignedDesk?: DepartmentId;
+        additionalProducts?: Array<Partial<OrderProduct>>;
       };
+
+      // Produtos além do principal (ex.: sofá + 2 poltronas no mesmo pedido) — o produto
+      // principal continua sendo furnitureType/piecesCount/approxMeasurements acima.
+      // Só exige a descrição; quantidade/medidas ficam pendentes se não vierem, igual ao
+      // resto do cadastro da Carla.
+      const now0 = new Date().toISOString();
+      const normalizedAdditionalProducts: OrderProduct[] = Array.isArray(incomingAdditionalProducts)
+        ? incomingAdditionalProducts
+            .filter((p) => p && typeof p.description === 'string' && p.description.trim())
+            .map((p, idx) => ({
+              id: p.id || `prod-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+              description: p.description!.trim(),
+              quantity: p.quantity || '1 unidade',
+              measurements: p.measurements || undefined,
+              notes: p.notes || undefined,
+              createdAt: p.createdAt || now0,
+            }))
+        : [];
 
       // Carla deve poder salvar o atendimento mesmo com dados faltando, mostrando as
       // pendências depois — nunca rejeitar o cadastro por falta de campos secundários.
@@ -8963,6 +9017,7 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
           paymentConditions: '50% entrada e 50% na entrega',
           transactions: [],
         },
+        additionalProducts: normalizedAdditionalProducts.length ? normalizedAdditionalProducts : undefined,
       };
 
       store.attendances.unshift(newOrder);
@@ -8979,6 +9034,619 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     } catch (error) {
       console.error('Erro ao criar pedido:', error);
       res.status(500).json({ error: 'Erro ao criar pedido.' });
+    }
+  });
+
+  // Lista de produtos (principal + adicionais) de um pedido, usada pelas rotas de
+  // avaliação técnica / orçamento itemizado abaixo para validar productId e montar as
+  // listas que o front mostra (Pedro/Lucas/Mila).
+  function listOrderProducts(order: AttendanceRecord): Array<{ id: string; label: string }> {
+    const list: Array<{ id: string; label: string }> = [
+      { id: 'primary', label: `${order.furnitureType} (${order.piecesCount})` },
+    ];
+    for (const p of order.additionalProducts || []) {
+      list.push({ id: p.id, label: `${p.description} (${p.quantity})` });
+    }
+    return list;
+  }
+
+  // Pedro/Lucas — avaliação técnica enxuta por produto: serviços, materiais, mão de
+  // obra e prazo. Não exige preencher todos os produtos de uma vez — grava um de cada
+  // vez por productId, sem apagar avaliações já feitas de outros produtos do mesmo pedido.
+  app.post('/api/orders/:id/technical-evaluation', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const { productId, servicesNeeded, materials, laborHours, laborCostCents, estimatedDeadlineDays, notes, evaluatedBy } =
+        req.body as {
+          productId: string;
+          servicesNeeded?: string;
+          materials?: ProductMaterialNeed[];
+          laborHours?: number | null;
+          laborCostCents?: number | null;
+          estimatedDeadlineDays?: number | null;
+          notes?: string;
+          evaluatedBy?: string;
+        };
+
+      const validIds = listOrderProducts(order).map((p) => p.id);
+      if (!productId || !validIds.includes(productId)) {
+        res.status(400).json({ error: 'Produto do pedido não encontrado (productId inválido).' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const evaluation: ProductTechnicalEvaluation = {
+        productId,
+        servicesNeeded: servicesNeeded || '',
+        // Nunca inventa custo: todo material sem unitCostCents vindo do front fica null
+        // (pendente), nunca preenchido aqui com um palpite.
+        materials: Array.isArray(materials)
+          ? materials.map((m) => ({
+              catalogItemId: m.catalogItemId,
+              name: m.name,
+              quantity: m.quantity ?? null,
+              unit: m.unit || 'un',
+              unitCostCents: m.unitCostCents ?? null,
+            }))
+          : [],
+        laborHours: laborHours ?? null,
+        laborCostCents: laborCostCents ?? null,
+        estimatedDeadlineDays: estimatedDeadlineDays ?? null,
+        notes: notes || undefined,
+        evaluatedBy: evaluatedBy || undefined,
+        evaluatedAt: now,
+      };
+
+      if (!order.productEvaluations) order.productEvaluations = {};
+      order.productEvaluations[productId] = evaluation;
+      order.updatedAt = now;
+
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: evaluatedBy || 'Avaliação Técnica',
+        stage: 'Avaliação Técnica por Produto',
+        action: `Avaliação técnica salva para o produto ${productId}`,
+        details: servicesNeeded || 'Sem descrição de serviços informada.',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Avaliação Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, evaluation });
+    } catch (error) {
+      console.error('Erro ao salvar avaliação técnica por produto:', error);
+      res.status(500).json({ error: 'Erro ao salvar avaliação técnica por produto.' });
+    }
+  });
+
+  // Pedro/Lucas — encaminhar o pedido para a Mila depois da avaliação técnica, mantendo
+  // o mesmo pedido e todos os anexos (não cria nada novo, só reatribui a mesa — mesmo
+  // mecanismo genérico já usado em /api/orders/transfer).
+  app.post('/api/orders/:id/forward-to-mila', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const { fromDesk } = req.body as { fromDesk: DepartmentId };
+      const { handoff, alreadyTransferred } = createOrderHandoff(store, order, {
+        fromDesk: fromDesk || order.currentDesk || 'pedro_avaliacao',
+        toDesk: 'mila_financeiro',
+        reason: 'Avaliação técnica concluída — encaminhado para orçamento.',
+        completedSummary: 'Avaliação técnica por produto registrada (serviços, materiais, mão de obra, prazo).',
+        nextActionExpected: 'Montar orçamento itemizado e homologar.',
+      });
+      if (!alreadyTransferred) {
+        saveStore(store);
+        broadcastRealtimeEvent({
+          type: 'attendance:updated',
+          timestamp: new Date().toISOString(),
+          sourceStationName: 'Mesa mila_financeiro',
+          attendance: order,
+        });
+      }
+      res.json({ ok: true, order, handoff, alreadyTransferred });
+    } catch (error) {
+      console.error('Erro ao encaminhar pedido para a Mila:', error);
+      res.status(500).json({ error: 'Erro ao encaminhar pedido para a Mila.' });
+    }
+  });
+
+  // Mila — monta/atualiza o orçamento itemizado (por produto + total), a partir das
+  // avaliações técnicas (productEvaluations) e do catálogo de materiais. Nunca inventa
+  // custo: todo material sem preço no catálogo entra com unitCostCents: null e o produto
+  // fica com costsPending: true. Ao homologar (confirmedByResponsible: true), encaminha
+  // automaticamente o pedido para a Carla com status 'aguardando_negociacao_cliente'.
+  app.post('/api/orders/:id/itemized-budget', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        discountCents,
+        appliedMarginPercent,
+        appliedFeeCents,
+        confirmedByResponsible,
+        responsibleName,
+        fromDesk,
+      } = req.body as {
+        discountCents?: number;
+        appliedMarginPercent?: number;
+        appliedFeeCents?: number;
+        confirmedByResponsible?: boolean;
+        responsibleName?: string;
+        fromDesk?: DepartmentId;
+      };
+
+      const products = listOrderProducts(order);
+      const evaluations = order.productEvaluations || {};
+      const policy = store.settings?.negotiationPolicy;
+      const marginPercent = appliedMarginPercent ?? policy?.defaultMarginPercent ?? 0;
+
+      const byProduct: ItemizedBudgetEntry[] = products.map((p) => {
+        const evaluation = evaluations[p.id];
+        const materials = evaluation?.materials || [];
+        const items: BudgetLineItem[] = materials.map((m, idx) => {
+          const catalogMatch =
+            (m.catalogItemId ? store.materials.find((cm) => cm.id === m.catalogItemId) : null) ||
+            store.materials.find(
+              (cm) =>
+                cm.name.toLowerCase() === m.name.toLowerCase() ||
+                (cm.code && m.name.toLowerCase().includes(cm.code.toLowerCase()))
+            );
+          const unitCostCents = m.unitCostCents ?? catalogMatch?.unitCostCents ?? null;
+          return {
+            id: `ibi-${p.id}-${idx}`,
+            catalogItemId: catalogMatch?.id || m.catalogItemId,
+            category: 'Material' as BudgetLineCategory,
+            name: m.name,
+            unit: m.unit || 'un',
+            quantity: m.quantity ?? null,
+            quantityStatus: m.quantity == null ? 'A levantar (requer medidas e plano de corte)' : 'Definida',
+            unitCostCents,
+          };
+        });
+        if (evaluation?.laborCostCents != null) {
+          items.push({
+            id: `ibi-${p.id}-labor`,
+            category: 'Mão de obra' as BudgetLineCategory,
+            name: 'Mão de obra',
+            unit: 'serviço',
+            quantity: 1,
+            quantityStatus: 'Definida',
+            unitCostCents: evaluation.laborCostCents,
+          });
+        }
+        // Produto sem avaliação técnica nenhuma ainda não pode ser homologado — um preço de
+        // R$0,00 silencioso seria inventar que o produto não custa nada, não "pendente".
+        const costsPending =
+          !evaluation || items.some((it) => it.unitCostCents == null || it.quantity == null);
+        const materialsCostCents = items.reduce(
+          (sum, it) => sum + (it.unitCostCents || 0) * (it.quantity || 0),
+          0
+        );
+        const sellingPriceCents = costsPending
+          ? null
+          : Math.round(materialsCostCents * (1 + marginPercent / 100));
+        return { productId: p.id, items, sellingPriceCents, costsPending };
+      });
+
+      const anyPending = byProduct.some((b) => b.costsPending);
+      const subtotalCents = byProduct.reduce((sum, b) => sum + (b.sellingPriceCents || 0), 0);
+      const feeCents = appliedFeeCents ?? (policy?.feePercent ? Math.round(subtotalCents * (policy.feePercent / 100)) : 0);
+      const discount = discountCents || 0;
+      const totalSellingPriceCents = anyPending ? null : Math.max(0, subtotalCents + feeCents - discount);
+
+      const now = new Date().toISOString();
+      const itemizedBudget: ItemizedBudget = {
+        byProduct,
+        appliedMarginPercent: marginPercent,
+        appliedFeeCents: feeCents,
+        discountCents: discount,
+        totalSellingPriceCents,
+        confirmedByResponsible: Boolean(confirmedByResponsible) && !anyPending,
+        responsibleName: confirmedByResponsible ? responsibleName : order.itemizedBudget?.responsibleName,
+        confirmedAt: confirmedByResponsible && !anyPending ? now : order.itemizedBudget?.confirmedAt,
+      };
+
+      if (confirmedByResponsible && anyPending) {
+        res.status(400).json({
+          error: 'Existem custos pendentes (não cadastrados no catálogo) — resolva antes de homologar o orçamento.',
+        });
+        return;
+      }
+
+      order.itemizedBudget = itemizedBudget;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: responsibleName || 'Mila (Administração Financeira)',
+        stage: 'Orçamento Itemizado',
+        action: itemizedBudget.confirmedByResponsible
+          ? 'Orçamento itemizado homologado'
+          : 'Orçamento itemizado atualizado (rascunho)',
+        details: `Total: ${totalSellingPriceCents != null ? (totalSellingPriceCents / 100).toFixed(2) : 'pendente'}`,
+      });
+
+      let handoff = null;
+      if (itemizedBudget.confirmedByResponsible) {
+        const result = createOrderHandoff(store, order, {
+          fromDesk: fromDesk || order.currentDesk || 'mila_financeiro',
+          toDesk: 'carla_atendimento',
+          reason: 'Orçamento itemizado homologado — pronto para negociação com o cliente.',
+          completedSummary: 'Orçamento por produto e total calculados e homologados pela Mila.',
+          nextActionExpected: 'Negociar condições com o cliente (entrada, parcelas, aceite).',
+          deskStatusOverride: 'aguardando_negociacao_cliente',
+        });
+        handoff = result.handoff;
+      }
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Mila (Administração Financeira)',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, itemizedBudget, handoff });
+    } catch (error) {
+      console.error('Erro ao montar orçamento itemizado:', error);
+      res.status(500).json({ error: 'Erro ao montar orçamento itemizado.' });
+    }
+  });
+
+  // Carla — salva os termos de negociação (valor final, desconto, entrada, forma de
+  // pagamento, parcelas/integral/saldo na entrega, data de entrega). Exige orçamento já
+  // homologado pela Mila, mesmo princípio de dupla trava do /api/orders/:id/budget-decision.
+  app.post('/api/orders/:id/negotiation', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      if (!order.itemizedBudget?.confirmedByResponsible) {
+        res.status(400).json({ error: 'O orçamento itemizado ainda não foi homologado pela Mila.' });
+        return;
+      }
+      const {
+        finalPriceCents,
+        discountCents,
+        downPayment,
+        balanceMode,
+        installments,
+        deliveryDate,
+        deliveryDateValidatedBy,
+      } = req.body as {
+        finalPriceCents: number;
+        discountCents?: number;
+        downPayment?: OrderNegotiation['downPayment'];
+        balanceMode: OrderNegotiation['balanceMode'];
+        installments?: OrderInstallment[];
+        deliveryDate?: string;
+        deliveryDateValidatedBy?: string;
+      };
+
+      if (typeof finalPriceCents !== 'number' || finalPriceCents <= 0) {
+        res.status(400).json({ error: 'Informe o valor final da negociação.' });
+        return;
+      }
+      if (!balanceMode) {
+        res.status(400).json({ error: 'Escolha a forma do saldo: parcelado, integral ou na entrega.' });
+        return;
+      }
+
+      // Fora da política aprovada pelo proprietário (desconto acima do máximo configurado)
+      // trava em requiresOwnerApproval até alguém aprovar explicitamente a exceção.
+      const policy = store.settings?.negotiationPolicy;
+      const appliedDiscount = discountCents || 0;
+      const homologatedTotal = order.itemizedBudget.totalSellingPriceCents || 0;
+      const discountPercent = homologatedTotal > 0 ? (appliedDiscount / homologatedTotal) * 100 : 0;
+      const requiresOwnerApproval = Boolean(
+        policy?.maxDiscountPercent != null && discountPercent > policy.maxDiscountPercent
+      );
+
+      const now = new Date().toISOString();
+      const negotiation: OrderNegotiation = {
+        finalPriceCents,
+        discountCents: appliedDiscount,
+        downPayment,
+        balanceMode,
+        installments: Array.isArray(installments) ? installments : [],
+        deliveryDate,
+        deliveryDateValidatedBy,
+        requiresOwnerApproval,
+        ownerApproval: requiresOwnerApproval ? undefined : order.negotiation?.ownerApproval,
+        clientDecision: undefined, // qualquer alteração nos termos invalida uma decisão anterior
+        clientDecisionAt: undefined,
+        clientDecisionBy: undefined,
+        clientDecisionPriceCentsSnapshot: undefined,
+        transactions: order.negotiation?.transactions || [],
+        updatedAt: now,
+      };
+
+      order.negotiation = negotiation;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: 'Carla (Atendimento ao Cliente)',
+        stage: 'Negociação',
+        action: requiresOwnerApproval
+          ? 'Termos de negociação salvos — fora da política, aguardando aprovação do proprietário'
+          : 'Termos de negociação salvos',
+        details: `Valor final: ${(finalPriceCents / 100).toFixed(2)}. Desconto: ${(appliedDiscount / 100).toFixed(2)}.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Carla (Atendimento ao Cliente)',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, negotiation });
+    } catch (error) {
+      console.error('Erro ao salvar termos de negociação:', error);
+      res.status(500).json({ error: 'Erro ao salvar termos de negociação.' });
+    }
+  });
+
+  // Proprietário — aprova (ou rejeita) uma exceção de política (ex.: desconto acima do
+  // máximo configurado). Só depois disso o aceite/recusa do cliente pode ser registrado.
+  app.post('/api/orders/:id/negotiation/approve-exception', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order?.negotiation) {
+        res.status(404).json({ error: 'Negociação não encontrada para este pedido.' });
+        return;
+      }
+      const { approved, approvedBy, notes } = req.body as { approved: boolean; approvedBy: string; notes?: string };
+      if (!approvedBy || !approvedBy.trim()) {
+        res.status(400).json({ error: 'Informe quem está aprovando/rejeitando a exceção.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      order.negotiation.ownerApproval = { approved: Boolean(approved), approvedBy, approvedAt: now, notes };
+      if (approved) {
+        order.negotiation.requiresOwnerApproval = false;
+      }
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: approvedBy,
+        stage: 'Negociação — Exceção de Política',
+        action: approved ? 'Exceção de desconto/preço aprovada pelo proprietário' : 'Exceção rejeitada pelo proprietário',
+        details: notes || '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Proprietário',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, negotiation: order.negotiation });
+    } catch (error) {
+      console.error('Erro ao aprovar exceção de negociação:', error);
+      res.status(500).json({ error: 'Erro ao aprovar exceção de negociação.' });
+    }
+  });
+
+  // Carla — registra o aceite ou recusa do cliente, com o mesmo padrão de snapshot de
+  // preço (para detectar obsolescência) já usado em BudgetData.clientDecisionPriceCentsSnapshot.
+  app.post('/api/orders/:id/negotiation/decision', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order?.negotiation) {
+        res.status(404).json({ error: 'Negociação não encontrada para este pedido.' });
+        return;
+      }
+      const { decision, decidedBy } = req.body as { decision: 'aceito' | 'recusado'; decidedBy?: string };
+      if (decision !== 'aceito' && decision !== 'recusado') {
+        res.status(400).json({ error: 'Decisão inválida.' });
+        return;
+      }
+      if (order.negotiation.requiresOwnerApproval && !order.negotiation.ownerApproval?.approved) {
+        res.status(400).json({
+          error: 'Os termos estão fora da política aprovada e ainda dependem de aprovação do proprietário.',
+        });
+        return;
+      }
+      const now = new Date().toISOString();
+      order.negotiation.clientDecision = decision;
+      order.negotiation.clientDecisionAt = now;
+      order.negotiation.clientDecisionBy = decidedBy;
+      order.negotiation.clientDecisionPriceCentsSnapshot = order.negotiation.finalPriceCents;
+      order.negotiation.updatedAt = now;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: decidedBy || 'Carla (Atendimento ao Cliente)',
+        stage: 'Negociação — Decisão do Cliente',
+        action: decision === 'aceito' ? 'Cliente aceitou a proposta' : 'Cliente recusou a proposta',
+        details: `Valor na decisão: ${(order.negotiation.finalPriceCents / 100).toFixed(2)}.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Carla (Atendimento ao Cliente)',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, negotiation: order.negotiation });
+    } catch (error) {
+      console.error('Erro ao registrar decisão do cliente:', error);
+      res.status(500).json({ error: 'Erro ao registrar decisão do cliente.' });
+    }
+  });
+
+  // Mila — registra um pagamento (entrada ou parcela) com valor/data/forma/responsável/
+  // comprovante. Cria negotiation sob demanda (mesmo padrão de lazy-create já usado em
+  // /api/orders/financial para financialData) para permitir registrar um adiantamento
+  // mesmo antes de existir negociação formal.
+  app.post('/api/orders/:id/payments', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        amountCents,
+        paidDate,
+        paymentMethod,
+        registeredBy,
+        receiptImageUrl,
+        receiptMimeType,
+        installmentIndex,
+        targetsDownPayment,
+        status,
+      } = req.body as {
+        amountCents: number;
+        paidDate: string;
+        paymentMethod: PaymentMethod;
+        registeredBy: string;
+        receiptImageUrl?: string;
+        receiptMimeType?: string;
+        installmentIndex?: number;
+        targetsDownPayment?: boolean;
+        status?: OrderPaymentStatus;
+      };
+
+      if (!amountCents || amountCents <= 0) {
+        res.status(400).json({ error: 'Informe um valor de pagamento maior que zero.' });
+        return;
+      }
+      if (!registeredBy || !registeredBy.trim()) {
+        res.status(400).json({ error: 'Informe quem está registrando o pagamento.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      if (!order.negotiation) {
+        order.negotiation = {
+          finalPriceCents: 0,
+          discountCents: 0,
+          balanceMode: 'integral',
+          installments: [],
+          requiresOwnerApproval: false,
+          transactions: [],
+          updatedAt: now,
+        };
+      }
+
+      const resolvedStatus: OrderPaymentStatus = status || 'informada_aguardando_confirmacao';
+      const paymentEntry: FinancialPaymentEntry = {
+        id: `pay-${Date.now()}`,
+        amountCents,
+        paidDate: paidDate || now,
+        paymentMethod,
+        notes: registeredBy,
+      };
+
+      const transaction: FinancialTransaction = {
+        id: `fin-${Date.now()}`,
+        orderId: order.id,
+        orderNumber: order.attendanceNumber,
+        clientName: order.clientName,
+        type: 'receita_cliente',
+        description: targetsDownPayment
+          ? 'Entrada'
+          : installmentIndex != null
+          ? `Parcela ${installmentIndex}`
+          : 'Pagamento',
+        amountCents,
+        dueDate: paidDate || now,
+        paidDate: paidDate || now,
+        createdAt: now,
+        status: resolvedStatus === 'confirmada' ? 'realizado' : 'previsto',
+        installmentIndex,
+        paymentMethod,
+        receiptImageUrl,
+        receiptMimeType,
+        history: [{ action: 'Pagamento registrado', timestamp: now, notes: registeredBy }],
+        amountPaidCents: amountCents,
+        payments: [paymentEntry],
+      };
+
+      order.negotiation.transactions.push(transaction);
+
+      // Atualiza o status da entrada ou da parcela correspondente, nos mesmos 4 estados
+      // pedidos: combinada / informada aguardando confirmação / confirmada / saldo a receber.
+      // Permite registrar um adiantamento mesmo sem entrada formalmente combinada ainda
+      // (ex.: pagamento integral, ou sinal dado antes da negociação) — cria a entrada
+      // sob demanda em vez de descartar o registro silenciosamente.
+      if (targetsDownPayment) {
+        if (!order.negotiation.downPayment) {
+          order.negotiation.downPayment = { amountCents, method: paymentMethod, status: resolvedStatus };
+        } else {
+          order.negotiation.downPayment.status = resolvedStatus;
+        }
+      } else if (installmentIndex != null) {
+        const inst = order.negotiation.installments.find((i) => i.index === installmentIndex);
+        if (inst) inst.status = resolvedStatus;
+      }
+
+      order.negotiation.updatedAt = now;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: registeredBy,
+        stage: 'Pagamento',
+        action: `Pagamento registrado: ${(amountCents / 100).toFixed(2)} via ${paymentMethod}`,
+        details: resolvedStatus,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Mila (Administração Financeira)',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, negotiation: order.negotiation, transaction });
+    } catch (error) {
+      console.error('Erro ao registrar pagamento:', error);
+      res.status(500).json({ error: 'Erro ao registrar pagamento.' });
     }
   });
 
