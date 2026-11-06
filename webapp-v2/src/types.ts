@@ -330,6 +330,10 @@ export interface ProductMaterialNeed {
   quantity: number | null; // null = a levantar
   unit: string;
   unitCostCents: number | null; // null = pendente — nunca inventado
+  // Distingue quantidade confirmada de estimativa técnica (ex.: calculada a
+  // partir das medidas da visita) — nunca tratadas como a mesma certeza.
+  quantityStatus?: 'confirmada' | 'estimada' | 'pendente';
+  calculationMemo?: string; // memória do cálculo quando quantityStatus === 'estimada'
 }
 
 export interface ProductTechnicalEvaluation {
@@ -342,6 +346,9 @@ export interface ProductTechnicalEvaluation {
   notes?: string;
   evaluatedBy?: string;
   evaluatedAt?: string;
+  // Fase da avaliação: preliminar por fotos, visita com o móvel montado (ficha de
+  // medidas), ou inspeção após desmontagem — nunca exige a última para ser útil.
+  evaluationPhase?: 'preliminar_fotos' | 'visita_montado' | 'inspecao_desmontagem';
 }
 
 // Orçamento itemizado (Mila), paralelo a BudgetData/OrderFinancialData — não os
@@ -534,6 +541,215 @@ export interface TechnicalReassessment {
   createdAt: string;
 }
 
+// ----------------------------------------------------------------------------
+// FICHA DE VISITA TÉCNICA E LEVANTAMENTO DE MEDIDAS (fase 2 da avaliação de
+// reforma, entre a avaliação preliminar por fotos e a inspeção pós-desmontagem
+// já existente em InspectionSheet). Visita com o móvel ainda montado: medidas
+// reais e testes de funcionamento feitos pelo operador, nunca confirmação de
+// condição interna por foto. Tudo aditivo, por produto/peça (unitIndex).
+// ----------------------------------------------------------------------------
+
+// Origem de cada dado da ficha de visita — vocabulário próprio desta ficha
+// (distinto de InformationOrigin, que é da análise por foto/11 áreas), porque
+// aqui a fonte típica é o operador medindo presencialmente, não a oficina.
+export type VisitInfoOrigin =
+  | 'observado_foto'
+  | 'medido_pelo_operador'
+  | 'estimativa_tecnica'
+  | 'confirmado_apos_desmontagem'
+  | 'pendente';
+
+export const VISIT_INFO_ORIGIN_LABELS: Record<VisitInfoOrigin, string> = {
+  observado_foto: 'Observado por foto',
+  medido_pelo_operador: 'Medido pelo operador',
+  estimativa_tecnica: 'Estimativa técnica',
+  confirmado_apos_desmontagem: 'Confirmado após desmontagem',
+  pendente: 'Pendente',
+};
+
+// Toda medida carrega a unidade no próprio texto (ex.: "58 cm") — nunca um
+// número solto — e sua origem, para nunca confundir estimativa com medida real.
+export interface VisitMeasurement {
+  value: string | null; // ex.: "58 cm"; null = ainda não levantada
+  origin: VisitInfoOrigin;
+}
+
+export interface ProductOverallMeasurements {
+  width?: VisitMeasurement;
+  height?: VisitMeasurement;
+  depth?: VisitMeasurement;
+  depthOpen?: VisitMeasurement; // quando aplicável (ex.: sofá-cama, reclinável)
+}
+
+export interface ArmMeasurement {
+  id: string;
+  side: 'esquerdo' | 'direito';
+  length?: VisitMeasurement;
+  width?: VisitMeasurement;
+  height?: VisitMeasurement;
+}
+
+export interface SeatMeasurement {
+  id: string;
+  label?: string; // ex.: "Assento 1"
+  width?: VisitMeasurement;
+  depth?: VisitMeasurement;
+  cushionThickness?: VisitMeasurement;
+  heightFromFloor?: VisitMeasurement;
+}
+
+export interface BackrestMeasurement {
+  id: string;
+  label?: string;
+  width?: VisitMeasurement;
+  height?: VisitMeasurement;
+  thickness?: VisitMeasurement;
+}
+
+export interface LooseCushionMeasurement {
+  id: string;
+  identification: string; // ex.: "Almofada decorativa 1"
+  quantity?: number | null;
+  width?: VisitMeasurement;
+  heightOrDepth?: VisitMeasurement;
+  thickness?: VisitMeasurement;
+}
+
+export interface BaseAndFeetMeasurement {
+  accessibleMeasurements?: string;
+  feetHeight?: VisitMeasurement;
+  feetQuantity?: number | null;
+}
+
+export interface RecliningModuleMeasurement {
+  id: string;
+  moduleLabel: string;
+  closedMeasurements?: string;
+  openMeasurements?: string;
+  observedFunction?: string; // funcionamento observado pelo operador, nunca presumido
+}
+
+export interface OtherPartMeasurement {
+  id: string;
+  name: string;
+  location?: string;
+  quantity?: number | null;
+  measurement?: VisitMeasurement;
+}
+
+export interface FreehandSketch {
+  photoId?: string; // foto do desenho à mão (AttendancePhoto.id)
+  measurementLabels?: string; // identificação das medidas no desenho
+  referencedPhotoIds?: string[]; // referência às fotos do produto já vinculadas
+}
+
+export interface ProductMeasurementSet {
+  overall: ProductOverallMeasurements;
+  arms: ArmMeasurement[];
+  seats: SeatMeasurement[];
+  backrests: BackrestMeasurement[];
+  looseCushions: LooseCushionMeasurement[];
+  baseAndFeet?: BaseAndFeetMeasurement;
+  recliningModules: RecliningModuleMeasurement[];
+  otherParts: OtherPartMeasurement[];
+  freehandSketch?: FreehandSketch;
+}
+
+// Checklist de materiais e condições da visita — por componente aplicável,
+// reaproveitando o mesmo vocabulário de 14 componentes e 6 marcações já usado
+// na ficha de verificação pós-desmontagem (InspectionComponentKey/InspectionMarking).
+export interface VisitComponentEntry {
+  id: string;
+  component: InspectionComponentKey;
+  locationLabel?: string;
+  quantity?: number | null;
+  condition: InspectionMarking;
+  // Situação da conferência, distinta da condição: uma peça inacessível fica
+  // 'nao_verificado' mesmo que alguém "ache" que está boa — nunca se presume.
+  checkStatus: 'verificado' | 'nao_verificado' | 'nao_se_aplica';
+  defectObserved?: string;
+  detailPhotoId?: string;
+  actionProposed?: 'manter' | 'reparar' | 'substituir' | 'pendente';
+  notes?: string;
+  origin: VisitInfoOrigin;
+
+  // Espuma: densidade/especificação só confirmada quando identificada por fonte
+  // confiável (etiqueta, nota fiscal) — senão fica "não identificada", nunca
+  // estimada pela aparência/toque.
+  foamAccessibleMeasurement?: string;
+  foamDeformation?: 'nao_avaliado' | 'ausente' | 'parcial' | 'severa';
+  foamSinking?: 'nao_avaliado' | 'ausente' | 'presente';
+  foamDensitySpecification?: string;
+
+  // Tecido
+  fabricCurrentCovering?: string;
+  fabricDesiredCovering?: string;
+  fabricColor?: string;
+  fabricPattern?: string;
+  fabricPatternDirection?: 'Vertical' | 'Horizontal' | 'Indiferente';
+  fabricWear?: string;
+  fabricTears?: string;
+  fabricPartsToRecover?: string;
+  fabricUsableWidthCm?: number | null;
+
+  // Estrutura e mecanismos — partes inacessíveis ficam 'nao_verificado', nunca
+  // presumidas boas ou danificadas.
+  structurePlay?: string; // folgas
+  structureNoise?: string; // ruídos
+  structureInstability?: string;
+  observedFunction?: string; // funcionamento observado
+}
+
+export type TechnicalVisitSheetStatus = 'gerada' | 'enviada_para_reavaliacao' | 'reavaliada';
+
+export interface TechnicalVisitSheet {
+  id: string;
+  orderId: string;
+  productId: string; // 'primary' | OrderProduct.id
+  unitIndex: number; // identifica a peça individual dentro da quantidade do produto
+  unitLabel?: string; // ex.: "Cadeira 1 de 4"
+  visitAddress?: string;
+  operatorName?: string;
+  visitDate?: string;
+  version: number; // nunca sobrescrita — nova versão arquiva a anterior
+  status: TechnicalVisitSheetStatus;
+  measurements: ProductMeasurementSet;
+  components: VisitComponentEntry[];
+  createdAt: string;
+  submittedPhotoIds?: string[]; // novas fotos de detalhe enviadas junto com a devolução
+  submittedFormImageId?: string; // foto da ficha marcada manualmente
+  aiReadResult?: InspectionFormReadResult; // reaproveita o mesmo resultado de leitura
+  confirmedAt?: string;
+  confirmedBy?: string;
+}
+
+// Parecer do Pedro após confirmar a ficha de visita — encaminhado ao Tapeceiro
+// Técnico para compor materiais/mão de obra/orçamento preliminar.
+export interface TechnicalVisitOpinion {
+  id: string;
+  visitSheetId: string;
+  productId: string;
+  unitIndex: number;
+  version: number;
+  productDescription: string;
+  verifiedConditionsSummary: string;
+  recommendedServices: string;
+  servicesJustification: string;
+  materialsToKeep: string[];
+  materialsToRepair: string[];
+  materialsToReplace: string[];
+  pendingDisassemblyItems: string[]; // pendências que só se resolvem após desmontagem
+  sufficientForBudget: string[]; // informações já suficientes para o orçamento
+  missingForBudget: string[]; // informações ainda ausentes, explicadas (nunca só "faltam dados")
+  // Materiais estimados a partir das medidas da visita (tecido/espuma), com
+  // memória de cálculo — nunca aplicados automaticamente: o Tapeceiro Técnico
+  // decide incorporar ou não ao plano.
+  estimatedMaterials: ProductMaterialNeed[];
+  requiresNegotiationReview: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
 // Manual de execução — PDF A4, rascunho até aprovação.
 export interface ExecutionManualStep {
   stepNumber: number;
@@ -708,6 +924,11 @@ export interface AttendanceRecord {
   technicalReassessments?: TechnicalReassessment[];
   executionManuals?: ExecutionManual[];
   qualityControlHistory?: QualityControlInspection[];
+
+  // Ficha de visita técnica e levantamento de medidas (fase 2, móvel montado) —
+  // acumulada por produto/peça, igual ao padrão de inspectionSheets acima.
+  technicalVisitSheets?: TechnicalVisitSheet[];
+  technicalVisitOpinions?: TechnicalVisitOpinion[];
 }
 
 export type RawMaterialCategory =
@@ -1492,6 +1713,9 @@ export interface ManufacturingMaterialRequirement {
   purchaseDisbursementCents?: number;
   source: SpecificationSource;
   notes?: string;
+  // Memória do cálculo quando source === 'calculado_tecnico' (ex.: estimativa de
+  // tecido/espuma a partir da ficha de visita técnica) — nunca um número solto.
+  calculationMemo?: string;
 }
 
 export interface AssemblyManualStep {

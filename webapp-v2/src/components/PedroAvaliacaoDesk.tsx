@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AttendanceRecord, MaterialCatalogItem, WorkshopSettings } from '../types';
 import { ProductTechnicalEvaluationForm } from './ProductTechnicalEvaluationForm';
+import { TechnicalVisitSheetForm } from './TechnicalVisitSheetForm';
 import { InspectionSheetForm } from './InspectionSheetForm';
 import { ExecutionManualView } from './ExecutionManualView';
 import { QualityControlBoard } from './QualityControlBoard';
@@ -12,7 +13,7 @@ interface PedroAvaliacaoDeskProps {
   onUpdateOrder: (updated: AttendanceRecord) => void;
 }
 
-type PedroTab = 'avaliacao' | 'vistoria' | 'manual' | 'qualidade';
+type PedroTab = 'avaliacao' | 'visita' | 'vistoria' | 'manual' | 'qualidade';
 
 export const PedroAvaliacaoDesk: React.FC<PedroAvaliacaoDeskProps> = ({
   order,
@@ -33,10 +34,11 @@ export const PedroAvaliacaoDesk: React.FC<PedroAvaliacaoDeskProps> = ({
   };
 
   const tabs: Array<{ id: PedroTab; label: string }> = [
-    { id: 'avaliacao', label: '1. Avaliação Técnica' },
-    { id: 'vistoria', label: '2. Ficha de Verificação & Reavaliação' },
-    { id: 'manual', label: '3. Manual de Execução' },
-    { id: 'qualidade', label: '4. Controle de Qualidade' },
+    { id: 'avaliacao', label: '1. Avaliação Preliminar (fotos)' },
+    { id: 'visita', label: '2. Visita Técnica (medidas)' },
+    { id: 'vistoria', label: '3. Inspeção Após Desmontagem' },
+    { id: 'manual', label: '4. Manual de Execução' },
+    { id: 'qualidade', label: '5. Controle de Qualidade' },
   ];
 
   return (
@@ -44,7 +46,10 @@ export const PedroAvaliacaoDesk: React.FC<PedroAvaliacaoDeskProps> = ({
       <div className="p-6 pb-0">
         <h3 className="font-bold text-sm text-[#181512]">Mesa de Avaliação Técnica — {order.attendanceNumber}</h3>
         <p className="text-xs text-[#6B6257] mt-0.5">
-          Para uma análise de defeitos completa (11 áreas), use o botão "Abrir Vistoria das 11 Áreas" acima.
+          Três fases, nenhuma delas exige desmontagem para começar: <strong>1. Avaliação Preliminar</strong> (a
+          partir das fotos já recebidas — use o botão "Abrir Vistoria das 11 Áreas" acima para a análise completa
+          de defeitos), <strong>2. Visita Técnica</strong> (móvel ainda montado, medidas e testes reais) e{' '}
+          <strong>3. Inspeção Após Desmontagem</strong> (só quando for realmente necessário confirmar algo interno).
         </p>
       </div>
 
@@ -74,6 +79,14 @@ export const PedroAvaliacaoDesk: React.FC<PedroAvaliacaoDeskProps> = ({
             onUpdateOrder={onUpdateOrder}
             onForwardToMila={handleForwardToMila}
             fromDesk="pedro_avaliacao"
+          />
+        )}
+        {activeTab === 'visita' && (
+          <TechnicalVisitSheetForm
+            order={order}
+            settings={settings}
+            defaultResponsibleName={settings.responsibleDefaultName}
+            onUpdateOrder={onUpdateOrder}
           />
         )}
         {activeTab === 'vistoria' && (

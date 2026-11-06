@@ -13,6 +13,8 @@ import {
   ExecutionManual,
   INSPECTION_COMPONENT_LABELS,
   INSPECTION_MARKING_LABELS,
+  TechnicalVisitSheet,
+  VisitMeasurement,
 } from '../types';
 import {
   calculateBudgetSummary,
@@ -2164,6 +2166,312 @@ export async function generateInspectionSheetPdf(
 
   addPageNumbersAndFooter(doc, false, order.attendanceNumber);
   doc.save(`Ficha_Verificacao_${order.attendanceNumber}_${sheet.unitLabel || sheet.unitIndex}_v${sheet.version}.pdf`);
+}
+
+function mv(m?: VisitMeasurement): string {
+  return m?.value ? m.value : '_____________';
+}
+
+// Ficha de visita técnica e levantamento de medidas (A4), gerada por peça
+// individual dentro da quantidade de um produto — móvel ainda montado. Cabeçalho
+// repetido via rodapé em todas as páginas (addPageNumbersAndFooter), caixas
+// grandes de marcação, espaço amplo para escrever, quantas folhas forem
+// necessárias sem comprimir conteúdo.
+export async function generateTechnicalVisitSheetPdf(
+  order: AttendanceRecord,
+  sheet: TechnicalVisitSheet,
+  settings: WorkshopSettings
+): Promise<void> {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const productLabel =
+    sheet.productId === 'primary'
+      ? order.furnitureType
+      : order.additionalProducts?.find((p) => p.id === sheet.productId)?.description || order.furnitureType;
+
+  doc.setFillColor(24, 21, 18);
+  doc.rect(15, 14, 180, 24, 'F');
+  drawCastrosLogoMark(doc, 23.5, 26, 6.5);
+  doc.setTextColor(249, 246, 240);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12.5);
+  doc.text(
+    `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — FICHA DE VISITA TÉCNICA E MEDIDAS`,
+    34,
+    23
+  );
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(212, 185, 140);
+  doc.text(
+    `Pedido: ${order.attendanceNumber}   |   Versão: v${sheet.version}   |   ${new Date().toLocaleDateString('pt-BR')}`,
+    34,
+    30.5
+  );
+
+  let cursorY = 44;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('CABEÇALHO', 15, cursorY);
+  cursorY += 3;
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 2.5, textColor: [28, 25, 23] },
+    body: [
+      ['Pedido', order.attendanceNumber],
+      ['Cliente', formatMissingText(order.clientName)],
+      ['Produto', productLabel],
+      ['Identificação da peça', sheet.unitLabel || `Unidade ${sheet.unitIndex}`],
+      ['Endereço da visita', formatMissingText(sheet.visitAddress)],
+      ['Operador', formatMissingText(sheet.operatorName)],
+      ['Data da visita', sheet.visitDate ? new Date(sheet.visitDate).toLocaleDateString('pt-BR') : '_____________'],
+      ['Versão', `v${sheet.version}`],
+    ],
+  });
+  cursorY = (doc as any).lastAutoTable.finalY + 8;
+
+  if (cursorY > 260) {
+    doc.addPage();
+    cursorY = 20;
+  }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('QUADRO DE MEDIDAS DO PRODUTO MONTADO (todas as medidas em cm)', 15, cursorY);
+  cursorY += 4;
+
+  const m = sheet.measurements;
+  const measurementRows: Array<[string, string]> = [
+    [
+      'Produto completo',
+      `Largura: ${mv(m.overall.width)}   Altura: ${mv(m.overall.height)}   Profundidade: ${mv(
+        m.overall.depth
+      )}   Prof. aberto: ${mv(m.overall.depthOpen)}`,
+    ],
+    ...m.arms.map(
+      (a): [string, string] => [
+        `Braço ${a.side}`,
+        `Comprimento: ${mv(a.length)}   Largura: ${mv(a.width)}   Altura: ${mv(a.height)}`,
+      ]
+    ),
+    ...m.seats.map(
+      (s): [string, string] => [
+        s.label || 'Assento',
+        `Largura: ${mv(s.width)}   Profundidade: ${mv(s.depth)}   Espessura da almofada: ${mv(
+          s.cushionThickness
+        )}   Altura ao piso: ${mv(s.heightFromFloor)}`,
+      ]
+    ),
+    ...m.backrests.map(
+      (b): [string, string] => [
+        b.label || 'Encosto',
+        `Largura: ${mv(b.width)}   Altura: ${mv(b.height)}   Espessura: ${mv(b.thickness)}`,
+      ]
+    ),
+    ...m.looseCushions.map(
+      (c): [string, string] => [
+        c.identification || 'Almofada solta',
+        `Quantidade: ${c.quantity ?? '______'}   Largura: ${mv(c.width)}   Altura/Profundidade: ${mv(
+          c.heightOrDepth
+        )}   Espessura: ${mv(c.thickness)}`,
+      ]
+    ),
+    ...(m.baseAndFeet
+      ? ([
+          [
+            'Base e pés',
+            `Medidas acessíveis: ${m.baseAndFeet.accessibleMeasurements || '_____________'}   Altura dos pés: ${mv(
+              m.baseAndFeet.feetHeight
+            )}   Quantidade: ${m.baseAndFeet.feetQuantity ?? '______'}`,
+          ],
+        ] as Array<[string, string]>)
+      : []),
+    ...m.recliningModules.map(
+      (r): [string, string] => [
+        `Módulo retrátil/reclinável — ${r.moduleLabel}`,
+        `Fechado: ${r.closedMeasurements || '_____________'}   Aberto: ${
+          r.openMeasurements || '_____________'
+        }   Funcionamento observado: ${r.observedFunction || '_____________'}`,
+      ]
+    ),
+    ...m.otherParts.map(
+      (o): [string, string] => [
+        `Outra parte — ${o.name}`,
+        `Localização: ${o.location || '_____________'}   Quantidade: ${o.quantity ?? '______'}   Medida: ${mv(
+          o.measurement
+        )}`,
+      ]
+    ),
+  ];
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 7.8, cellPadding: 2.5, textColor: [28, 25, 23] },
+    headStyles: { fillColor: [45, 40, 35], textColor: [255, 255, 255], fontStyle: 'bold' },
+    head: [['Parte', 'Campos para preenchimento']],
+    columnStyles: { 0: { cellWidth: 42, fontStyle: 'bold' }, 1: { cellWidth: 138 } },
+    body: measurementRows,
+  });
+  cursorY = (doc as any).lastAutoTable.finalY + 8;
+
+  if (cursorY > 255) {
+    doc.addPage();
+    cursorY = 20;
+  }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('DESENHO À MÃO (identifique as medidas e referencie as fotos)', 15, cursorY);
+  cursorY += 3;
+  doc.setDrawColor(200, 190, 175);
+  doc.setLineWidth(0.3);
+  doc.rect(15, cursorY, 180, 55, 'S');
+  cursorY += 60;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  if (cursorY > 265) {
+    doc.addPage();
+    cursorY = 20;
+  }
+  doc.text('CHECKLIST DE MATERIAIS E CONDIÇÕES', 15, cursorY);
+  cursorY += 2;
+
+  const ACTION_PROPOSED_LABELS: Record<string, string> = {
+    manter: 'Manter',
+    reparar: 'Reparar',
+    substituir: 'Substituir',
+    pendente: 'Pendente',
+  };
+  const CHECK_STATUS_LABELS: Record<string, string> = {
+    verificado: 'Verificado',
+    nao_verificado: 'Não verificado',
+    nao_se_aplica: 'Não se aplica',
+  };
+
+  for (const entry of sheet.components) {
+    const extraLines =
+      entry.component === 'espumas'
+        ? 2
+        : entry.component === 'revestimento' || entry.component === 'costuras'
+        ? 3
+        : entry.component === 'estrutura' || entry.component === 'mecanismos'
+        ? 2
+        : 0;
+    const blockHeight = 38 + extraLines * 4.5;
+    if (cursorY + blockHeight > 282) {
+      doc.addPage();
+      cursorY = 20;
+    }
+    const top = cursorY;
+    doc.setDrawColor(200, 190, 175);
+    doc.setLineWidth(0.3);
+    doc.rect(15, top, 180, blockHeight, 'S');
+
+    let y = top + 5.5;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(24, 21, 18);
+    doc.text(INSPECTION_COMPONENT_LABELS[entry.component].toUpperCase(), 18, y);
+
+    y += 5;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(87, 83, 78);
+    doc.text(
+      `Localização: ${entry.locationLabel || '_________________________'}   |   Quantidade: ${
+        entry.quantity ?? '______'
+      }`,
+      18,
+      y
+    );
+
+    y += 5.5;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text('Condição:', 18, y + 3.2);
+    let boxX = 38;
+    for (const marking of INSPECTION_MARKING_ORDER) {
+      drawInspectionCheckbox(doc, boxX, y, 4, entry.condition === marking);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.text(INSPECTION_MARKING_LABELS[marking], boxX + 5, y + 3.2);
+      boxX += 5 + INSPECTION_MARKING_LABELS[marking].length * 1.5 + 4;
+    }
+
+    y += 7;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text('Conferência:', 18, y + 3.2);
+    boxX = 44;
+    for (const status of ['verificado', 'nao_verificado', 'nao_se_aplica']) {
+      drawInspectionCheckbox(doc, boxX, y, 4, entry.checkStatus === status);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.text(CHECK_STATUS_LABELS[status], boxX + 5, y + 3.2);
+      boxX += 5 + CHECK_STATUS_LABELS[status].length * 1.5 + 5;
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text('Ação proposta:', 118, y + 3.2);
+    boxX = 143;
+    for (const action of ['manter', 'reparar', 'substituir', 'pendente']) {
+      drawInspectionCheckbox(doc, boxX, y, 4, entry.actionProposed === action);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.text(ACTION_PROPOSED_LABELS[action], boxX + 5, y + 3.2);
+      boxX += 5 + ACTION_PROPOSED_LABELS[action].length * 1.5 + 4;
+    }
+
+    y += 7;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(87, 83, 78);
+    doc.text('Defeito observado / observações: ___________________________________________________________', 18, y);
+
+    if (entry.component === 'espumas') {
+      y += 5;
+      doc.text(
+        'Medida acessível: _________________   Deformação: ( ) Ausente ( ) Parcial ( ) Severa   Afundamento: ( ) Ausente ( ) Presente',
+        18,
+        y
+      );
+      y += 4.5;
+      doc.text(
+        'Especificação/densidade (só se identificada por etiqueta/nota fiscal, senão "não identificada"): _________________________',
+        18,
+        y
+      );
+    }
+    if (entry.component === 'revestimento' || entry.component === 'costuras') {
+      y += 5;
+      doc.text('Revestimento atual: _________________________   Desejado: _________________________', 18, y);
+      y += 4.5;
+      doc.text(
+        'Cor/estampa: _______________   Sentido do desenho: ( ) Vertical ( ) Horizontal ( ) Indiferente   Largura útil: _______ cm',
+        18,
+        y
+      );
+      y += 4.5;
+      doc.text('Desgaste/rasgos: _____________________   Partes a revestir: _____________________________', 18, y);
+    }
+    if (entry.component === 'estrutura' || entry.component === 'mecanismos') {
+      y += 5;
+      doc.text('Folgas: _________________________   Ruídos: _________________________', 18, y);
+      y += 4.5;
+      doc.text('Instabilidade: _________________________   Funcionamento observado: _________________________', 18, y);
+    }
+
+    cursorY = top + blockHeight + 4;
+  }
+
+  addPageNumbersAndFooter(doc, false, order.attendanceNumber);
+  doc.save(`Ficha_Visita_Tecnica_${order.attendanceNumber}_${sheet.unitLabel || sheet.unitIndex}_v${sheet.version}.pdf`);
 }
 
 // Manual de execução (montagem/estofamento/costura) em PDF A4, a partir da ficha

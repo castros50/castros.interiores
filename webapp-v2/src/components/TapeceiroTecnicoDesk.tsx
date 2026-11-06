@@ -195,6 +195,36 @@ export const TapeceiroTecnicoDesk: React.FC<TapeceiroTecnicoDeskProps> = ({
     persistPlan({ ...plan, materialRequirements: updated, materials: updated }, 'Material removido do plano técnico');
   };
 
+  // Incorpora os materiais estimados pelo parecer de visita técnica do Pedro ao plano
+  // — nunca automático: só quando o Tapeceiro Técnico clica, e nunca sobrescreve
+  // material já existente. A memória de cálculo vai junto, nunca só um número.
+  const handleApplyEstimatedMaterials = (opinionId: string) => {
+    if (!plan) return;
+    const opinion = (order.technicalVisitOpinions || []).find((o) => o.id === opinionId);
+    if (!opinion) return;
+    const newRows: ManufacturingMaterialRequirement[] = opinion.estimatedMaterials
+      .map((mat, idx) => ({ id: `mat-${opinionId}-${idx}`, mat }))
+      .filter(({ id }) => !materials.some((m) => m.id === id))
+      .map(({ id, mat }) => ({
+        id,
+        materialName: mat.name,
+        name: mat.name,
+        unit: mat.unit,
+        totalRequired: mat.quantity ?? undefined,
+        totalOrderRequirement: mat.quantity ?? undefined,
+        unitCostCents: mat.unitCostCents ?? undefined,
+        source: 'calculado_tecnico' as const,
+        calculationMemo: mat.calculationMemo,
+        notes: 'A partir do parecer de visita técnica do Pedro — confirme/ajuste antes de liberar o plano.',
+      }));
+    if (newRows.length === 0) return;
+    const updated = [...materials, ...newRows];
+    persistPlan(
+      { ...plan, materialRequirements: updated, materials: updated },
+      'Materiais estimados da visita técnica incorporados ao plano'
+    );
+  };
+
   const handleAddAssemblyStep = () => {
     if (!plan) return;
     const newStep: AssemblyManualStep = {
@@ -608,6 +638,56 @@ export const TapeceiroTecnicoDesk: React.FC<TapeceiroTecnicoDeskProps> = ({
 
           {activeTab === 'materiais' && (
             <div className="space-y-3">
+              {(order.technicalVisitOpinions || []).length > 0 && (
+                <div className="p-3 rounded-xl border border-[#E5DEC9] bg-[#FAF8F5] space-y-2">
+                  <h4 className="font-bold text-xs text-[#181512]">Parecer da Visita Técnica (Pedro)</h4>
+                  {order.technicalVisitOpinions!.map((o) => {
+                    const sheet = (order.technicalVisitSheets || []).find((s) => s.id === o.visitSheetId);
+                    const alreadyApplied = o.estimatedMaterials.every((_, idx) =>
+                      materials.some((m) => m.id === `mat-${o.id}-${idx}`)
+                    );
+                    return (
+                      <div key={o.id} className="p-2.5 rounded-lg bg-white border border-[#EFECE6] text-[10px] space-y-1">
+                        <p className="font-semibold text-[#181512]">
+                          {sheet?.unitLabel || o.productId} — parecer v{o.version}
+                        </p>
+                        <p className="text-[#57534E]">{o.recommendedServices}</p>
+                        {o.pendingDisassemblyItems.length > 0 && (
+                          <p className="text-amber-800">
+                            Pendências de desmontagem: {o.pendingDisassemblyItems.join('; ')}
+                          </p>
+                        )}
+                        {o.missingForBudget.length > 0 && (
+                          <p className="text-amber-800">Ainda falta para o orçamento: {o.missingForBudget.join('; ')}</p>
+                        )}
+                        {o.estimatedMaterials.length > 0 && (
+                          <div className="space-y-0.5">
+                            {o.estimatedMaterials.map((mat, idx) => (
+                              <p key={idx} className="text-[#57534E]">
+                                <strong>{mat.name}</strong>: {mat.quantity} {mat.unit} —{' '}
+                                <span className="italic">{mat.calculationMemo}</span>
+                              </p>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => handleApplyEstimatedMaterials(o.id)}
+                              disabled={!plan || alreadyApplied}
+                              className="mt-1 px-2.5 py-1.5 rounded border border-[#9A7138] text-[#9A7138] text-[10px] font-semibold hover:bg-[#9A7138]/10 disabled:opacity-40"
+                            >
+                              {alreadyApplied
+                                ? 'Já incorporado ao plano'
+                                : plan
+                                ? 'Incorporar estes materiais ao plano'
+                                : 'Gere o plano técnico primeiro'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="overflow-x-auto bg-white border border-[#E5DEC9] rounded-xl">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>

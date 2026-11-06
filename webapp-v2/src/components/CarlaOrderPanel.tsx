@@ -300,6 +300,41 @@ export const CarlaOrderPanel: React.FC<CarlaOrderPanelProps> = ({ order, setting
         )}
       </div>
 
+      {/* Visita técnica (fase 2 da avaliação de reforma) — resumo só leitura, nunca pede
+          reenvio de fotos já vinculadas ao pedido, o Pedro cuida do preenchimento. */}
+      {(order.technicalVisitSheets?.length || 0) > 0 && (
+        <div className="space-y-2">
+          <h4 className="font-bold text-xs uppercase tracking-wider text-[#181512]">Visita Técnica & Parecer</h4>
+          <div className="space-y-1.5">
+            {order.technicalVisitSheets!
+              .filter((s, idx, arr) => arr.findIndex((o) => o.productId === s.productId && o.unitIndex === s.unitIndex) === idx)
+              .map((s) => {
+                const latest = order.technicalVisitSheets!
+                  .filter((o) => o.productId === s.productId && o.unitIndex === s.unitIndex)
+                  .sort((a, b) => b.version - a.version)[0];
+                const opinion = (order.technicalVisitOpinions || [])
+                  .filter((o) => o.visitSheetId === latest.id)
+                  .sort((a, b) => b.version - a.version)[0];
+                return (
+                  <div key={latest.id} className="p-2.5 rounded-lg border border-[#E5DEC9] bg-[#FAF8F5] text-[10px] space-y-0.5">
+                    <p className="font-semibold text-[#181512]">
+                      {latest.unitLabel} — {latest.status.replace(/_/g, ' ')} (v{latest.version})
+                    </p>
+                    {opinion && (
+                      <>
+                        <p className="text-[#57534E]">{opinion.recommendedServices}</p>
+                        {opinion.missingForBudget.length > 0 && (
+                          <p className="text-amber-800">Ainda falta: {opinion.missingForBudget.join('; ')}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
       {/* Negociação e Pagamento (fluxo novo com orçamento itemizado — só aparece quando a
           Mila já homologou um orçamento itemizado para este pedido) */}
       {order.itemizedBudget && (

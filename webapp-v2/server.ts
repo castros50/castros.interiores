@@ -146,6 +146,18 @@ import type {
   QcCheckEntry,
   QualityControlInspection,
   InformationOrigin,
+  VisitInfoOrigin,
+  VisitMeasurement,
+  ProductMeasurementSet,
+  ArmMeasurement,
+  SeatMeasurement,
+  BackrestMeasurement,
+  LooseCushionMeasurement,
+  RecliningModuleMeasurement,
+  OtherPartMeasurement,
+  VisitComponentEntry,
+  TechnicalVisitSheet,
+  TechnicalVisitOpinion,
 } from './src/types.ts';
 import { INSPECTION_COMPONENT_LABELS, INSPECTION_MARKING_LABELS } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
@@ -154,6 +166,7 @@ import {
   createDemoPoltronas4Un,
   createDefaultOfficeData,
 } from './src/utils/officeDefaults.ts';
+import { estimateFabricConsumption, estimateFoamConsumption } from './src/utils/materialEstimation.ts';
 
 dotenv.config();
 
@@ -9906,9 +9919,19 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       sheet.status = 'enviada_para_reavaliacao';
 
       // Caminho 1: preenchimento digital direto — o operador já confirmou ao digitar,
-      // aplica sem passar pela IA.
+      // aplica sem passar pela IA. Sem leitura por IA não há nada para confirmar depois
+      // em /confirm-reading — a ficha já nasce 'reavaliada' aqui, nunca fica parada
+      // esperando uma confirmação que nunca chegaria.
+      const isDigitalOnly = Boolean(
+        (digitizedComponents || digitizedManufacturingChecks) && !formPhotoDataUrl && !formPdfDataUrl
+      );
       if (digitizedComponents) sheet.components = digitizedComponents;
       if (digitizedManufacturingChecks) sheet.manufacturingChecks = digitizedManufacturingChecks;
+      if (isDigitalOnly) {
+        sheet.status = 'reavaliada';
+        sheet.confirmedAt = now;
+        sheet.confirmedBy = confirmedBy || sheet.responsibleName;
+      }
 
       let aiReadResult: InspectionFormReadResult | undefined;
 
@@ -10268,6 +10291,715 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     } catch (error) {
       console.error('Erro ao gerar reavaliação técnica:', error);
       res.status(500).json({ error: 'Erro ao gerar reavaliação técnica.' });
+    }
+  });
+
+  // ----------------------------------------------------------------------------
+  // FICHA DE VISITA TÉCNICA E LEVANTAMENTO DE MEDIDAS (fase 2 da avaliação de
+  // reforma — móvel ainda montado, entre a avaliação preliminar por fotos e a
+  // inspeção pós-desmontagem já existente acima). Pedro gera, o operador leva ao
+  // tablet/imprime, preenche com medidas reais, devolve e confirma antes do parecer
+  // ir ao Tapeceiro Técnico. Nunca exige desmontagem para ser útil.
+  // ----------------------------------------------------------------------------
+
+  function emptyMeasurementSet(): ProductMeasurementSet {
+    return {
+      overall: {},
+      arms: [
+        { id: `arm-esq-${Date.now()}`, side: 'esquerdo' },
+        { id: `arm-dir-${Date.now()}`, side: 'direito' },
+      ],
+      seats: [{ id: `seat-${Date.now()}-1`, label: 'Assento 1' }],
+      backrests: [{ id: `back-${Date.now()}-1`, label: 'Encosto 1' }],
+      looseCushions: [],
+      recliningModules: [],
+      otherParts: [],
+    };
+  }
+
+  // Gera uma ficha de visita por peça individual dentro da quantidade do produto
+  // (ex.: "Cadeira 1 de 4" ≠ "Cadeira 2 de 4"). Pré-preenche o checklist a partir de
+  // achados prévios (defectFindings) quando houver correspondência clara por área —
+  // nunca inventa condição nova: componente sem achado nasce 'nao_verificado'/'pendente'.
+  app.post('/api/orders/:id/technical-visit-sheets', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const { productId, unitsCount, operatorName, visitAddress, visitDate } = req.body as {
+        productId: string;
+        unitsCount?: number;
+        operatorName?: string;
+        visitAddress?: string;
+        visitDate?: string;
+      };
+      const validIds = listOrderProducts(order).map((p) => p.id);
+      if (!productId || !validIds.includes(productId)) {
+        res.status(400).json({ error: 'Produto do pedido não encontrado (productId inválido).' });
+        return;
+      }
+      const count = Math.max(1, Math.min(50, Math.round(unitsCount || 1)));
+      const now = new Date().toISOString();
+      const productLabel =
+        listOrderProducts(order).find((p) => p.id === productId)?.label || order.furnitureType;
+
+      if (!order.technicalVisitSheets) order.technicalVisitSheets = [];
+      const newSheets: TechnicalVisitSheet[] = [];
+
+      for (let unitIndex = 1; unitIndex <= count; unitIndex++) {
+        const previous = order.technicalVisitSheets
+          .filter((s) => s.productId === productId && s.unitIndex === unitIndex)
+          .sort((a, b) => b.version - a.version)[0];
+        const version = (previous?.version || 0) + 1;
+
+        const components: VisitComponentEntry[] = ALL_INSPECTION_COMPONENTS.map((component, idx) => {
+          const matchingFinding = order.defectFindings.find((f) =>
+            (FURNITURE_AREA_TO_INSPECTION_COMPONENTS[f.area] || []).includes(component)
+          );
+          const origin: VisitInfoOrigin =
+            matchingFinding?.origin === 'Observado na foto' ? 'observado_foto' : 'pendente';
+          return {
+            id: `vce-${Date.now()}-${unitIndex}-${idx}`,
+            component,
+            condition: 'nao_verificado',
+            checkStatus: 'nao_verificado',
+            defectObserved: matchingFinding?.defectOrSuspicion,
+            notes: matchingFinding ? `A partir do achado prévio: ${matchingFinding.evidenceAndPhoto}` : undefined,
+            origin,
+          };
+        });
+
+        const sheet: TechnicalVisitSheet = {
+          id: `tvs-${Date.now()}-${unitIndex}`,
+          orderId: order.id,
+          productId,
+          unitIndex,
+          unitLabel: count > 1 ? `${productLabel.split(' (')[0]} ${unitIndex} de ${count}` : productLabel,
+          visitAddress: visitAddress || order.fullAddress,
+          operatorName,
+          visitDate,
+          version,
+          status: 'gerada',
+          measurements: emptyMeasurementSet(),
+          components,
+          createdAt: now,
+        };
+        order.technicalVisitSheets.push(sheet);
+        newSheets.push(sheet);
+      }
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: operatorName || 'Visita Técnica',
+        stage: 'Ficha de Visita Técnica',
+        action: `${count} ficha(s) de visita técnica gerada(s) para ${productLabel}`,
+        details: 'Móvel ainda montado — medidas e condições a levantar presencialmente.',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Visita Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, sheets: newSheets });
+    } catch (error) {
+      console.error('Erro ao gerar ficha de visita técnica:', error);
+      res.status(500).json({ error: 'Erro ao gerar ficha de visita técnica.' });
+    }
+  });
+
+  // Lista plana de entradas legíveis por IA (medidas + checklist) de uma ficha de
+  // visita — usada tanto para montar o prompt de leitura quanto para aplicar o
+  // resultado de volta na ficha.
+  function flattenVisitSheetEntries(
+    sheet: TechnicalVisitSheet
+  ): Array<{ id: string; label: string; kind: 'measurement' | 'component' }> {
+    const entries: Array<{ id: string; label: string; kind: 'measurement' | 'component' }> = [];
+    const m = sheet.measurements;
+    entries.push({ id: 'overall-width', label: 'Produto completo — largura', kind: 'measurement' });
+    entries.push({ id: 'overall-height', label: 'Produto completo — altura', kind: 'measurement' });
+    entries.push({ id: 'overall-depth', label: 'Produto completo — profundidade', kind: 'measurement' });
+    entries.push({ id: 'overall-depthOpen', label: 'Produto completo — profundidade aberto', kind: 'measurement' });
+    for (const arm of m.arms) {
+      entries.push({ id: `${arm.id}-length`, label: `Braço ${arm.side} — comprimento`, kind: 'measurement' });
+      entries.push({ id: `${arm.id}-width`, label: `Braço ${arm.side} — largura`, kind: 'measurement' });
+      entries.push({ id: `${arm.id}-height`, label: `Braço ${arm.side} — altura`, kind: 'measurement' });
+    }
+    for (const seat of m.seats) {
+      entries.push({ id: `${seat.id}-width`, label: `${seat.label || seat.id} — largura`, kind: 'measurement' });
+      entries.push({ id: `${seat.id}-depth`, label: `${seat.label || seat.id} — profundidade`, kind: 'measurement' });
+      entries.push({
+        id: `${seat.id}-cushionThickness`,
+        label: `${seat.label || seat.id} — espessura da almofada`,
+        kind: 'measurement',
+      });
+      entries.push({
+        id: `${seat.id}-heightFromFloor`,
+        label: `${seat.label || seat.id} — altura ao piso`,
+        kind: 'measurement',
+      });
+    }
+    for (const back of m.backrests) {
+      entries.push({ id: `${back.id}-width`, label: `${back.label || back.id} — largura`, kind: 'measurement' });
+      entries.push({ id: `${back.id}-height`, label: `${back.label || back.id} — altura`, kind: 'measurement' });
+      entries.push({ id: `${back.id}-thickness`, label: `${back.label || back.id} — espessura`, kind: 'measurement' });
+    }
+    for (const cushion of m.looseCushions) {
+      entries.push({ id: `${cushion.id}-width`, label: `${cushion.identification} — largura`, kind: 'measurement' });
+      entries.push({
+        id: `${cushion.id}-heightOrDepth`,
+        label: `${cushion.identification} — altura/profundidade`,
+        kind: 'measurement',
+      });
+      entries.push({
+        id: `${cushion.id}-thickness`,
+        label: `${cushion.identification} — espessura`,
+        kind: 'measurement',
+      });
+    }
+    if (m.baseAndFeet) {
+      entries.push({ id: 'baseAndFeet-feetHeight', label: 'Base e pés — altura dos pés', kind: 'measurement' });
+    }
+    for (const mod of m.recliningModules) {
+      entries.push({ id: `${mod.id}`, label: `Módulo retrátil/reclinável ${mod.moduleLabel}`, kind: 'measurement' });
+    }
+    for (const other of m.otherParts) {
+      entries.push({ id: `${other.id}`, label: `Outra parte — ${other.name}`, kind: 'measurement' });
+    }
+    for (const c of sheet.components) {
+      entries.push({
+        id: c.id,
+        label: `${INSPECTION_COMPONENT_LABELS[c.component]}${c.locationLabel ? ' - ' + c.locationLabel : ''}`,
+        kind: 'component',
+      });
+    }
+    return entries;
+  }
+
+  // Aplica um valor de medida lido (ou digitado) de volta na estrutura da ficha,
+  // pelo id composto gerado em flattenVisitSheetEntries — nunca cria campo novo.
+  function applyMeasurementValue(sheet: TechnicalVisitSheet, entryId: string, value: string, origin: VisitInfoOrigin) {
+    const m = sheet.measurements;
+    const set = (target: VisitMeasurement | undefined, v: string, o: VisitInfoOrigin): VisitMeasurement => ({
+      value: v,
+      origin: o,
+    });
+    if (entryId === 'overall-width') m.overall.width = set(m.overall.width, value, origin);
+    else if (entryId === 'overall-height') m.overall.height = set(m.overall.height, value, origin);
+    else if (entryId === 'overall-depth') m.overall.depth = set(m.overall.depth, value, origin);
+    else if (entryId === 'overall-depthOpen') m.overall.depthOpen = set(m.overall.depthOpen, value, origin);
+    else {
+      for (const arm of m.arms) {
+        if (entryId === `${arm.id}-length`) arm.length = set(arm.length, value, origin);
+        else if (entryId === `${arm.id}-width`) arm.width = set(arm.width, value, origin);
+        else if (entryId === `${arm.id}-height`) arm.height = set(arm.height, value, origin);
+      }
+      for (const seat of m.seats) {
+        if (entryId === `${seat.id}-width`) seat.width = set(seat.width, value, origin);
+        else if (entryId === `${seat.id}-depth`) seat.depth = set(seat.depth, value, origin);
+        else if (entryId === `${seat.id}-cushionThickness`) seat.cushionThickness = set(seat.cushionThickness, value, origin);
+        else if (entryId === `${seat.id}-heightFromFloor`) seat.heightFromFloor = set(seat.heightFromFloor, value, origin);
+      }
+      for (const back of m.backrests) {
+        if (entryId === `${back.id}-width`) back.width = set(back.width, value, origin);
+        else if (entryId === `${back.id}-height`) back.height = set(back.height, value, origin);
+        else if (entryId === `${back.id}-thickness`) back.thickness = set(back.thickness, value, origin);
+      }
+      for (const cushion of m.looseCushions) {
+        if (entryId === `${cushion.id}-width`) cushion.width = set(cushion.width, value, origin);
+        else if (entryId === `${cushion.id}-heightOrDepth`) cushion.heightOrDepth = set(cushion.heightOrDepth, value, origin);
+        else if (entryId === `${cushion.id}-thickness`) cushion.thickness = set(cushion.thickness, value, origin);
+      }
+      if (m.baseAndFeet && entryId === 'baseAndFeet-feetHeight') {
+        m.baseAndFeet.feetHeight = set(m.baseAndFeet.feetHeight, value, origin);
+      }
+      for (const other of m.otherParts) {
+        if (entryId === other.id) other.measurement = set(other.measurement, value, origin);
+      }
+    }
+  }
+
+  // Devolução da ficha de visita: aceita dados digitados diretamente (digitalComponents
+  // + digitalMeasurements já com origin='medido_pelo_operador'), ou uma foto/PDF da ficha
+  // marcada à mão — neste caso dispara leitura por IA, mas o resultado nunca é aplicado
+  // direto: fica em aiReadResult, pendente de confirmação humana via /confirm abaixo.
+  app.post('/api/orders/:id/technical-visit-sheets/:sheetId/submit', async (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, sheetId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const sheet = (order.technicalVisitSheets || []).find((s) => s.id === sheetId);
+      if (!sheet) {
+        res.status(404).json({ error: 'Ficha de visita técnica não encontrada.' });
+        return;
+      }
+
+      const {
+        digitalMeasurements,
+        digitalComponents,
+        formPhotoDataUrl,
+        formPdfDataUrl,
+        newPhotoIds,
+        confirmedBy,
+      } = req.body as {
+        digitalMeasurements?: ProductMeasurementSet;
+        digitalComponents?: VisitComponentEntry[];
+        confirmedBy?: string;
+        formPhotoDataUrl?: string;
+        formPdfDataUrl?: string;
+        newPhotoIds?: string[];
+      };
+
+      const now = new Date().toISOString();
+      if (Array.isArray(newPhotoIds)) sheet.submittedPhotoIds = newPhotoIds;
+      sheet.status = 'enviada_para_reavaliacao';
+
+      // Caminho 1: preenchimento digital direto no tablet — já é o operador digitando
+      // ao vivo, aplica sem passar pela IA. Como não há leitura por IA para confirmar
+      // depois, a ficha já nasce 'reavaliada' aqui (nunca fica parada esperando uma
+      // confirmação que nunca vai chegar quando não há foto/PDF envolvido).
+      const isDigitalOnly = Boolean((digitalMeasurements || digitalComponents) && !formPhotoDataUrl && !formPdfDataUrl);
+      if (digitalMeasurements) sheet.measurements = digitalMeasurements;
+      if (digitalComponents) sheet.components = digitalComponents;
+      if (isDigitalOnly) {
+        sheet.status = 'reavaliada';
+        sheet.confirmedAt = now;
+        sheet.confirmedBy = confirmedBy || sheet.operatorName;
+      }
+
+      let aiReadResult: InspectionFormReadResult | undefined;
+
+      // Caminho 2/3: foto ou PDF da ficha marcada manualmente.
+      if (formPhotoDataUrl || formPdfDataUrl) {
+        const entries = flattenVisitSheetEntries(sheet);
+
+        const parts: Array<
+          { text: string } | { inlineData: { mimeType: string; data: string } } | { documentData: { mimeType: string; data: string } }
+        > = [
+          {
+            text: `CAMPOS DA FICHA (um por linha, "entryId: rótulo"):\n${entries
+              .map((e) => `${e.id}: ${e.label}`)
+              .join('\n')}\n\nLeia a ficha anexada e reporte o estado de cada entryId listado acima. Campos de medida (kind: measurement) devem usar "readMeasurement" com a medida escrita, incluindo a unidade. Campos de checklist (kind: component) devem usar "readCondition".`,
+          },
+        ];
+
+        if (formPhotoDataUrl) {
+          const match = formPhotoDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+        } else if (formPdfDataUrl) {
+          const match = formPdfDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) parts.push({ documentData: { mimeType: 'application/pdf', data: match[2] } });
+        }
+
+        const readSchema = {
+          type: Type.OBJECT,
+          properties: {
+            fields: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  entryId: { type: Type.STRING },
+                  readStatus: { type: Type.STRING, description: "'lido' | 'ilegivel' | 'ausente'" },
+                  readCondition: {
+                    type: Type.STRING,
+                    description: 'bom | reparar | substituir | reaproveitar | nao_verificado | nao_se_aplica',
+                  },
+                  readMeasurement: { type: Type.STRING },
+                  readNotes: { type: Type.STRING },
+                },
+                required: ['entryId', 'readStatus'],
+              },
+            },
+            overallNotes: { type: Type.STRING },
+          },
+          required: ['fields'],
+        };
+
+        try {
+          const { response } = await generateContentWithRetryAndFallback({
+            preferredModel: store.settings.aiModel || 'claude-sonnet-5',
+            parts,
+            systemInstruction: CHECKLIST_READER_SYSTEM_INSTRUCTION,
+            responseSchema: readSchema,
+            lockKey: `visit-sheet-read:${sheetId}`,
+          });
+          const parsed = JSON.parse(response.text) as {
+            fields: InspectionFormReadField[];
+            overallNotes?: string;
+          };
+          const validStatuses: ChecklistFieldReadStatus[] = ['lido', 'ilegivel', 'ausente'];
+          const validConditions: InspectionMarking[] = [
+            'bom', 'reparar', 'substituir', 'reaproveitar', 'nao_verificado', 'nao_se_aplica',
+          ];
+          const byEntryId = new Map((parsed.fields || []).map((f) => [f.entryId, f]));
+          const fields: InspectionFormReadField[] = entries.map((e) => {
+            const f = byEntryId.get(e.id);
+            const readStatus: ChecklistFieldReadStatus =
+              f && validStatuses.includes(f.readStatus) ? f.readStatus : 'ausente';
+            return {
+              entryId: e.id,
+              readStatus,
+              readCondition:
+                readStatus === 'lido' && f?.readCondition && validConditions.includes(f.readCondition)
+                  ? f.readCondition
+                  : undefined,
+              readMeasurement: readStatus === 'lido' ? f?.readMeasurement : undefined,
+              readNotes: f?.readNotes,
+            };
+          });
+          aiReadResult = { readAt: now, fields, overallNotes: parsed.overallNotes };
+        } catch (aiError) {
+          console.error('Erro ao ler ficha de visita por IA:', aiError);
+          if (formPdfDataUrl) {
+            aiReadResult = {
+              readAt: now,
+              fields: entries.map((e) => ({ entryId: e.id, readStatus: 'ausente' as ChecklistFieldReadStatus })),
+              overallNotes:
+                'Leitura de PDF indisponível no momento. Envie uma foto da ficha marcada em vez do PDF.',
+              pdfReadUnavailable: true,
+            };
+          } else {
+            res.status(502).json({
+              error: aiError instanceof Error ? aiError.message : 'Erro ao ler ficha de visita por IA.',
+            });
+            return;
+          }
+        }
+      }
+
+      if (aiReadResult) sheet.aiReadResult = aiReadResult;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: 'Visita Técnica',
+        stage: 'Devolução da Ficha de Visita',
+        action: `Ficha ${sheet.unitLabel || sheet.id} enviada para reavaliação`,
+        details: aiReadResult ? 'Leitura por IA gerada — pendente de confirmação humana.' : 'Dados digitados diretamente.',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Visita Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, sheet });
+    } catch (error) {
+      console.error('Erro ao devolver ficha de visita técnica:', error);
+      res.status(500).json({ error: 'Erro ao devolver ficha de visita técnica.' });
+    }
+  });
+
+  // Confirma (ou descarta) campos lidos pela IA na devolução da ficha de visita —
+  // nenhum campo lido por IA se torna definitivo sem passar por aqui, e campos
+  // 'ilegivel'/'ausente' nunca são aplicados mesmo que o operador tente aceitá-los.
+  app.post('/api/orders/:id/technical-visit-sheets/:sheetId/confirm', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, sheetId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const sheet = (order.technicalVisitSheets || []).find((s) => s.id === sheetId);
+      if (!sheet || !sheet.aiReadResult) {
+        res.status(404).json({ error: 'Nenhuma leitura pendente de confirmação para esta ficha.' });
+        return;
+      }
+      const { acceptedEntryIds, confirmedBy } = req.body as {
+        acceptedEntryIds: string[];
+        confirmedBy: string;
+      };
+      if (!confirmedBy || !confirmedBy.trim()) {
+        res.status(400).json({ error: 'Informe quem está confirmando a leitura.' });
+        return;
+      }
+
+      const entryKindById = new Map(flattenVisitSheetEntries(sheet).map((e) => [e.id, e.kind]));
+      const fieldsById = new Map(sheet.aiReadResult.fields.map((f) => [f.entryId, f]));
+      for (const entryId of acceptedEntryIds || []) {
+        const field = fieldsById.get(entryId);
+        if (!field || field.readStatus !== 'lido') continue; // nunca aplica ilegível/ausente
+        const kind = entryKindById.get(entryId);
+        if (kind === 'measurement' && field.readMeasurement) {
+          applyMeasurementValue(sheet, entryId, field.readMeasurement, 'medido_pelo_operador');
+        } else if (kind === 'component') {
+          const componentEntry = sheet.components.find((c) => c.id === entryId);
+          if (componentEntry) {
+            if (field.readCondition) componentEntry.condition = field.readCondition;
+            componentEntry.checkStatus = 'verificado';
+            if (field.readNotes) {
+              componentEntry.notes = [componentEntry.notes, field.readNotes].filter(Boolean).join(' | ');
+            }
+            componentEntry.origin = 'medido_pelo_operador';
+          }
+        }
+      }
+
+      const now = new Date().toISOString();
+      sheet.status = 'reavaliada';
+      sheet.confirmedAt = now;
+      sheet.confirmedBy = confirmedBy;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: confirmedBy,
+        stage: 'Confirmação da Ficha de Visita',
+        action: `${(acceptedEntryIds || []).length} campo(s) confirmado(s) na ficha ${sheet.unitLabel || sheet.id}`,
+        details: '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Visita Técnica',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, sheet });
+    } catch (error) {
+      console.error('Erro ao confirmar ficha de visita técnica:', error);
+      res.status(500).json({ error: 'Erro ao confirmar ficha de visita técnica.' });
+    }
+  });
+
+  // Pedro — parecer técnico a partir da ficha de visita confirmada: descrição,
+  // condições, serviços recomendados, materiais a manter/reparar/substituir,
+  // pendências de desmontagem e o que já basta/falta para o orçamento. Calcula
+  // estimativa de tecido/espuma a partir das medidas (nunca aplica automaticamente
+  // ao plano — fica disponível para o Tapeceiro Técnico decidir incorporar) e
+  // encaminha o pedido para a mesa dele. Reabre negociação já aceita se o escopo mudar.
+  app.post('/api/orders/:id/technical-visit-opinions', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const {
+        visitSheetId,
+        productDescription,
+        verifiedConditionsSummary,
+        recommendedServices,
+        servicesJustification,
+        materialsToKeep,
+        materialsToRepair,
+        materialsToReplace,
+        pendingDisassemblyItems,
+        sufficientForBudget,
+        missingForBudget,
+        fabricUsableWidthCm,
+        fabricPatternDirection,
+        fabricSeamMarginCm,
+        fabricJustifiedLossPercent,
+        createdBy,
+      } = req.body as {
+        visitSheetId: string;
+        productDescription: string;
+        verifiedConditionsSummary: string;
+        recommendedServices: string;
+        servicesJustification?: string;
+        materialsToKeep?: string[];
+        materialsToRepair?: string[];
+        materialsToReplace?: string[];
+        pendingDisassemblyItems?: string[];
+        sufficientForBudget?: string[];
+        missingForBudget?: string[];
+        fabricUsableWidthCm?: number;
+        fabricPatternDirection?: 'Vertical' | 'Horizontal' | 'Indiferente';
+        fabricSeamMarginCm?: number;
+        fabricJustifiedLossPercent?: number;
+        createdBy: string;
+      };
+
+      const sheet = (order.technicalVisitSheets || []).find((s) => s.id === visitSheetId);
+      if (!sheet) {
+        res.status(404).json({ error: 'Ficha de visita técnica não encontrada.' });
+        return;
+      }
+      if (!recommendedServices || !recommendedServices.trim()) {
+        res.status(400).json({ error: 'Informe os serviços recomendados.' });
+        return;
+      }
+      if (!createdBy || !createdBy.trim()) {
+        res.status(400).json({ error: 'Informe o responsável pelo parecer.' });
+        return;
+      }
+
+      const productId = sheet.productId;
+      if (!order.technicalVisitOpinions) order.technicalVisitOpinions = [];
+      const priorForSameUnit = order.technicalVisitOpinions.filter(
+        (o) => o.productId === productId && o.unitIndex === sheet.unitIndex
+      );
+      const version = priorForSameUnit.length + 1;
+
+      // Estimativa de tecido: usa as peças de revestimento marcadas na ficha (assentos,
+      // encostos, braços) cujas medidas já foram levantadas — nunca inventa a largura
+      // útil nem a direção do desenho, usa só o que foi informado no parecer.
+      const m = sheet.measurements;
+      const parseCm = (v?: string | null): number | null => {
+        if (!v) return null;
+        const match = v.match(/([\d.,]+)/);
+        if (!match) return null;
+        return parseFloat(match[1].replace(',', '.'));
+      };
+      const fabricParts = [
+        ...m.seats.map((s) => ({
+          label: s.label || 'Assento',
+          widthCm: parseCm(s.width?.value),
+          heightCm: parseCm(s.depth?.value),
+        })),
+        ...m.backrests.map((b) => ({
+          label: b.label || 'Encosto',
+          widthCm: parseCm(b.width?.value),
+          heightCm: parseCm(b.height?.value),
+        })),
+        ...m.arms.map((a) => ({
+          label: `Braço ${a.side}`,
+          widthCm: parseCm(a.width?.value),
+          heightCm: parseCm(a.length?.value),
+        })),
+      ];
+      const fabricEstimate = estimateFabricConsumption({
+        parts: fabricParts,
+        usableWidthCm: fabricUsableWidthCm,
+        patternDirection: fabricPatternDirection,
+        seamMarginCm: fabricSeamMarginCm,
+        justifiedLossPercent: fabricJustifiedLossPercent,
+      });
+
+      const foamParts = sheet.components
+        .filter((c) => c.component === 'espumas' && c.foamAccessibleMeasurement)
+        .map((c) => {
+          const dims = (c.foamAccessibleMeasurement || '').match(/([\d.,]+)\s*x\s*([\d.,]+)/i);
+          return {
+            label: c.locationLabel || INSPECTION_COMPONENT_LABELS.espumas,
+            widthCm: dims ? parseFloat(dims[1].replace(',', '.')) : null,
+            depthCm: dims ? parseFloat(dims[2].replace(',', '.')) : null,
+            thicknessCm: null,
+            densitySpecification: c.foamDensitySpecification,
+          };
+        });
+      const foamEstimate = foamParts.length > 0 ? estimateFoamConsumption(foamParts) : null;
+
+      const estimatedMaterials: ProductMaterialNeed[] = [];
+      if (fabricEstimate.totalLinearMeters != null) {
+        estimatedMaterials.push({
+          name: 'Tecido de revestimento (estimado pela visita técnica)',
+          quantity: fabricEstimate.totalLinearMeters,
+          unit: 'm linear',
+          unitCostCents: null,
+          quantityStatus: 'estimada',
+          calculationMemo: fabricEstimate.calculationMemo,
+        });
+      }
+      if (foamEstimate && foamEstimate.totalAreaM2 != null) {
+        estimatedMaterials.push({
+          name: 'Espuma (estimada pela visita técnica)',
+          quantity: Number(foamEstimate.totalAreaM2.toFixed(2)),
+          unit: 'm²',
+          unitCostCents: null,
+          quantityStatus: 'estimada',
+          calculationMemo: foamEstimate.calculationMemo,
+        });
+      }
+
+      const currentEvaluation = order.productEvaluations?.[productId];
+      const servicesChanged = (currentEvaluation?.servicesNeeded || '') !== (recommendedServices || '');
+      const requiresNegotiationReview = Boolean(
+        servicesChanged && order.negotiation?.clientDecision === 'aceito'
+      );
+
+      const now = new Date().toISOString();
+      const opinion: TechnicalVisitOpinion = {
+        id: `tvo-${Date.now()}`,
+        visitSheetId,
+        productId,
+        unitIndex: sheet.unitIndex,
+        version,
+        productDescription: productDescription || '',
+        verifiedConditionsSummary: verifiedConditionsSummary || '',
+        recommendedServices,
+        servicesJustification: servicesJustification || '',
+        materialsToKeep: materialsToKeep || [],
+        materialsToRepair: materialsToRepair || [],
+        materialsToReplace: materialsToReplace || [],
+        pendingDisassemblyItems: pendingDisassemblyItems || [],
+        sufficientForBudget: sufficientForBudget || [],
+        missingForBudget: missingForBudget || [],
+        estimatedMaterials,
+        requiresNegotiationReview,
+        createdBy,
+        createdAt: now,
+      };
+      order.technicalVisitOpinions.push(opinion);
+
+      if (requiresNegotiationReview && order.negotiation) {
+        order.negotiation.clientDecision = undefined;
+        order.negotiation.clientDecisionAt = undefined;
+        order.negotiation.clientDecisionBy = undefined;
+        order.negotiation.clientDecisionPriceCentsSnapshot = undefined;
+        order.negotiation.updatedAt = now;
+      }
+      if (requiresNegotiationReview && order.itemizedBudget) {
+        order.itemizedBudget.confirmedByResponsible = false;
+      }
+
+      const { handoff, alreadyTransferred } = createOrderHandoff(store, order, {
+        fromDesk: 'pedro_avaliacao',
+        toDesk: 'tapeceiro_tecnico',
+        reason: 'Parecer da visita técnica concluído — compor materiais, mão de obra e orçamento.',
+        completedSummary: `Parecer v${version} para ${sheet.unitLabel || productId}: ${recommendedServices}`,
+        pendingItems: [...(pendingDisassemblyItems || []), ...(missingForBudget || [])],
+        nextActionExpected: 'Compor materiais, mão de obra e orçamento preliminar a partir do parecer.',
+      });
+
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: createdBy,
+        stage: 'Parecer da Visita Técnica',
+        action: `Parecer v${version} gerado para ${sheet.unitLabel || productId} e encaminhado ao Tapeceiro Técnico`,
+        details: requiresNegotiationReview
+          ? 'Escopo mudou com negociação já aceita — negociação reaberta.'
+          : '',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Mesa tapeceiro_tecnico',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, opinion, handoff, alreadyTransferred });
+    } catch (error) {
+      console.error('Erro ao gerar parecer da visita técnica:', error);
+      res.status(500).json({ error: 'Erro ao gerar parecer da visita técnica.' });
     }
   });
 
