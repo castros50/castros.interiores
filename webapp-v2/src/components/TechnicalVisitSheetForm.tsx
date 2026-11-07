@@ -183,6 +183,35 @@ export const TechnicalVisitSheetForm: React.FC<TechnicalVisitSheetFormProps> = (
     }));
   };
 
+  // Um móvel pode ter mais de uma espuma com espessura/densidade diferentes (ex.:
+  // assento D33 x encosto D23) — permite registrar quantas forem necessárias,
+  // inseridas logo depois da última já existente do mesmo componente, em vez de
+  // uma única linha genérica que misturaria especificações diferentes.
+  const addComponentRow = (sheetId: string, component: VisitComponentEntry['component']) => {
+    setDraftComponents((prev) => {
+      const list = prev[sheetId] || [];
+      const newEntry: VisitComponentEntry = {
+        id: `vce-${sheetId}-${component}-${Date.now()}`,
+        component,
+        condition: 'nao_verificado',
+        checkStatus: 'nao_verificado',
+        origin: 'pendente',
+      };
+      const lastIndex = list.reduce((acc, e, i) => (e.component === component ? i : acc), -1);
+      const insertAt = lastIndex >= 0 ? lastIndex + 1 : list.length;
+      const next = [...list];
+      next.splice(insertAt, 0, newEntry);
+      return { ...prev, [sheetId]: next };
+    });
+  };
+
+  const removeComponentRow = (sheetId: string, entryId: string) => {
+    setDraftComponents((prev) => ({
+      ...prev,
+      [sheetId]: (prev[sheetId] || []).filter((e) => e.id !== entryId),
+    }));
+  };
+
   const handlePhotoUpload = async (
     sheetId: string,
     file: File,
@@ -820,11 +849,34 @@ export const TechnicalVisitSheetForm: React.FC<TechnicalVisitSheetFormProps> = (
                         <p className="text-[10px] font-semibold uppercase text-[#6B6257]">
                           Checklist de materiais e condições
                         </p>
-                        {components.map((entry) => (
+                        {components.map((entry) => {
+                          const sameTypeCount = components.filter((c) => c.component === entry.component).length;
+                          const isLastOfType =
+                            components
+                              .filter((c) => c.component === entry.component)
+                              .slice(-1)[0]?.id === entry.id;
+                          return (
                           <div key={entry.id} className="p-2.5 rounded bg-[#FAF8F5] border border-[#EFECE6] space-y-1.5">
-                            <p className="text-[11px] font-bold text-[#181512]">
-                              {INSPECTION_COMPONENT_LABELS[entry.component]}
-                            </p>
+                            <div className="flex items-center justify-between">
+                              <p className="text-[11px] font-bold text-[#181512]">
+                                {INSPECTION_COMPONENT_LABELS[entry.component]}
+                                {sameTypeCount > 1 && (
+                                  <span className="ml-1 text-[9px] font-normal text-[#9A7138]">
+                                    (peça {components.filter((c) => c.component === entry.component).indexOf(entry) + 1} de{' '}
+                                    {sameTypeCount})
+                                  </span>
+                                )}
+                              </p>
+                              {sameTypeCount > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => removeComponentRow(sheet.id, entry.id)}
+                                  className="text-[9.5px] text-red-700 hover:underline"
+                                >
+                                  Remover
+                                </button>
+                              )}
+                            </div>
                             <div className="grid grid-cols-2 gap-1.5 text-[10px]">
                               <input
                                 placeholder="Localização"
@@ -1084,8 +1136,18 @@ export const TechnicalVisitSheetForm: React.FC<TechnicalVisitSheetFormProps> = (
                             {entry.detailPhotoId && (
                               <img src={entry.detailPhotoId} alt="" className="h-16 rounded border border-[#D6CFC5]" />
                             )}
+                            {entry.component === 'espumas' && isLastOfType && (
+                              <button
+                                type="button"
+                                onClick={() => addComponentRow(sheet.id, 'espumas')}
+                                className="text-[10px] font-semibold text-[#9A7138] underline flex items-center gap-1"
+                              >
+                                <Plus className="w-3 h-3" /> Adicionar outra espuma (espessura/densidade diferente)
+                              </button>
+                            )}
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
 
                       <button
