@@ -5,6 +5,7 @@ import { TechnicalVisitSheetForm } from './TechnicalVisitSheetForm';
 import { InspectionSheetForm } from './InspectionSheetForm';
 import { ExecutionManualView } from './ExecutionManualView';
 import { QualityControlBoard } from './QualityControlBoard';
+import { ExplodedViewPanel } from './ExplodedViewPanel';
 
 interface PedroAvaliacaoDeskProps {
   order: AttendanceRecord;
@@ -13,7 +14,7 @@ interface PedroAvaliacaoDeskProps {
   onUpdateOrder: (updated: AttendanceRecord) => void;
 }
 
-type PedroTab = 'avaliacao' | 'visita' | 'vistoria' | 'manual' | 'qualidade';
+type PedroTab = 'avaliacao' | 'visita' | 'explodida' | 'vistoria' | 'manual' | 'qualidade';
 
 export const PedroAvaliacaoDesk: React.FC<PedroAvaliacaoDeskProps> = ({
   order,
@@ -36,6 +37,7 @@ export const PedroAvaliacaoDesk: React.FC<PedroAvaliacaoDeskProps> = ({
   const tabs: Array<{ id: PedroTab; label: string }> = [
     { id: 'avaliacao', label: '1. Avaliação Preliminar (fotos)' },
     { id: 'visita', label: '2. Visita Técnica (medidas)' },
+    { id: 'explodida', label: 'Vista Explodida (simulação)' },
     { id: 'vistoria', label: '3. Inspeção Após Desmontagem' },
     { id: 'manual', label: '4. Manual de Execução' },
     { id: 'qualidade', label: '5. Controle de Qualidade' },
@@ -83,6 +85,14 @@ export const PedroAvaliacaoDesk: React.FC<PedroAvaliacaoDeskProps> = ({
         )}
         {activeTab === 'visita' && (
           <TechnicalVisitSheetForm
+            order={order}
+            settings={settings}
+            defaultResponsibleName={settings.responsibleDefaultName}
+            onUpdateOrder={onUpdateOrder}
+          />
+        )}
+        {activeTab === 'explodida' && (
+          <ExplodedViewPanel
             order={order}
             settings={settings}
             defaultResponsibleName={settings.responsibleDefaultName}

@@ -335,6 +335,31 @@ export const CarlaOrderPanel: React.FC<CarlaOrderPanelProps> = ({ order, setting
         </div>
       )}
 
+      {/* Vista explodida — só mostra versões já encaminhadas pelo Pedro (não os
+          rascunhos ainda em revisão), com a legenda de simulação sempre visível. */}
+      {(order.explodedViewSimulations || []).some((s) => s.forwardedAt) && (
+        <div className="space-y-2">
+          <h4 className="font-bold text-xs uppercase tracking-wider text-[#181512]">Vista Explodida (simulação)</h4>
+          <div className="space-y-1.5">
+            {order.explodedViewSimulations!
+              .filter((s) => s.forwardedAt)
+              .sort((a, b) => (b.forwardedAt || '').localeCompare(a.forwardedAt || ''))
+              .slice(0, 1)
+              .map((s) => (
+                <div key={s.id} className="p-2.5 rounded-lg border border-[#E5DEC9] bg-[#FAF8F5] text-[10px] space-y-1.5">
+                  <p className="font-semibold text-[#181512]">Versão v{s.version} — encaminhada</p>
+                  {s.generatedImageUrl && (
+                    <img src={s.generatedImageUrl} alt="Vista explodida simulada" className="w-full max-w-xs rounded border border-[#D6CFC5]" />
+                  )}
+                  <p className="text-[9.5px] font-bold text-amber-900 bg-amber-50 border border-amber-300 rounded px-1.5 py-0.5 inline-block">
+                    SIMULAÇÃO DE VISTA EXPLODIDA — NÃO É FOTO DE DESMONTAGEM REAL.
+                  </p>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
       {/* Negociação e Pagamento (fluxo novo com orçamento itemizado — só aparece quando a
           Mila já homologou um orçamento itemizado para este pedido) */}
       {order.itemizedBudget && (

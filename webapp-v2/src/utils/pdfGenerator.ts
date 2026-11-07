@@ -15,6 +15,9 @@ import {
   INSPECTION_MARKING_LABELS,
   TechnicalVisitSheet,
   VisitMeasurement,
+  ExplodedViewSimulation,
+  AttendancePhoto,
+  EXPLODED_VIEW_SIMULATION_CAPTION,
 } from '../types';
 import {
   calculateBudgetSummary,
@@ -2474,6 +2477,176 @@ export async function generateTechnicalVisitSheetPdf(
 
   addPageNumbersAndFooter(doc, false, order.attendanceNumber);
   doc.save(`Ficha_Visita_Tecnica_${order.attendanceNumber}_${sheet.unitLabel || sheet.unitIndex}_v${sheet.version}.pdf`);
+}
+
+// Vista Explodida (A4) — simulação ilustrativa gerada por IA a partir de fotos
+// reais. A legenda de simulação é escrita pelo próprio app (nunca confia no
+// modelo de IA para desenhar o texto certo dentro da imagem) e aparece em
+// destaque logo abaixo da imagem gerada, sempre, em toda página.
+export async function generateExplodedViewPdf(
+  order: AttendanceRecord,
+  simulation: ExplodedViewSimulation,
+  settings: WorkshopSettings
+): Promise<void> {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const productLabel =
+    simulation.productId === 'primary'
+      ? order.furnitureType
+      : order.additionalProducts?.find((p) => p.id === simulation.productId)?.description || order.furnitureType;
+
+  doc.setFillColor(24, 21, 18);
+  doc.rect(15, 14, 180, 24, 'F');
+  drawCastrosLogoMark(doc, 23.5, 26, 6.5);
+  doc.setTextColor(249, 246, 240);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12.5);
+  doc.text(`${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — VISTA EXPLODIDA`, 34, 23);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(212, 185, 140);
+  doc.text(
+    `Pedido: ${order.attendanceNumber}   |   Versão: v${simulation.version}   |   ${new Date().toLocaleDateString('pt-BR')}`,
+    34,
+    30.5
+  );
+
+  let cursorY = 44;
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 2.5, textColor: [28, 25, 23] },
+    body: [
+      ['Pedido', order.attendanceNumber],
+      ['Cliente', formatMissingText(order.clientName)],
+      ['Produto', productLabel],
+      ['Status', simulation.status === 'aprovada' ? 'Aprovada' : simulation.status === 'rejeitada' ? 'Rejeitada' : 'Gerada (pendente de revisão)'],
+      ['Versão', `v${simulation.version}`],
+    ],
+  });
+  cursorY = (doc as any).lastAutoTable.finalY + 8;
+
+  if (simulation.generatedImageUrl) {
+    const loaded = await loadProportionalImage(simulation.generatedImageUrl);
+    if (loaded) {
+      const maxW = 180;
+      let w = maxW;
+      let h = (loaded.height / loaded.width) * w;
+      if (cursorY + h > 250) {
+        h = 250 - cursorY;
+        w = (loaded.width / loaded.height) * h;
+      }
+      doc.addImage(loaded.dataUrl, 'JPEG', 15, cursorY, w, h);
+      cursorY += h + 4;
+    }
+  }
+
+  // Legenda de simulação — fixa, escrita pelo app, nunca omitida.
+  doc.setFillColor(255, 243, 205);
+  doc.rect(15, cursorY, 180, 10, 'F');
+  doc.setDrawColor(154, 113, 56);
+  doc.setLineWidth(0.3);
+  doc.rect(15, cursorY, 180, 10, 'S');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(120, 53, 15);
+  doc.text(EXPLODED_VIEW_SIMULATION_CAPTION, 105, cursorY + 6.5, { align: 'center', maxWidth: 176 });
+  cursorY += 16;
+
+  if (cursorY > 255) {
+    doc.addPage();
+    cursorY = 20;
+  }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('COMPONENTES NUMERADOS', 15, cursorY);
+  cursorY += 3;
+
+  if (simulation.componentLabels.length > 0) {
+    autoTable(doc, {
+      startY: cursorY,
+      margin: { left: 15, right: 15 },
+      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 2.5, textColor: [28, 25, 23] },
+      headStyles: { fillColor: [45, 40, 35], textColor: [255, 255, 255], fontStyle: 'bold' },
+      head: [['Nº', 'Componente', 'Origem', 'Observações']],
+      body: simulation.componentLabels
+        .sort((a, b) => a.number - b.number)
+        .map((c) => [
+          String(c.number),
+          c.name,
+          c.isHypothesis ? 'Hipótese ilustrativa — verificar presencialmente' : 'Observado nas fotos',
+          c.notes || '—',
+        ]),
+    });
+    cursorY = (doc as any).lastAutoTable.finalY + 8;
+  } else {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(87, 83, 78);
+    doc.text('Nenhum componente numerado/identificado ainda.', 15, cursorY + 4);
+    cursorY += 12;
+  }
+
+  if (simulation.rejectedReason) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(153, 27, 27);
+    doc.text(`Versão rejeitada: ${simulation.rejectedReason}`, 15, cursorY, { maxWidth: 180 });
+    cursorY += 8;
+  }
+
+  if (cursorY > 255) {
+    doc.addPage();
+    cursorY = 20;
+  }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('FOTOS ORIGINAIS DE REFERÊNCIA', 15, cursorY);
+  cursorY += 4;
+
+  const sourcePhotos: AttendancePhoto[] = order.photos.filter((p) => simulation.sourcePhotoIds.includes(p.id));
+  let x = 15;
+  const thumbW = 40;
+  for (const photo of sourcePhotos) {
+    if (x + thumbW > 195) {
+      x = 15;
+      cursorY += 42;
+    }
+    if (cursorY + 42 > 280) {
+      doc.addPage();
+      cursorY = 20;
+      x = 15;
+    }
+    const loaded = await loadProportionalImage(photo.imageUrl);
+    if (loaded) {
+      const h = (loaded.height / loaded.width) * thumbW;
+      doc.addImage(loaded.dataUrl, 'JPEG', x, cursorY, thumbW, Math.min(h, 35));
+    }
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(87, 83, 78);
+    doc.text(photo.code, x, cursorY + 38);
+    x += thumbW + 5;
+  }
+
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.5);
+  doc.setTextColor(120, 53, 15);
+  const disclaimerY = Math.min(cursorY + 46, 285);
+  doc.text(
+    'A simulação serve apenas para localizar componentes e organizar a conferência. A aprovação visual não ' +
+      'equivale à validação técnica do interior do móvel — condições internas seguem dependendo da ficha de ' +
+      'visita técnica e da inspeção pós-desmontagem.',
+    15,
+    disclaimerY,
+    { maxWidth: 180 }
+  );
+
+  addPageNumbersAndFooter(doc, false, order.attendanceNumber);
+  doc.save(`Vista_Explodida_${order.attendanceNumber}_${productLabel}_v${simulation.version}.pdf`);
 }
 
 // Manual de execução (montagem/estofamento/costura) em PDF A4, a partir da ficha

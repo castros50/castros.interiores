@@ -755,6 +755,52 @@ export interface TechnicalVisitOpinion {
   createdAt: string;
 }
 
+// ----------------------------------------------------------------------------
+// VISTA EXPLODIDA — ESTADO ATUAL (simulação ilustrativa gerada por IA a partir
+// de fotos reais do produto, só para localizar/organizar componentes antes da
+// conferência — nunca confirma condição interna nem substitui a ficha de
+// visita/inspeção pós-desmontagem já existentes). Aditivo, por produto/peça.
+// ----------------------------------------------------------------------------
+
+// Legenda fixa de toda imagem gerada — nunca omitida, nunca confundida com foto
+// real de desmontagem. Aplicada pelo próprio app em todo lugar que exibe a
+// imagem (card na tela, PDF), não depende do modelo de IA desenhar o texto certo.
+export const EXPLODED_VIEW_SIMULATION_CAPTION =
+  'SIMULAÇÃO DE VISTA EXPLODIDA — NÃO É FOTO DE DESMONTAGEM REAL.';
+
+export interface ExplodedViewComponentLabel {
+  id: string;
+  number: number; // numeração visível, referenciada na legenda ao lado da imagem
+  name: string; // ex.: "Braço esquerdo", "Assento"
+  // Partes sem evidência nas fotos (ex.: estrutura interna) entram aqui como
+  // hipótese, nunca misturadas com o que foi de fato observado nas fotos.
+  isHypothesis: boolean;
+  notes?: string;
+}
+
+export type ExplodedViewStatus = 'gerada' | 'rejeitada' | 'aprovada';
+
+export interface ExplodedViewSimulation {
+  id: string;
+  orderId: string;
+  productId: string; // 'primary' | OrderProduct.id
+  unitIndex: number;
+  version: number; // nunca sobrescrita — rejeitar/gerar de novo cria nova versão
+  status: ExplodedViewStatus;
+  sourcePhotoIds: string[]; // fotos reais usadas como referência (AttendancePhoto.id)
+  generatedImageUrl?: string; // ausente quando a geração falhou (ex.: sem chave configurada)
+  generationPrompt: string; // prompt exato enviado — registrado para transparência
+  generationError?: string; // erro honesto quando a geração não pôde ser concluída
+  componentLabels: ExplodedViewComponentLabel[];
+  rejectedReason?: string;
+  createdBy?: string;
+  createdAt: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  forwardedAt?: string;
+  forwardedBy?: string;
+}
+
 // Manual de execução — PDF A4, rascunho até aprovação.
 export interface ExecutionManualStep {
   stepNumber: number;
@@ -934,6 +980,9 @@ export interface AttendanceRecord {
   // acumulada por produto/peça, igual ao padrão de inspectionSheets acima.
   technicalVisitSheets?: TechnicalVisitSheet[];
   technicalVisitOpinions?: TechnicalVisitOpinion[];
+
+  // Vista explodida (simulação ilustrativa) — acumulada, toda versão preservada.
+  explodedViewSimulations?: ExplodedViewSimulation[];
 }
 
 export type RawMaterialCategory =

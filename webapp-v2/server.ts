@@ -158,6 +158,8 @@ import type {
   VisitComponentEntry,
   TechnicalVisitSheet,
   TechnicalVisitOpinion,
+  ExplodedViewComponentLabel,
+  ExplodedViewSimulation,
 } from './src/types.ts';
 import { INSPECTION_COMPONENT_LABELS, INSPECTION_MARKING_LABELS } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
@@ -2354,6 +2356,18 @@ function getAnthropicApiKey(): string {
   return apiKey;
 }
 
+// Usada só pela Vista Explodida (geração de imagem) — serviço do Google, separado
+// da Anthropic/Claude usada no restante do app, porque Claude não gera imagem.
+function getGeminiApiKey(): string {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey.trim() === '') {
+    throw new Error(
+      'Configuração pendente: A variável de ambiente GEMINI_API_KEY não está configurada no servidor. Configure uma chave do Google AI Studio nos Segredos (Secrets) do ambiente para gerar a Vista Explodida.'
+    );
+  }
+  return apiKey;
+}
+
 // Mutex de concorrência para evitar disparos simultâneos na interface
 const inFlightGeminiRequests = new Set<string>();
 
@@ -2672,6 +2686,65 @@ function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string 
     console.error('Erro ao ler bytes da imagem para análise com IA:', err);
   }
   return null;
+}
+
+// Vista Explodida — chama a API do Google (Gemini 2.5 Flash Image: entrada
+// multimodal foto+texto, saída imagem) para editar/recompor a(s) foto(s) real(is)
+// do produto numa vista explodida ilustrativa, preservando a aparência observada.
+// Nunca usa Claude/Anthropic aqui — Claude não gera imagem, só analisa.
+// IMPORTANTE: sem uma GEMINI_API_KEY real configurada, esta chamada nunca foi
+// exercida de ponta a ponta nesta sessão (o responsável pelo projeto optou por
+// não fornecer uma chave de teste) — o contrato da API (nomes de campo, modelo)
+// segue a documentação pública mais recente conhecida, mas pode precisar de
+// ajuste fino na primeira execução real.
+async function generateExplodedViewImage(params: {
+  prompt: string;
+  referencePhotos: Array<{ mimeType: string; data: string }>;
+}): Promise<{ imageBase64: string; imageMimeType: string }> {
+  const apiKey = getGeminiApiKey();
+  const model = 'gemini-2.5-flash-image';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
+    apiKey
+  )}`;
+
+  const parts: Array<Record<string, unknown>> = [{ text: params.prompt }];
+  for (const photo of params.referencePhotos) {
+    parts.push({ inlineData: { mimeType: photo.mimeType, data: photo.data } });
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts }],
+      generationConfig: { responseModalities: ['IMAGE'] },
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Erro ao gerar imagem com a API do Google (status ${res.status}): ${errText.slice(0, 500)}`);
+  }
+
+  const data = (await res.json()) as {
+    candidates?: Array<{
+      content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string }; text?: string }> };
+    }>;
+  };
+  const responseParts = data?.candidates?.[0]?.content?.parts || [];
+  const imagePart = responseParts.find((p) => p.inlineData?.data);
+  if (!imagePart?.inlineData?.data) {
+    const textPart = responseParts.find((p) => p.text)?.text;
+    throw new Error(
+      `A API do Google não retornou uma imagem nesta chamada.${
+        textPart ? ` Resposta recebida: ${textPart.slice(0, 300)}` : ' Resposta sem conteúdo de imagem.'
+      }`
+    );
+  }
+  return {
+    imageBase64: imagePart.inlineData.data,
+    imageMimeType: imagePart.inlineData.mimeType || 'image/png',
+  };
 }
 
 // Deriva a lista de materiais necessários a partir da avaliação de reaproveitamento (reuseItems,
@@ -11005,6 +11078,284 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     } catch (error) {
       console.error('Erro ao gerar parecer da visita técnica:', error);
       res.status(500).json({ error: 'Erro ao gerar parecer da visita técnica.' });
+    }
+  });
+
+  // ----------------------------------------------------------------------------
+  // VISTA EXPLODIDA — ESTADO ATUAL (simulação ilustrativa gerada por IA a partir
+  // de fotos reais, vinculada ao pedido do produto de reforma). Usa a API do
+  // Google (Gemini 2.5 Flash Image) — nunca a Anthropic, que não gera imagem.
+  // ----------------------------------------------------------------------------
+
+  const EXPLODED_VIEW_PROMPT =
+    'Crie uma vista explodida ilustrativa deste mesmo móvel no estado atual. ' +
+    'Separe visualmente os componentes identificáveis, mantendo sua relação de posição e montagem. ' +
+    'Preserve a aparência observada nas fotos, incluindo revestimento e desgaste. ' +
+    'Não transforme o produto em novo ou reformado. ' +
+    'Não apresente componentes internos desconhecidos como se tivessem sido fotografados ou inspecionados.';
+
+  // Gera (nova versão) a vista explodida a partir das fotos de referência
+  // selecionadas. Nunca aplica nada automaticamente além de salvar a tentativa —
+  // numeração dos componentes é um passo humano separado (/labels), aprovação é
+  // outro (/approve), encaminhamento é outro (/forward).
+  app.post('/api/orders/:id/exploded-view', async (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const { productId, unitIndex, sourcePhotoIds, createdBy } = req.body as {
+        productId: string;
+        unitIndex?: number;
+        sourcePhotoIds: string[];
+        createdBy?: string;
+      };
+      const validIds = listOrderProducts(order).map((p) => p.id);
+      if (!productId || !validIds.includes(productId)) {
+        res.status(400).json({ error: 'Produto do pedido não encontrado (productId inválido).' });
+        return;
+      }
+      if (!Array.isArray(sourcePhotoIds) || sourcePhotoIds.length === 0) {
+        res.status(400).json({ error: 'Selecione ao menos uma foto de referência.' });
+        return;
+      }
+      const sourcePhotos = order.photos.filter((p) => sourcePhotoIds.includes(p.id));
+      if (sourcePhotos.length === 0) {
+        res.status(400).json({ error: 'Nenhuma das fotos selecionadas foi encontrada neste pedido.' });
+        return;
+      }
+
+      const referencePhotos: Array<{ mimeType: string; data: string }> = [];
+      for (const photo of sourcePhotos) {
+        const resolved = resolvePhotoBase64(photo.imageUrl);
+        if (resolved) referencePhotos.push(resolved);
+      }
+      if (referencePhotos.length === 0) {
+        res.status(400).json({ error: 'Não foi possível ler os arquivos das fotos selecionadas.' });
+        return;
+      }
+
+      let generatedImageUrl: string | undefined;
+      let generationError: string | undefined;
+      try {
+        const { imageBase64, imageMimeType } = await generateExplodedViewImage({
+          prompt: EXPLODED_VIEW_PROMPT,
+          referencePhotos,
+        });
+        const ext = imageMimeType.includes('png') ? '.png' : imageMimeType.includes('webp') ? '.webp' : '.jpg';
+        const fileName = `explodedview-${order.id}-${productId}-${Date.now()}${ext}`;
+        savePhotoFile(fileName, Buffer.from(imageBase64, 'base64'), imageMimeType);
+        generatedImageUrl = `/api/photos/${fileName}`;
+      } catch (genError) {
+        generationError = genError instanceof Error ? genError.message : 'Erro ao gerar a vista explodida.';
+      }
+
+      if (!generatedImageUrl) {
+        // Nunca grava uma tentativa fantasma no histórico — devolve o erro
+        // honesto (ex.: GEMINI_API_KEY ausente) direto pra tela, sem fingir
+        // que um recurso existe quando a configuração ainda não foi feita.
+        res.status(502).json({ error: generationError || 'Erro ao gerar a vista explodida.' });
+        return;
+      }
+
+      const unit = unitIndex || 1;
+      if (!order.explodedViewSimulations) order.explodedViewSimulations = [];
+      const previous = order.explodedViewSimulations
+        .filter((s) => s.productId === productId && s.unitIndex === unit)
+        .sort((a, b) => b.version - a.version)[0];
+      const version = (previous?.version || 0) + 1;
+
+      const now = new Date().toISOString();
+      const simulation: ExplodedViewSimulation = {
+        id: `evs-${Date.now()}`,
+        orderId: order.id,
+        productId,
+        unitIndex: unit,
+        version,
+        status: 'gerada',
+        sourcePhotoIds: sourcePhotos.map((p) => p.id),
+        generatedImageUrl,
+        generationPrompt: EXPLODED_VIEW_PROMPT,
+        componentLabels: [],
+        createdBy,
+        createdAt: now,
+      };
+      order.explodedViewSimulations.push(simulation);
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: createdBy || 'Vista Explodida',
+        stage: 'Vista Explodida',
+        action: `Simulação v${version} gerada a partir de ${sourcePhotos.length} foto(s)`,
+        details: 'SIMULAÇÃO DE VISTA EXPLODIDA — NÃO É FOTO DE DESMONTAGEM REAL.',
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Vista Explodida',
+        attendance: order,
+      });
+
+      res.json({ ok: true, order, simulation });
+    } catch (error) {
+      console.error('Erro ao gerar vista explodida:', error);
+      res.status(500).json({ error: 'Erro ao gerar vista explodida.' });
+    }
+  });
+
+  // Numerar/identificar componentes na simulação — edição livre enquanto não
+  // aprovada (não versiona a cada clique, só grava o estado atual dos rótulos).
+  app.post('/api/orders/:id/exploded-view/:simId/labels', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, simId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const simulation = (order.explodedViewSimulations || []).find((s) => s.id === simId);
+      if (!simulation) {
+        res.status(404).json({ error: 'Simulação de vista explodida não encontrada.' });
+        return;
+      }
+      const { componentLabels } = req.body as { componentLabels: ExplodedViewComponentLabel[] };
+      simulation.componentLabels = Array.isArray(componentLabels) ? componentLabels : [];
+      order.updatedAt = new Date().toISOString();
+      saveStore(store);
+      res.json({ ok: true, order, simulation });
+    } catch (error) {
+      console.error('Erro ao atualizar rótulos da vista explodida:', error);
+      res.status(500).json({ error: 'Erro ao atualizar rótulos da vista explodida.' });
+    }
+  });
+
+  // Rejeita a simulação (modelo alterado, defeito apagado, parte duplicada ou
+  // componente incompatível) — preserva no histórico, nunca apaga. Uma nova
+  // chamada a /exploded-view gera a próxima versão normalmente.
+  app.post('/api/orders/:id/exploded-view/:simId/reject', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, simId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const simulation = (order.explodedViewSimulations || []).find((s) => s.id === simId);
+      if (!simulation) {
+        res.status(404).json({ error: 'Simulação de vista explodida não encontrada.' });
+        return;
+      }
+      const { reason } = req.body as { reason?: string };
+      if (!reason || !reason.trim()) {
+        res.status(400).json({ error: 'Informe o motivo da rejeição.' });
+        return;
+      }
+      simulation.status = 'rejeitada';
+      simulation.rejectedReason = reason;
+      order.updatedAt = new Date().toISOString();
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: order.updatedAt,
+        actor: 'Vista Explodida',
+        stage: 'Vista Explodida',
+        action: `Simulação v${simulation.version} rejeitada`,
+        details: reason,
+      });
+      saveStore(store);
+      res.json({ ok: true, order, simulation });
+    } catch (error) {
+      console.error('Erro ao rejeitar vista explodida:', error);
+      res.status(500).json({ error: 'Erro ao rejeitar vista explodida.' });
+    }
+  });
+
+  // Aprova/salva a versão revisada — a aprovação visual NÃO equivale à validação
+  // técnica do interior do móvel (isso continua dependendo da ficha de visita e
+  // da inspeção pós-desmontagem já existentes).
+  app.post('/api/orders/:id/exploded-view/:simId/approve', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, simId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const simulation = (order.explodedViewSimulations || []).find((s) => s.id === simId);
+      if (!simulation) {
+        res.status(404).json({ error: 'Simulação de vista explodida não encontrada.' });
+        return;
+      }
+      const { approvedBy } = req.body as { approvedBy?: string };
+      if (!approvedBy || !approvedBy.trim()) {
+        res.status(400).json({ error: 'Informe quem está salvando/aprovando esta versão.' });
+        return;
+      }
+      simulation.status = 'aprovada';
+      simulation.approvedBy = approvedBy;
+      simulation.approvedAt = new Date().toISOString();
+      order.updatedAt = simulation.approvedAt;
+      saveStore(store);
+      res.json({ ok: true, order, simulation });
+    } catch (error) {
+      console.error('Erro ao salvar versão da vista explodida:', error);
+      res.status(500).json({ error: 'Erro ao salvar versão da vista explodida.' });
+    }
+  });
+
+  // Encaminha a simulação aprovada (junto das fotos originais) à Carla e ao
+  // Pedro — não move o pedido de mesa (as duas já têm acesso de leitura ao
+  // pedido), só marca como encaminhada e notifica em tempo real.
+  app.post('/api/orders/:id/exploded-view/:simId/forward', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, simId } = req.params;
+      const order = store.attendances.find((a) => a.id === id);
+      if (!order) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const simulation = (order.explodedViewSimulations || []).find((s) => s.id === simId);
+      if (!simulation) {
+        res.status(404).json({ error: 'Simulação de vista explodida não encontrada.' });
+        return;
+      }
+      if (simulation.status !== 'aprovada') {
+        res.status(400).json({ error: 'Salve/aprove a versão antes de encaminhar.' });
+        return;
+      }
+      const { forwardedBy } = req.body as { forwardedBy?: string };
+      const now = new Date().toISOString();
+      simulation.forwardedAt = now;
+      simulation.forwardedBy = forwardedBy;
+      order.updatedAt = now;
+      order.auditHistory.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: now,
+        actor: forwardedBy || 'Vista Explodida',
+        stage: 'Vista Explodida',
+        action: `Simulação v${simulation.version} encaminhada à Carla e ao Pedro, com as fotos originais`,
+        details: `Fotos de referência: ${simulation.sourcePhotoIds.join(', ')}`,
+      });
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: 'Vista Explodida',
+        attendance: order,
+      });
+      res.json({ ok: true, order, simulation });
+    } catch (error) {
+      console.error('Erro ao encaminhar vista explodida:', error);
+      res.status(500).json({ error: 'Erro ao encaminhar vista explodida.' });
     }
   });
 
