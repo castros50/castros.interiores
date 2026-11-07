@@ -910,7 +910,25 @@ export const TechnicalVisitSheetForm: React.FC<TechnicalVisitSheetFormProps> = (
                                   className="p-1.5 rounded border border-[#D6CFC5] text-[10px]"
                                 />
                                 <input
-                                  placeholder='Especificação/densidade (ou "não identificada")'
+                                  type="number"
+                                  step="0.1"
+                                  placeholder="Espessura (cm) — ex.: 1"
+                                  value={entry.foamThicknessCm ?? ''}
+                                  onChange={(e) =>
+                                    updateComponentEntry(sheet.id, entry.id, {
+                                      foamThicknessCm: e.target.value ? parseFloat(e.target.value) : null,
+                                    })
+                                  }
+                                  className="p-1.5 rounded border border-[#D6CFC5] text-[10px]"
+                                />
+                                <input
+                                  placeholder="Densidade (ex.: D28, D33)"
+                                  value={entry.foamDensity || ''}
+                                  onChange={(e) => updateComponentEntry(sheet.id, entry.id, { foamDensity: e.target.value })}
+                                  className="p-1.5 rounded border border-[#D6CFC5] text-[10px]"
+                                />
+                                <input
+                                  placeholder='Outras observações de especificação (opcional)'
                                   value={entry.foamDensitySpecification || ''}
                                   onChange={(e) =>
                                     updateComponentEntry(sheet.id, entry.id, { foamDensitySpecification: e.target.value })

@@ -679,6 +679,11 @@ export interface VisitComponentEntry {
   foamAccessibleMeasurement?: string;
   foamDeformation?: 'nao_avaliado' | 'ausente' | 'parcial' | 'severa';
   foamSinking?: 'nao_avaliado' | 'ausente' | 'presente';
+  // Espessura (cm) e densidade (ex.: "D28", "D33") no formato que a oficina usa
+  // para comprar — mesma convenção já usada em MaterialCatalogItem.foamDensity.
+  // Vão direto para o parecer do Tapeceiro Técnico como o número exato da espuma.
+  foamThicknessCm?: number | null;
+  foamDensity?: string;
   foamDensitySpecification?: string;
 
   // Tecido

@@ -2357,7 +2357,7 @@ export async function generateTechnicalVisitSheetPdf(
   for (const entry of sheet.components) {
     const extraLines =
       entry.component === 'espumas'
-        ? 2
+        ? 3
         : entry.component === 'revestimento' || entry.component === 'costuras'
         ? 3
         : entry.component === 'estrutura' || entry.component === 'mecanismos'
@@ -2442,8 +2442,10 @@ export async function generateTechnicalVisitSheetPdf(
         y
       );
       y += 4.5;
+      doc.text('Espessura (cm): _______   Densidade (ex.: D28, D33): _________________', 18, y);
+      y += 4.5;
       doc.text(
-        'Especificação/densidade (só se identificada por etiqueta/nota fiscal, senão "não identificada"): _________________________',
+        'Outras observações de especificação (só se identificada por etiqueta/nota fiscal, senão "não identificada"): _________',
         18,
         y
       );

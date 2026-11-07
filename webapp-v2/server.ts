@@ -10898,8 +10898,8 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
             label: c.locationLabel || INSPECTION_COMPONENT_LABELS.espumas,
             widthCm: dims ? parseFloat(dims[1].replace(',', '.')) : null,
             depthCm: dims ? parseFloat(dims[2].replace(',', '.')) : null,
-            thicknessCm: null,
-            densitySpecification: c.foamDensitySpecification,
+            thicknessCm: c.foamThicknessCm ?? null,
+            densitySpecification: c.foamDensity || c.foamDensitySpecification,
           };
         });
       const foamEstimate = foamParts.length > 0 ? estimateFoamConsumption(foamParts) : null;
@@ -10915,15 +10915,20 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
           calculationMemo: fabricEstimate.calculationMemo,
         });
       }
+      // Uma linha por densidade+espessura (ex.: "Espuma D28 (1 cm)") — nunca soma
+      // espumas diferentes numa única quantidade genérica, pois são itens de compra
+      // distintos (o número exato vai direto pro Tapeceiro Técnico).
       if (foamEstimate && foamEstimate.totalAreaM2 != null) {
-        estimatedMaterials.push({
-          name: 'Espuma (estimada pela visita técnica)',
-          quantity: Number(foamEstimate.totalAreaM2.toFixed(2)),
-          unit: 'm²',
-          unitCostCents: null,
-          quantityStatus: 'estimada',
-          calculationMemo: foamEstimate.calculationMemo,
-        });
+        for (const [spec, areaM2] of Object.entries(foamEstimate.bySpecification)) {
+          estimatedMaterials.push({
+            name: `Espuma ${spec} (estimada pela visita técnica)`,
+            quantity: Number(areaM2.toFixed(2)),
+            unit: 'm²',
+            unitCostCents: null,
+            quantityStatus: 'estimada',
+            calculationMemo: foamEstimate.calculationMemo,
+          });
+        }
       }
 
       const currentEvaluation = order.productEvaluations?.[productId];

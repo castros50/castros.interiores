@@ -146,7 +146,11 @@ export function estimateFoamConsumption(parts: FoamPartInput[]): FoamEstimateRes
       continue;
     }
     const areaM2 = (part.widthCm * part.depthCm) / 10000;
-    const spec = part.densitySpecification?.trim() || 'Não identificada';
+    const densityLabel = part.densitySpecification?.trim() || 'Não identificada';
+    // Agrupa por densidade + espessura juntas (ex.: "D28 (3 cm)") — duas espumas da
+    // mesma densidade mas espessuras diferentes são números de compra diferentes,
+    // nunca devem ser somadas como se fossem a mesma peça.
+    const spec = part.thicknessCm ? `${densityLabel} (${part.thicknessCm} cm)` : densityLabel;
     bySpecification[spec] = (bySpecification[spec] || 0) + areaM2;
     totalAreaM2 += areaM2;
     computedCount++;
