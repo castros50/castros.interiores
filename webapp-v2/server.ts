@@ -1566,17 +1566,76 @@ function reconcileJuliaPhotosFromDisk(juliaData: JuliaDepartmentData): boolean {
 // TODAS as chaves como alteradas — comportamento seguro por omissão.
 const pristineStoreSnapshots = new WeakMap<PersistentStore, string>();
 
-function computeChangedTopLevelKeys(store: PersistentStore): string[] {
+// `attendances` e `agentChats` não são tratados como "mais uma chave de
+// topo" — mesmo entre chamadas que mudam a MESMA chave (ex.: duas rotas
+// diferentes editando atendimentos distintos, ou o webhook do WhatsApp
+// escrevendo uma mensagem enquanto um humano edita OUTRO atendimento), uma
+// substituição da chave inteira faria uma das duas gravações vencer por
+// completo, perdendo a mutação da outra que não tinha chegado a ela ainda.
+// Por isso o diff é calculado por ITEM dentro desses dois campos (por id do
+// atendimento; por id da mensagem dentro de cada mesa) — ver
+// persistStoreKeysTransactionally, que faz o merge na mesma granularidade.
+interface StoreDiff {
+  changedTopLevelKeys: string[]; // todas as outras chaves (settings, juliaData, materials, clients, backgroundTasks, whatsappWebhookLog, officeData) — substituição inteira, ver limitação abaixo
+  attendanceUpserts: AttendanceRecord[];
+  attendanceDeletes: string[];
+  agentChatNewMessages: Record<string, AgentChatMessage[]>;
+}
+
+function computeStoreDiff(store: PersistentStore): StoreDiff {
   const pristineJson = pristineStoreSnapshots.get(store);
-  const allKeys = Object.keys(store);
-  if (!pristineJson) return allKeys; // sem snapshot registrado — grava tudo, por segurança
-  let pristine: Record<string, unknown>;
-  try {
-    pristine = JSON.parse(pristineJson) as Record<string, unknown>;
-  } catch {
-    return allKeys;
+  const allKeys = Object.keys(store).filter((k) => k !== 'attendances' && k !== 'agentChats');
+  let pristine: Record<string, unknown> | undefined;
+  if (pristineJson) {
+    try {
+      pristine = JSON.parse(pristineJson) as Record<string, unknown>;
+    } catch {
+      pristine = undefined;
+    }
   }
-  return allKeys.filter((key) => JSON.stringify((store as unknown as Record<string, unknown>)[key]) !== JSON.stringify(pristine[key]));
+  const hasPristine = pristine !== undefined;
+
+  const changedTopLevelKeys = hasPristine
+    ? allKeys.filter((key) => JSON.stringify((store as unknown as Record<string, unknown>)[key]) !== JSON.stringify((pristine as Record<string, unknown>)[key]))
+    : allKeys; // sem snapshot registrado — grava tudo, por segurança
+
+  const attendanceUpserts: AttendanceRecord[] = [];
+  const attendanceDeletes: string[] = [];
+  const currentAttendances = Array.isArray(store.attendances) ? store.attendances : [];
+  if (!hasPristine) {
+    attendanceUpserts.push(...currentAttendances);
+  } else {
+    const pristineAttendances = Array.isArray((pristine as Record<string, unknown>).attendances)
+      ? ((pristine as Record<string, unknown>).attendances as AttendanceRecord[])
+      : [];
+    const pristineById = new Map(pristineAttendances.map((a) => [a.id, a]));
+    const currentIds = new Set<string>();
+    for (const a of currentAttendances) {
+      currentIds.add(a.id);
+      const before = pristineById.get(a.id);
+      if (!before || JSON.stringify(before) !== JSON.stringify(a)) {
+        attendanceUpserts.push(a);
+      }
+    }
+    for (const before of pristineAttendances) {
+      if (!currentIds.has(before.id)) attendanceDeletes.push(before.id);
+    }
+  }
+
+  // Mensagens nunca são editadas, só acrescentadas — comparar por id já
+  // detecta corretamente tudo que é novo desde o snapshot "pristine".
+  const agentChatNewMessages: Record<string, AgentChatMessage[]> = {};
+  const currentChats = store.agentChats || {};
+  const pristineChats = (hasPristine ? (pristine as Record<string, unknown>).agentChats : undefined) as
+    | Record<string, AgentChatMessage[]>
+    | undefined;
+  for (const [deskId, messages] of Object.entries(currentChats)) {
+    const pristineIds = new Set(((pristineChats || {})[deskId] || []).map((m) => m.id));
+    const newOnes = (messages || []).filter((m) => !pristineIds.has(m.id));
+    if (newOnes.length > 0) agentChatNewMessages[deskId] = newOnes;
+  }
+
+  return { changedTopLevelKeys, attendanceUpserts, attendanceDeletes, agentChatNewMessages };
 }
 
 function loadStore(): PersistentStore {
@@ -1869,12 +1928,13 @@ function saveStore(store: PersistentStore): void {
     throw new Error(MAINTENANCE_MODE_ERROR_MESSAGE);
   }
   writeStoreToLocalDisk(store);
-  const changedKeys = computeChangedTopLevelKeys(store);
+  const diff = computeStoreDiff(store);
   // Sincroniza com o Firestore em segundo plano — não bloqueia a resposta da
   // rota que chamou saveStore(), mas garante que o dado sobreviva a um
-  // redeploy sem disco. Só as chaves de topo que esta chamada mudou (ver
-  // persistStoreKeysTransactionally) — nunca o documento inteiro às cegas.
-  void persistStoreKeysTransactionally(store, changedKeys);
+  // redeploy sem disco. Só o que esta chamada mudou, por item em
+  // attendances/agentChats (ver persistStoreKeysTransactionally) — nunca o
+  // documento inteiro às cegas.
+  void persistStoreKeysTransactionally(store, diff);
   pristineStoreSnapshots.set(store, JSON.stringify(store));
 }
 
@@ -2514,28 +2574,40 @@ const MAINTENANCE_MODE_ERROR_MESSAGE =
   'Gravação bloqueada: MAINTENANCE_MODE_WRITES_BLOCKED=1 (manutenção para migração de dados). Tente novamente quando a manutenção terminar.';
 
 // Substitui o antigo .set() cego do documento inteiro: lê o estado FRESCO
-// do Firestore dentro de uma transação e sobrescreve só as chaves de topo
-// que esta chamada especificamente mudou (`changedKeys`, calculado por
-// saveStore() comparando contra o snapshot "pristine" de loadStore()) — uma
-// rota que só muda `settings`, por exemplo, nunca mais pode sobrescrever
-// `attendances`/`agentChats` com uma cópia desatualizada, porque nem chega
-// a tocar essas chaves no documento fresco lido na transação.
+// do Firestore dentro de uma transação e aplica só o que esta chamada
+// especificamente mudou (`diff`, calculado por computeStoreDiff). Chaves
+// comuns (settings, juliaData, materials, clients, backgroundTasks,
+// whatsappWebhookLog, officeData) são substituídas por inteiro — uma rota
+// que só muda `settings` nunca toca `attendances`/`agentChats` no documento
+// fresco. `attendances` e `agentChats`, por serem o ponto de contato direto
+// com o webhook do WhatsApp (que cria/atualiza atendimentos e mensagens com
+// sua PRÓPRIA transação concorrente), são mesclados por ITEM: upsert/delete
+// de atendimento por id, mensagem nova por id dentro de cada mesa — nunca
+// substituição do array inteiro. Isso fecha o caso "webhook contra edição
+// de atendimento": uma rota humana editando o atendimento B não apaga o
+// atendimento A que o webhook acabou de criar/atualizar concorrentemente,
+// e vice-versa.
 //
-// LIMITAÇÃO DECLARADA: a granularidade é por chave de TOPO do
-// PersistentStore, não por item. Duas chamadas que mudam a mesma chave de
-// topo ao mesmo tempo (ex.: duas rotas diferentes editando `attendances`
-// simultaneamente) ainda podem ter uma delas prevalecer sobre a outra
-// dentro dessa chave — fechar isso por completo exige granularidade por
-// documento (ver migrations/, coleções por entidade) ou converter cada
-// rota para sua própria transação. Isto aqui fecha o caso mais comum e
-// mais grave: uma rota que não tem nada a ver com o assunto (ex.
-// configurações) sobrescrevendo dados de atendimento/WhatsApp só porque
-// escreveu depois, com uma cópia local desatualizada.
+// LIMITAÇÃO DECLARADA (residual, menor): duas chamadas que mudam o MESMO
+// atendimento (mesmo id) ao mesmo tempo ainda têm uma delas prevalecer
+// sobre a outra PARA AQUELE REGISTRO INTEIRO — não há merge campo a campo
+// dentro de um único atendimento. Fechar isso por completo exige granula
+// ridade por campo (fora de escopo) ou aceitar que duas pessoas/processos
+// não editem o mesmo atendimento no mesmo instante (risco realista baixo:
+// o webhook só reescreve campos do atendimento em si — não a mensagem —
+// quando identifica a origem de campanha pela primeira vez; no resto do
+// tempo ele só acrescenta mensagem nova, que nem participa deste risco por
+// ser mesclada por id de mensagem, não por substituição do atendimento).
 async function persistStoreKeysTransactionally(
   store: PersistentStore,
-  changedKeys: string[]
+  diff: StoreDiff
 ): Promise<{ ok: boolean; errorMessage?: string }> {
-  if (changedKeys.length === 0) {
+  const nothingChanged =
+    diff.changedTopLevelKeys.length === 0 &&
+    diff.attendanceUpserts.length === 0 &&
+    diff.attendanceDeletes.length === 0 &&
+    Object.keys(diff.agentChatNewMessages).length === 0;
+  if (nothingChanged) {
     return { ok: true }; // nada para gravar
   }
   if (isWriteMaintenanceModeActive()) {
@@ -2546,9 +2618,32 @@ async function persistStoreKeysTransactionally(
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(docRef);
       const fresh = (snap.exists ? snap.data() : {}) as Record<string, unknown>;
-      for (const key of changedKeys) {
+
+      for (const key of diff.changedTopLevelKeys) {
         fresh[key] = (store as unknown as Record<string, unknown>)[key];
       }
+
+      if (diff.attendanceUpserts.length > 0 || diff.attendanceDeletes.length > 0) {
+        const freshAttendances: AttendanceRecord[] = Array.isArray(fresh.attendances)
+          ? (fresh.attendances as AttendanceRecord[])
+          : [];
+        const byId = new Map(freshAttendances.map((a) => [a.id, a]));
+        for (const upsert of diff.attendanceUpserts) byId.set(upsert.id, upsert);
+        for (const delId of diff.attendanceDeletes) byId.delete(delId);
+        fresh.attendances = Array.from(byId.values());
+      }
+
+      if (Object.keys(diff.agentChatNewMessages).length > 0) {
+        const freshChats = { ...((fresh.agentChats || {}) as Record<string, AgentChatMessage[]>) };
+        for (const [deskId, newMsgs] of Object.entries(diff.agentChatNewMessages)) {
+          const existing = freshChats[deskId] || [];
+          const existingIds = new Set(existing.map((m) => m.id));
+          const toAppend = newMsgs.filter((m) => !existingIds.has(m.id));
+          freshChats[deskId] = [...existing, ...toAppend];
+        }
+        fresh.agentChats = freshChats;
+      }
+
       fresh.savedAt = new Date().toISOString();
       const json = JSON.stringify(fresh);
       if (json.length > FIRESTORE_SIZE_WARNING_THRESHOLD) {
@@ -6524,6 +6619,19 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       res.status(403).json({ error: 'Segredo inválido.' });
       return;
     }
+    if (isWriteMaintenanceModeActive()) {
+      // Checado ANTES de executar qualquer tarefa — não só antes de salvar.
+      // Uma tarefa devida pode ter um efeito colateral externo real (ex.:
+      // enviar uma mensagem de WhatsApp de resposta automática); bloquear
+      // só o saveStore() do final deixaria esse envio acontecer sem
+      // nenhum jeito de registrar que aconteceu. O Cloud Scheduler, que
+      // chama esta rota periodicamente, trata 503 como "tentar de novo
+      // depois" conforme a própria política de retentativa configurada.
+      res.status(503).json({
+        error: MAINTENANCE_MODE_ERROR_MESSAGE,
+      });
+      return;
+    }
     const store = loadStore();
     const outcomes = await processDueBackgroundTasks(store);
     res.json({ ok: true, processed: outcomes.length, outcomes });
@@ -6721,7 +6829,12 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     // transação acima, não precisam ser regravados, e não gravar as outras
     // chaves evita sobrescrever por cima do que outra rota tenha mudado
     // nesse meio-tempo.
-    void persistStoreKeysTransactionally(mergedStore, ['whatsappWebhookLog']);
+    void persistStoreKeysTransactionally(mergedStore, {
+      changedTopLevelKeys: ['whatsappWebhookLog'],
+      attendanceUpserts: [],
+      attendanceDeletes: [],
+      agentChatNewMessages: {},
+    });
 
     res.sendStatus(200);
 

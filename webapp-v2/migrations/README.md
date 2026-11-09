@@ -77,28 +77,60 @@ documento único, não só o webhook.
    escrever durante a janela. Por isso a comunicação ao usuário final ("não
    use o sistema durante a manutenção") continua sendo parte do
    procedimento, não um substituto para o interruptor.
-2. Com as gravações bloqueadas, ler o `GET /api/store` de uma instância (as
+2. **Confirmar que TODAS as instâncias e revisões recebendo tráfego têm a
+   manutenção ativa antes de seguir — isto não é automático.** Atualizar a
+   variável de ambiente cria uma REVISÃO NOVA no Cloud Run; a revisão
+   ANTIGA (sem a variável) continua existindo e pode continuar recebendo
+   uma fração do tráfego durante o rollout, ou indefinidamente se houver
+   split de tráfego manual já configurado (ex.: um teste A/B anterior).
+   Instâncias da revisão antiga nunca leem a variável nova — elas não têm
+   ideia de que uma manutenção está em andamento, e continuam gravando
+   normalmente. Confirmar com uma leitura (não altera nada):
+   ```bash
+   gcloud run services describe castros-interiores \
+     --region southamerica-east1 --project gen-lang-client-0378581840 \
+     --format="table(status.traffic[].revisionName,status.traffic[].percent)"
+   ```
+   Só seguir quando esse comando mostrar **100% numa única revisão** — a
+   que acabou de ser implantada com `MAINTENANCE_MODE_WRITES_BLOCKED=1`. Se
+   mostrar qualquer percentual em outra revisão, o tráfego ainda não
+   terminou de migrar (ou há split manual que precisa ser removido
+   primeiro com `gcloud run services update-traffic --to-latest`) — uma
+   revisão antiga com tráfego > 0% significa gravações ainda possíveis por
+   fora do bloqueio.
+3. **Esperar a drenagem das requisições em voo na revisão antiga.** Mesmo
+   depois de 100% do tráfego NOVO ir para a revisão com a manutenção,
+   requisições que a revisão antiga já tinha aceitado antes do corte
+   continuam executando até terminar — o Cloud Run não as interrompe.
+   Esperar uma margem de segurança generosamente maior que qualquer
+   requisição única deste app pode levar (o maior tempo de processamento
+   conhecido é o timeout de 8s da transação do Firestore mais a rede —
+   folga seria 2 a 3 minutos) antes de considerar a drenagem completa. Não
+   há um comando read-only que confirme "zero instâncias antigas ainda
+   vivas" com certeza absoluta — esta espera é a mitigação prática.
+5. Com as gravações bloqueadas (e a drenagem esperada), ler o `GET /api/store` de uma instância (as
    leituras continuam funcionando normalmente) e também ler o documento
    `appState/main` direto do Firestore (consulta somente leitura — ver a
    seção de backup abaixo para o comando exato). Como nada pode mais ser
    escrito, os dois devem corresponder ao estado final e estável — não há
    mais janela de corrida entre a leitura do snapshot e a migração.
-3. Rodar `reconcileSnapshots(local, firestore)` com os dois. Se
+6. Rodar `reconcileSnapshots(local, firestore)` com os dois. Se
    `identical: false`, investigar (algo pode ter sido gravado um instante
    antes da manutenção entrar em vigor) e reconciliar manualmente (ex.:
    reenviar o que só existe localmente para o Firestore) **antes** de
    seguir.
-4. **Reconciliar-e-repetir (defesa adicional, não a garantia principal
-   agora):** com o interruptor de manutenção ativo, nenhuma gravação nova
-   deveria acontecer — mas, dada a limitação declarada acima (requisições
-   `async` sem try/catch próprio podem já ter lido um snapshot ANTES de
-   `saveStore()` recusar), vale reler o documento `appState/main` do
-   Firestore MAIS UMA VEZ depois de rodar `runMigration` de verdade e rodar
+7. **Reconciliar-e-repetir (defesa adicional, não a garantia principal
+   agora):** com o interruptor de manutenção ativo e o tráfego confirmado
+   100% na revisão nova, nenhuma gravação nova deveria acontecer — mas,
+   dada a limitação declarada no passo 1 (requisições `async` sem
+   try/catch próprio podem já ter lido um snapshot ANTES de `saveStore()`
+   recusar), vale reler o documento `appState/main` do Firestore MAIS UMA
+   VEZ depois de rodar `runMigration` de verdade e rodar
    `reconcileSnapshots` entre esse novo snapshot e o snapshot usado como
    base. Se houver qualquer diferença, rode `runMigration` de novo com o
    snapshot atualizado — `runMigration` é idempotente (ver seção de
    Recuperação). Repita até duas leituras consecutivas saírem idênticas.
-5. Só com as duas fontes iguais (ou já reconciliadas, e o ciclo do passo 4
+8. Só com as duas fontes iguais (ou já reconciliadas, e o ciclo do passo 7
    convergido) a migração deve ser considerada concluída. Desativar
    `MAINTENANCE_MODE_WRITES_BLOCKED` só depois disso.
 
@@ -241,14 +273,48 @@ ativa, o webhook responde 503 em ~30ms (sem nem tentar a rede) e
 `PUT /api/settings` responde 500 (gravação recusada) — e nada foi escrito
 em nenhum dos dois casos. Leituras (`GET /api/store`) continuam funcionando
 normalmente. Ver a seção "Controle de gravações durante a janela" acima
-para o procedimento completo e a limitação declarada (rotas assíncronas
-sem try/catch próprio podem não receber uma resposta HTTP limpa, embora a
-gravação em si fique sempre bloqueada).
+para o procedimento completo (incluindo a verificação de tráfego por
+revisão) e a limitação declarada (rotas assíncronas sem try/catch próprio
+podem não receber uma resposta HTTP limpa, embora a gravação em si fique
+sempre bloqueada).
+
+**Tarefas automáticas também são bloqueadas.** `POST /api/tasks/process-due`
+(o alvo do gatilho externo, tipicamente Cloud Scheduler, que mantém a fila
+de tarefas em segundo plano avançando — ex.: resposta automática do
+WhatsApp) agora checa a manutenção ANTES de executar qualquer tarefa
+devida, não só antes de salvar o resultado — isso evita que uma tarefa com
+efeito colateral externo real (enviar uma mensagem) chegue a executar sem
+conseguir registrar que executou. Confirmado por leitura de código: esta
+rota e o próprio `/api/webhooks/whatsapp` são os ÚNICOS dois pontos de
+entrada deste app que fazem gravação sem uma requisição HTTP explícita de
+um usuário (não há `setInterval` nem outro laço autônomo gravando dados no
+processo) — ambos cobertos.
+
+**Gravações já em andamento no momento em que a manutenção é ativada NÃO
+são abortadas.** O interruptor é checado no INÍCIO de `saveStore()`/da
+transação do webhook — uma transação que já passou dessa checagem e está
+em andamento quando a variável muda continua até o fim normalmente. Como a
+variável de ambiente só existe em instâncias da revisão NOVA (nasce com o
+container, não pode ser alterada em uma instância já rodando), isto só é
+relevante entre o início e o fim de UMA ÚNICA requisição que por acaso
+esteja em andamento bem no instante do corte de tráfego — janela de poucos
+segundos no máximo, coberta pelo tempo de drenagem do passo 3 do
+procedimento acima.
 
 ## O que ainda não está fechado
 
 - Migrar para coleções continua sendo o único jeito de resolver o limite de
   tamanho do documento (99,7% do limite) de forma permanente — os fixes
   acima tornam a escrita mais segura, não menor.
-- Granularidade por item dentro de uma mesma chave de topo (ver limitação
-  acima) — só a migração ou transações por rota fecham isso por completo.
+- Granularidade por CAMPO dentro do MESMO atendimento (duas edições
+  concorrentes do mesmo registro) — o merge por item (ver seção anterior)
+  já fecha "registros diferentes", mas duas gravações do mesmo atendimento
+  ao mesmo tempo ainda têm uma prevalecer sobre a outra para aquele
+  registro inteiro. Só a migração ou transação por rota fecham isso por
+  completo.
+- O merge por item de `agentChats` foi verificado pela mesma lógica usada
+  e testada para `attendances` (mesmo código, mesma técnica), mas não foi
+  testado ponta a ponta através de uma rota de chat real nesta sessão
+  (a rota principal de chat chama a API da Anthropic, fora do escopo dos
+  testes rápidos feitos aqui) — limitação de cobertura de teste declarada,
+  não um problema conhecido.
