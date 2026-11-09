@@ -1827,16 +1827,42 @@ function saveStore(store: PersistentStore): void {
 }
 
 // Mesma gravação local de saveStore(), mas AGUARDA a sincronização com o
-// Firestore terminar antes de retornar. Use isto (nunca saveStore()) em
-// qualquer rota que responda rápido e sinalize sucesso pro chamador externo
-// antes de terminar de processar (ex.: webhook) — no Cloud Run, com alocação
-// de CPU só durante o processamento da requisição, qualquer tarefa "em
-// segundo plano" iniciada depois que a resposta HTTP já foi enviada corre o
-// risco de nunca terminar, porque a instância pode ter a CPU cortada assim
-// que a requisição é considerada concluída.
-async function saveStoreAwaitingFirestoreSync(store: PersistentStore): Promise<void> {
-  writeStoreToLocalDisk(store);
-  await persistStoreToFirestore(store);
+// Firestore terminar antes de retornar, e devolve o resultado de cada etapa
+// em vez de void — quem chama precisa saber se a gravação local (a única que
+// garante que o dado não foi perdido) realmente aconteceu, para nunca
+// responder sucesso por uma mensagem que não foi persistida em lugar nenhum.
+// Use isto (nunca saveStore()) em qualquer rota que responda rápido e
+// sinalize sucesso pro chamador externo antes de terminar de processar (ex.:
+// webhook) — no Cloud Run, com alocação de CPU só durante o processamento da
+// requisição, qualquer tarefa "em segundo plano" iniciada depois que a
+// resposta HTTP já foi enviada corre o risco de nunca terminar, porque a
+// instância pode ter a CPU cortada assim que a requisição é considerada
+// concluída.
+async function saveStoreAwaitingFirestoreSync(store: PersistentStore): Promise<{
+  localWriteOk: boolean;
+  localWriteError?: string;
+  firestoreOk: boolean;
+  firestoreError?: string;
+}> {
+  let localWriteOk = true;
+  let localWriteError: string | undefined;
+  try {
+    writeStoreToLocalDisk(store);
+  } catch (err) {
+    localWriteOk = false;
+    localWriteError = err instanceof Error ? err.message : String(err);
+    console.error(
+      '[Store] Falha ao gravar o estado no disco local — nada foi persistido com segurança:',
+      localWriteError
+    );
+  }
+  const firestoreResult = await persistStoreToFirestore(store);
+  return {
+    localWriteOk,
+    localWriteError,
+    firestoreOk: firestoreResult.ok,
+    firestoreError: firestoreResult.errorMessage,
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -2427,12 +2453,20 @@ const FIRESTORE_STORE_DOC = 'main';
 // diagnóstico do WhatsApp em Configurações.
 const FIRESTORE_DOCUMENT_BYTE_LIMIT = 1_048_576;
 const FIRESTORE_SIZE_WARNING_THRESHOLD = 900_000;
+// Acima disto, a sobra até o limite real (1.048.576) já é menor que a franja de
+// overhead que o Firestore soma por campo/índice em cima do tamanho do JSON —
+// ou seja, falhas por "entity too large" já são esperadas a qualquer gravação,
+// não apenas uma possibilidade futura. Visto em produção: 1.045.502 bytes
+// (99,7%) ainda classificando como "nearLimit" não bastava para transmitir
+// isso, por isso este segundo nível.
+const FIRESTORE_SIZE_CRITICAL_THRESHOLD = 1_030_000;
 
 function getFirestoreStoreSizeInfo(store: PersistentStore): {
   bytes: number;
   limitBytes: number;
   percentUsed: number;
   nearLimit: boolean;
+  critical: boolean;
 } {
   const bytes = Buffer.byteLength(JSON.stringify({ ...store, savedAt: new Date().toISOString() }), 'utf-8');
   return {
@@ -2440,10 +2474,11 @@ function getFirestoreStoreSizeInfo(store: PersistentStore): {
     limitBytes: FIRESTORE_DOCUMENT_BYTE_LIMIT,
     percentUsed: Math.round((bytes / FIRESTORE_DOCUMENT_BYTE_LIMIT) * 1000) / 10,
     nearLimit: bytes > FIRESTORE_SIZE_WARNING_THRESHOLD,
+    critical: bytes > FIRESTORE_SIZE_CRITICAL_THRESHOLD,
   };
 }
 
-function persistStoreToFirestore(store: PersistentStore): Promise<void> {
+function persistStoreToFirestore(store: PersistentStore): Promise<{ ok: boolean; errorMessage?: string }> {
   const payload = { ...store, savedAt: new Date().toISOString() };
   const json = JSON.stringify(payload);
   if (json.length > FIRESTORE_SIZE_WARNING_THRESHOLD) {
@@ -2456,22 +2491,19 @@ function persistStoreToFirestore(store: PersistentStore): Promise<void> {
       .collection(FIRESTORE_STORE_COLLECTION)
       .doc(FIRESTORE_STORE_DOC)
       .set(payload)
-      .then(() => undefined)
+      .then(() => ({ ok: true }))
       .catch((err) => {
-        console.error(
-          '[Firestore Sync] Falha ao sincronizar o estado com o Firestore:',
-          err instanceof Error ? err.message : err
-        );
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        console.error('[Firestore Sync] Falha ao sincronizar o estado com o Firestore:', errorMessage);
+        return { ok: false, errorMessage };
       });
   } catch (err) {
     // .set() pode lançar de forma síncrona (ex.: dado inválido) antes mesmo de
     // devolver uma promise — sem este try/catch, isso derrubaria a rota que
     // chamou saveStore(), mesmo com os dados já salvos com segurança no disco.
-    console.error(
-      '[Firestore Sync] Falha síncrona ao preparar a sincronização com o Firestore:',
-      err instanceof Error ? err.message : err
-    );
-    return Promise.resolve();
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error('[Firestore Sync] Falha síncrona ao preparar a sincronização com o Firestore:', errorMessage);
+    return Promise.resolve({ ok: false, errorMessage });
   }
 }
 
@@ -6436,7 +6468,39 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       attendanceIdsTouched: Array.from(attendanceIdsTouched),
       errorMessage,
     });
-    await saveStoreAwaitingFirestoreSync(store);
+    const saveResult = await saveStoreAwaitingFirestoreSync(store);
+
+    if (!saveResult.localWriteOk) {
+      // Nada foi persistido em lugar nenhum — nem no disco local (a única
+      // cópia síncrona e confiável que este servidor tem). Não existe
+      // "mensagem processada" sem isso: o objeto `store` mutado em memória
+      // morre com esta requisição (loadStore() relê o arquivo do zero na
+      // próxima chamada). Responder 200 aqui diria à Meta "não precisa
+      // reentregar", perdendo a mensagem de vez — por isso HTTP 500: é o
+      // único jeito de pedir reentrega depois, sem fingir sucesso.
+      console.error(
+        `[WhatsApp Webhook] Gravação local falhou (${saveResult.localWriteError}) — respondendo erro para a Meta reentregar, nenhuma mensagem foi marcada como processada.`
+      );
+      res.sendStatus(500);
+      return;
+    }
+
+    if (!saveResult.firestoreOk) {
+      // O disco local está seguro (resposta 200 abaixo é honesta), mas o
+      // backup no Firestore falhou — registra isso no mesmo evento para
+      // aparecer no diagnóstico. É best-effort: se esta segunda gravação
+      // falhar também, o dado principal já está salvo mesmo assim.
+      const lastEntry = store.whatsappWebhookLog?.[0];
+      if (lastEntry) {
+        lastEntry.firestoreSyncError = saveResult.firestoreError;
+        try {
+          writeStoreToLocalDisk(store);
+        } catch {
+          // a gravação principal já funcionou acima; esta é só uma anotação.
+        }
+      }
+    }
+
     res.sendStatus(200);
 
     // Atualiza a mesa da Carla (e qualquer outro dispositivo já aberto) ao vivo —

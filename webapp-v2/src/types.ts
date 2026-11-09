@@ -1300,6 +1300,12 @@ export interface WhatsAppWebhookLogEntry {
   messagesDuplicated: number; // já existiam (reentrega do mesmo evento pela Meta)
   attendanceIdsTouched: string[];
   errorMessage?: string;
+  // O backup no Firestore é best-effort: mesmo com o disco local ok, ele pode
+  // falhar silenciosamente (ex.: documento acima do limite de 1MB) — isso NÃO
+  // bloqueia a resposta (o dado já está seguro localmente), mas fica visível
+  // aqui porque é o único jeito de uma outra instância do Cloud Run (ou um
+  // redeploy sem disco) recuperar esse dado depois.
+  firestoreSyncError?: string;
 }
 
 export interface WorkshopSettings {

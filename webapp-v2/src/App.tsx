@@ -207,6 +207,7 @@ export default function App() {
       messagesDuplicated: number;
       attendanceIdsTouched: string[];
       errorMessage?: string;
+      firestoreSyncError?: string;
     } | null;
     recentEvents: Array<{
       id: string;
@@ -216,8 +217,9 @@ export default function App() {
       messagesProcessed: number;
       messagesDuplicated: number;
       errorMessage?: string;
+      firestoreSyncError?: string;
     }>;
-    firestoreBackup?: { bytes: number; limitBytes: number; percentUsed: number; nearLimit: boolean };
+    firestoreBackup?: { bytes: number; limitBytes: number; percentUsed: number; nearLimit: boolean; critical: boolean };
   } | null>(null);
   const [isVerifyingWhatsApp, setIsVerifyingWhatsApp] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -2664,6 +2666,12 @@ export default function App() {
                             {whatsappDiagnostics.lastEvent.errorMessage && (
                               <p className="text-red-700">Erro: {whatsappDiagnostics.lastEvent.errorMessage}</p>
                             )}
+                            {whatsappDiagnostics.lastEvent.firestoreSyncError && (
+                              <p className="text-amber-700">
+                                A mensagem foi salva localmente, mas o backup no Firestore falhou:{' '}
+                                {whatsappDiagnostics.lastEvent.firestoreSyncError}
+                              </p>
+                            )}
                           </div>
                         ) : (
                           <p className="text-[#6B6257]">
@@ -2678,7 +2686,9 @@ export default function App() {
                           <p className="font-semibold text-[#181512] mb-1">Backup no Firestore (restaurado quando a instância sobe sem disco local)</p>
                           <p
                             className={
-                              whatsappDiagnostics.firestoreBackup.nearLimit
+                              whatsappDiagnostics.firestoreBackup.critical
+                                ? 'text-red-900 bg-red-100 border border-red-300 rounded px-2 py-1.5 font-semibold'
+                                : whatsappDiagnostics.firestoreBackup.nearLimit
                                 ? 'text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1.5'
                                 : 'text-[#57534E]'
                             }
@@ -2686,13 +2696,20 @@ export default function App() {
                             {whatsappDiagnostics.firestoreBackup.bytes.toLocaleString('pt-BR')} de{' '}
                             {whatsappDiagnostics.firestoreBackup.limitBytes.toLocaleString('pt-BR')} bytes usados (
                             {whatsappDiagnostics.firestoreBackup.percentUsed}% do limite por documento do Firestore)
-                            {whatsappDiagnostics.firestoreBackup.nearLimit && (
+                            {whatsappDiagnostics.firestoreBackup.critical ? (
+                              <>
+                                {' '}— CRÍTICO: a qualquer momento uma gravação pode ser rejeitada por exceder o limite
+                                de 1 documento do Firestore. Quando isso acontecer, o backup para de funcionar
+                                completamente (silenciosamente, só no log) até os dados serem migrados para coleções
+                                separadas. Recomendado tratar como prioridade, não como aviso futuro.
+                              </>
+                            ) : whatsappDiagnostics.firestoreBackup.nearLimit ? (
                               <>
                                 {' '}— próximo do limite. Acima dele, o backup passa a falhar silenciosamente (só visível
                                 no log do servidor) e um redeploy ou reinício sem disco local perde os dados mais
                                 recentes. É necessário migrar para coleções separadas em breve.
                               </>
-                            )}
+                            ) : null}
                           </p>
                         </div>
                       )}
@@ -2708,6 +2725,7 @@ export default function App() {
                                 {new Date(ev.receivedAt).toLocaleString('pt-BR')} — {ev.signatureStatus} —{' '}
                                 {ev.messagesProcessed}/{ev.messagesFound} processada(s)
                                 {ev.errorMessage ? ` — erro: ${ev.errorMessage}` : ''}
+                                {ev.firestoreSyncError ? ` — backup no Firestore falhou: ${ev.firestoreSyncError}` : ''}
                               </p>
                             ))}
                           </div>
