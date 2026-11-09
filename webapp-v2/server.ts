@@ -2923,9 +2923,15 @@ async function claimWhatsAppMessagesTransactionally(
             });
           }
         } else if (result.status === 'duplicate') {
-          // Segurança adicional — não deveria acontecer (já filtrado pela
-          // checagem de marcador acima), mas handleInboundWhatsAppMessage
-          // ainda faz sua própria checagem em memória, sem custo.
+          // Não é só uma segunda camada redundante: isto é o que pega o
+          // caso de DUAS mensagens com o MESMO externalMessageId dentro do
+          // MESMO payload do webhook (raro, mas o formato do payload da
+          // Meta permite). `alreadyClaimedIds` só reflete o que já existia
+          // no Firestore ANTES desta chamada — não vê a primeira ocorrência
+          // sendo processada agora, poucas linhas acima, dentro deste mesmo
+          // loop. Quem pega isso é a checagem em memória de
+          // handleInboundWhatsAppMessage, contra `carlaChatMessages`, que
+          // vai acumulando as mensagens já processadas NESTA chamada.
           messagesDuplicated++;
         }
       }
@@ -2939,6 +2945,15 @@ async function claimWhatsAppMessagesTransactionally(
       //    automaticamente, desta vez vendo o marcador já existente.
       for (const a of workingStore.attendances) {
         if (attendanceIdsTouched.has(a.id)) {
+          // merge:true aqui é redundante com o objeto inteiro (não é um
+          // merge parcial de verdade) — `a` já veio da leitura fresca desta
+          // MESMA transação (passo 1), então gravar o objeto inteiro de
+          // volta, mesclado ou não, não arrisca sobrescrever uma mudança
+          // concorrente: se outra transação tivesse tocado este atendimento
+          // entre a leitura e aqui, o Firestore teria detectado o conflito
+          // e re-tentado esta transação inteira antes de chegar a este
+          // ponto. O merge:true só evita apagar campos que porventura não
+          // tenham vindo no objeto (nenhum caso conhecido hoje).
           tx.set(attendancesCol.doc(a.id), a as unknown as Record<string, unknown>, {
             merge: attendanceIdsBefore.has(a.id),
           });

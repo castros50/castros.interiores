@@ -585,11 +585,17 @@ o sistema para uso normal.
 - **Leitura completa da coleção de atendimentos dentro da transação do
   webhook** — para casar por telefone um cliente que já tem atendimento,
   `claimWhatsAppMessagesTransactionally` lê TODOS os atendimentos a cada
-  mensagem nova processada (necessário porque o casamento é por sufixo de
-  telefone, não uma igualdade indexável pelo Firestore). Não testado com o
-  volume real de produção — pode ficar mais lento/contencioso à medida que
-  a base de atendimentos cresce. Otimização futura declarada, não resolvida
-  aqui: um índice próprio por telefone normalizado.
+  CHAMADA do webhook (necessário porque o casamento é por sufixo de
+  telefone, não uma igualdade indexável pelo Firestore). **Isso acontece
+  mesmo quando o payload inteiro só contém reentregas já conhecidas** — a
+  versão anterior desta revisão saía cedo nesse caso, sem abrir transação
+  nenhuma; a versão atual (ver correção 1 acima) sempre confirma a
+  existência de cada marcador de dedup DENTRO da mesma transação que vai
+  gravar, então não tem como saber de antemão que tudo é duplicata sem
+  pagar essa leitura. Troca deliberada (correção > eficiência). Não testado
+  com o volume real de produção — pode ficar mais lento/contencioso à
+  medida que a base de atendimentos cresce. Otimização futura declarada,
+  não resolvida aqui: um índice próprio por telefone normalizado.
 - **(Resolvida nesta revisão, registrado para contexto)** uma versão
   anterior tinha uma janela em que o processo podia morrer entre reivindicar
   um `externalMessageId` e gravar a mensagem/atendimento, descartando a
