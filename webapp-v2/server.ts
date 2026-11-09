@@ -160,6 +160,8 @@ import type {
   TechnicalVisitOpinion,
   ExplodedViewComponentLabel,
   ExplodedViewSimulation,
+  WhatsAppWebhookLogEntry,
+  WhatsAppWebhookSignatureStatus,
 } from './src/types.ts';
 import { INSPECTION_COMPONENT_LABELS, INSPECTION_MARKING_LABELS } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
@@ -208,6 +210,9 @@ interface PersistentStore {
   agentChats?: Record<string, AgentChatMessage[]>;
   backgroundTasks?: BackgroundTask[];
   clients?: ClientRecord[];
+  // Diagnóstico do webhook do WhatsApp — mais recente primeiro, capado (ver
+  // recordWhatsAppWebhookEvent). Nunca guarda token/segredo nem o payload bruto.
+  whatsappWebhookLog?: WhatsAppWebhookLogEntry[];
 }
 
 // Normaliza telefone para comparação (só dígitos) — usado para não cadastrar o mesmo
@@ -2041,17 +2046,17 @@ function handleInboundWhatsAppMessage(
     contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }>;
   },
   msg: Record<string, unknown>
-): void {
+): { status: 'processed' | 'duplicate' | 'ignored'; attendanceId?: string } {
   const externalMessageId = msg.id as string | undefined;
   const fromPhone = msg.from as string | undefined;
-  if (!externalMessageId || !fromPhone) return;
+  if (!externalMessageId || !fromPhone) return { status: 'ignored' };
 
   if (!store.agentChats) store.agentChats = {};
   if (!store.agentChats['carla_atendimento']) store.agentChats['carla_atendimento'] = [];
   const carlaChat = store.agentChats['carla_atendimento'];
 
   if (carlaChat.some((m) => m.externalMessageId === externalMessageId && m.externalChannel === 'whatsapp')) {
-    return; // mesma mensagem já processada — webhook reentregue
+    return { status: 'duplicate' }; // mesma mensagem já processada — webhook reentregue
   }
 
   const msgType = msg.type as string | undefined;
@@ -2203,6 +2208,23 @@ function handleInboundWhatsAppMessage(
         text: 'Olá! Sou a Carla, assistente virtual da Castros Interiores. Recebi sua mensagem e já vou te ajudar — só um instante.',
       },
     });
+  }
+
+  return { status: 'processed', attendanceId: attendance.id };
+}
+
+// Mantém só os registros mais recentes do diagnóstico de webhook — nunca guarda
+// token/segredo nem o corpo bruto do evento, só o suficiente para diagnosticar.
+const WHATSAPP_WEBHOOK_LOG_MAX = 50;
+function recordWhatsAppWebhookEvent(store: PersistentStore, entry: Omit<WhatsAppWebhookLogEntry, 'id' | 'receivedAt'>): void {
+  if (!store.whatsappWebhookLog) store.whatsappWebhookLog = [];
+  store.whatsappWebhookLog.unshift({
+    id: `wal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    receivedAt: new Date().toISOString(),
+    ...entry,
+  });
+  if (store.whatsappWebhookLog.length > WHATSAPP_WEBHOOK_LOG_MAX) {
+    store.whatsappWebhookLog.length = WHATSAPP_WEBHOOK_LOG_MAX;
   }
 }
 
@@ -5920,8 +5942,13 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     const hasFacebookApi = Boolean(
       process.env.FACEBOOK_PAGE_ACCESS_TOKEN && process.env.FACEBOOK_PAGE_ID
     );
+    // Corrigido: antes checava WHATSAPP_CLOUD_API_TOKEN, uma variável que nunca é lida em
+    // nenhum outro lugar do código — a variável real usada para enviar/verificar é
+    // WHATSAPP_ACCESS_TOKEN (ver sendWhatsAppMessage/checkIntegrationConnection acima).
+    // Esse descompasso fazia esta rota relatar "não conectado" mesmo com a integração
+    // corretamente configurada.
     const hasWhatsAppCloudApi = Boolean(
-      process.env.WHATSAPP_CLOUD_API_TOKEN &&
+      process.env.WHATSAPP_ACCESS_TOKEN &&
         process.env.WHATSAPP_PHONE_NUMBER_ID
     );
 
@@ -6262,33 +6289,74 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
 
   app.post('/api/webhooks/whatsapp', async (req, res) => {
     const appSecret = process.env.WHATSAPP_APP_SECRET;
-    if (appSecret) {
-      const signatureHeader = req.headers['x-hub-signature-256'] as string | undefined;
-      const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
-      const expectedSig =
-        'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody || Buffer.alloc(0)).digest('hex');
-      const sigBuf = Buffer.from(signatureHeader || '');
-      const expectedBuf = Buffer.from(expectedSig);
-      const valid =
-        !!signatureHeader &&
-        !!rawBody &&
-        sigBuf.length === expectedBuf.length &&
-        crypto.timingSafeEqual(sigBuf, expectedBuf);
-      if (!valid) {
-        res.sendStatus(401);
-        return;
-      }
+
+    // Sem WHATSAPP_APP_SECRET configurada, não há como verificar que a chamada
+    // é mesmo da Meta — processar mesmo assim aceitaria qualquer POST de
+    // qualquer origem como se fosse mensagem real de cliente (a URL do webhook
+    // é pública, conhecida). Mesmo padrão já usado em todo o resto do app para
+    // configuração ausente (ver getAnthropicApiKey/getGeminiApiKey): rejeita
+    // explicitamente, nunca processa "no escuro".
+    if (!appSecret) {
+      const store = loadStore();
+      recordWhatsAppWebhookEvent(store, {
+        signatureStatus: 'rejeitado_sem_app_secret',
+        entryCount: Array.isArray(req.body?.entry) ? req.body.entry.length : 0,
+        messagesFound: 0,
+        messagesProcessed: 0,
+        messagesDuplicated: 0,
+        attendanceIdsTouched: [],
+        errorMessage: 'WHATSAPP_APP_SECRET não configurada no servidor — evento rejeitado sem verificar assinatura.',
+      });
+      saveStore(store);
+      res.sendStatus(401);
+      return;
     }
 
-    // Sempre responde 200 rapidamente (padrão exigido pela Meta) mesmo se o
-    // processamento interno falhar — o erro fica só no log do servidor.
+    const signatureHeader = req.headers['x-hub-signature-256'] as string | undefined;
+    const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+    const expectedSig =
+      'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody || Buffer.alloc(0)).digest('hex');
+    const sigBuf = Buffer.from(signatureHeader || '');
+    const expectedBuf = Buffer.from(expectedSig);
+    const signatureValid =
+      !!signatureHeader &&
+      !!rawBody &&
+      sigBuf.length === expectedBuf.length &&
+      crypto.timingSafeEqual(sigBuf, expectedBuf);
+
+    if (!signatureValid) {
+      const store = loadStore();
+      recordWhatsAppWebhookEvent(store, {
+        signatureStatus: 'invalida',
+        entryCount: Array.isArray(req.body?.entry) ? req.body.entry.length : 0,
+        messagesFound: 0,
+        messagesProcessed: 0,
+        messagesDuplicated: 0,
+        attendanceIdsTouched: [],
+        errorMessage: 'Assinatura X-Hub-Signature-256 ausente ou não confere com WHATSAPP_APP_SECRET.',
+      });
+      saveStore(store);
+      res.sendStatus(401);
+      return;
+    }
+
+    // Sempre responde 200 rapidamente a partir daqui (padrão exigido pela Meta
+    // após a assinatura ser validada) mesmo se o processamento interno falhar —
+    // o erro fica registrado no diagnóstico e no log do servidor.
     res.sendStatus(200);
 
+    const store = loadStore();
+    let messagesFound = 0;
+    let messagesProcessed = 0;
+    let messagesDuplicated = 0;
+    const attendanceIdsTouched = new Set<string>();
+    let errorMessage: string | undefined;
+    let entryCount = 0;
     try {
-      const store = loadStore();
       const entries = (req.body?.entry || []) as Array<{
         changes?: Array<{ value?: Record<string, unknown> }>;
       }>;
+      entryCount = entries.length;
       let changed = false;
       for (const entry of entries) {
         for (const change of entry.changes || []) {
@@ -6297,15 +6365,85 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
             contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }>;
           };
           for (const msg of value.messages || []) {
-            handleInboundWhatsAppMessage(store, value, msg);
-            changed = true;
+            messagesFound++;
+            const result = handleInboundWhatsAppMessage(store, value, msg);
+            if (result.status === 'processed') {
+              messagesProcessed++;
+              if (result.attendanceId) attendanceIdsTouched.add(result.attendanceId);
+              changed = true;
+            } else if (result.status === 'duplicate') {
+              messagesDuplicated++;
+            }
           }
         }
       }
       if (changed) saveStore(store);
     } catch (err) {
+      errorMessage = err instanceof Error ? err.message : String(err);
       console.error('[WhatsApp Webhook] Erro ao processar payload recebido:', err);
     }
+
+    recordWhatsAppWebhookEvent(store, {
+      signatureStatus: 'valida',
+      entryCount,
+      messagesFound,
+      messagesProcessed,
+      messagesDuplicated,
+      attendanceIdsTouched: Array.from(attendanceIdsTouched),
+      errorMessage,
+    });
+    saveStore(store);
+
+    // Atualiza a mesa da Carla (e qualquer outro dispositivo já aberto) ao vivo —
+    // antes, a mensagem era salva mas só aparecia depois de um F5 manual.
+    for (const attendanceId of attendanceIdsTouched) {
+      const attendance = store.attendances.find((a) => a.id === attendanceId);
+      if (attendance) {
+        broadcastRealtimeEvent({
+          type: 'attendance:updated',
+          timestamp: new Date().toISOString(),
+          sourceStationName: 'WhatsApp (webhook)',
+          attendance,
+        });
+      }
+    }
+  });
+
+  // Diagnóstico do WhatsApp para Configurações — só presença de variável (nunca o
+  // valor), último evento de webhook recebido e os mais recentes. Leitura rápida,
+  // sem chamada de rede: serve para abrir a tela sem custo nem demora.
+  app.get('/api/whatsapp/diagnostics', (_req, res) => {
+    const store = loadStore();
+    const log = store.whatsappWebhookLog || [];
+    res.json({
+      ok: true,
+      config: {
+        verifyToken: Boolean(process.env.WHATSAPP_VERIFY_TOKEN),
+        appSecret: Boolean(process.env.WHATSAPP_APP_SECRET),
+        accessToken: Boolean(process.env.WHATSAPP_ACCESS_TOKEN),
+        phoneNumberId: Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID),
+      },
+      webhookCallbackPath: '/api/webhooks/whatsapp',
+      integrationStatus: store.settings.integrations?.whatsapp || null,
+      lastEvent: log[0] || null,
+      recentEvents: log.slice(0, 10),
+    });
+  });
+
+  // Checagem viva (chama a Graph API de verdade) — separada da leitura acima pra
+  // não fazer uma chamada de rede toda vez que alguém só abre Configurações.
+  app.post('/api/whatsapp/diagnostics/verify-connection', async (_req, res) => {
+    const store = loadStore();
+    const result = await checkIntegrationConnection('whatsapp');
+    if (!store.settings.integrations) store.settings.integrations = {};
+    store.settings.integrations.whatsapp = {
+      state: result.state,
+      lastCheckedAt: new Date().toISOString(),
+      errorMessage: result.ok ? undefined : result.message,
+      accountLabel: result.accountLabel,
+    };
+    saveStore(store);
+    res.json({ ok: true, result: store.settings.integrations.whatsapp });
   });
 
   // Envio imediato pelo canal OFICIAL e integrado do WhatsApp — diferente do

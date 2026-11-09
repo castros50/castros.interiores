@@ -1285,6 +1285,23 @@ export interface IntegrationStatus {
   accountLabel?: string; // ex.: número do WhatsApp conectado, sem expor token
 }
 
+// Registro de cada chamada recebida no webhook do WhatsApp — nunca guarda token,
+// segredo ou o corpo bruto do evento, só o suficiente para diagnosticar sem expor
+// dado sensível: resultado da verificação de assinatura e o que foi (ou não) salvo.
+export type WhatsAppWebhookSignatureStatus = 'valida' | 'invalida' | 'rejeitado_sem_app_secret';
+
+export interface WhatsAppWebhookLogEntry {
+  id: string;
+  receivedAt: string;
+  signatureStatus: WhatsAppWebhookSignatureStatus;
+  entryCount: number;
+  messagesFound: number;
+  messagesProcessed: number; // efetivamente novos, após deduplicação
+  messagesDuplicated: number; // já existiam (reentrega do mesmo evento pela Meta)
+  attendanceIdsTouched: string[];
+  errorMessage?: string;
+}
+
 export interface WorkshopSettings {
   workshopName: string;
   responsibleDefaultName: string;

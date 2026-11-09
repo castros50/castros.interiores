@@ -194,6 +194,31 @@ export default function App() {
   // Server & AI status
   const [isLoadingStore, setIsLoadingStore] = useState(true);
   const [geminiConfigured, setGeminiConfigured] = useState(true);
+  const [whatsappDiagnostics, setWhatsappDiagnostics] = useState<{
+    config: { verifyToken: boolean; appSecret: boolean; accessToken: boolean; phoneNumberId: boolean };
+    webhookCallbackPath: string;
+    integrationStatus: { state: string; lastCheckedAt?: string; errorMessage?: string; accountLabel?: string } | null;
+    lastEvent: {
+      receivedAt: string;
+      signatureStatus: string;
+      entryCount: number;
+      messagesFound: number;
+      messagesProcessed: number;
+      messagesDuplicated: number;
+      attendanceIdsTouched: string[];
+      errorMessage?: string;
+    } | null;
+    recentEvents: Array<{
+      id: string;
+      receivedAt: string;
+      signatureStatus: string;
+      messagesFound: number;
+      messagesProcessed: number;
+      messagesDuplicated: number;
+      errorMessage?: string;
+    }>;
+  } | null>(null);
+  const [isVerifyingWhatsApp, setIsVerifyingWhatsApp] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSavedSuccessAt, setLastSavedSuccessAt] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -374,6 +399,36 @@ export default function App() {
     }
     fetchInitialData();
   }, []);
+
+  // Diagnóstico do WhatsApp — só busca quando a aba de Configurações está aberta
+  // (leitura barata, sem chamada de rede externa no próprio servidor).
+  const fetchWhatsappDiagnostics = async () => {
+    try {
+      const res = await fetch('/api/whatsapp/diagnostics');
+      if (res.ok) {
+        const data = await res.json();
+        setWhatsappDiagnostics(data);
+      }
+    } catch {
+      // silencioso — o painel mostra "não foi possível carregar" se ficar null
+    }
+  };
+  useEffect(() => {
+    if (activeTab === 'configuracoes') {
+      fetchWhatsappDiagnostics();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  const handleVerifyWhatsAppConnection = async () => {
+    setIsVerifyingWhatsApp(true);
+    try {
+      await fetch('/api/whatsapp/diagnostics/verify-connection', { method: 'POST' });
+      await fetchWhatsappDiagnostics();
+    } finally {
+      setIsVerifyingWhatsApp(false);
+    }
+  };
 
   const activeAttendance =
     attendances.find((a) => a.id === activeAttendanceId) || null;
@@ -2513,6 +2568,128 @@ export default function App() {
                   <p className="text-[#57534E]">
                     As chamadas à IA são executadas exclusivamente no servidor Express (<code className="font-mono">/api/ai/analyze-defects</code> e <code className="font-mono">/api/ai/analyze-reuse</code>), enviando os bytes reais das imagens sem expor a chave no navegador.
                   </p>
+                </div>
+
+                {/* Diagnóstico do WhatsApp — este app não tem sistema de login por usuário,
+                    então "acesso restrito" aqui significa só "fica na aba de Configurações",
+                    não um controle de acesso de verdade. Nunca mostra token/segredo, só
+                    presença de variável, status e os últimos eventos de webhook recebidos. */}
+                <div className="p-4 rounded-xl bg-[#F9F6F0] border border-[#E5DEC9] space-y-3 text-xs">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <h3 className="font-bold text-[#181512]">Diagnóstico do WhatsApp (canal oficial)</h3>
+                    <button
+                      type="button"
+                      onClick={handleVerifyWhatsAppConnection}
+                      disabled={isVerifyingWhatsApp}
+                      className="px-2.5 py-1.5 rounded border border-[#9A7138] text-[#9A7138] text-[10px] font-semibold hover:bg-[#9A7138]/10 disabled:opacity-50"
+                    >
+                      {isVerifyingWhatsApp ? 'Verificando...' : 'Verificar conexão agora'}
+                    </button>
+                  </div>
+
+                  {!whatsappDiagnostics ? (
+                    <p className="text-[#6B6257]">Carregando diagnóstico...</p>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {([
+                          ['WHATSAPP_VERIFY_TOKEN', whatsappDiagnostics.config.verifyToken],
+                          ['WHATSAPP_APP_SECRET', whatsappDiagnostics.config.appSecret],
+                          ['WHATSAPP_ACCESS_TOKEN', whatsappDiagnostics.config.accessToken],
+                          ['WHATSAPP_PHONE_NUMBER_ID', whatsappDiagnostics.config.phoneNumberId],
+                        ] as const).map(([label, present]) => (
+                          <div
+                            key={label}
+                            className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg border ${
+                              present
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                                : 'bg-amber-50 border-amber-200 text-amber-900'
+                            }`}
+                          >
+                            {present ? <Check className="w-3 h-3 shrink-0" /> : <AlertTriangle className="w-3 h-3 shrink-0" />}
+                            <span className="font-mono text-[9.5px] truncate">{label}</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {!whatsappDiagnostics.config.appSecret && (
+                        <p className="text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+                          Sem WHATSAPP_APP_SECRET configurada, todo evento recebido no webhook está sendo
+                          recusado (HTTP 401) — nenhuma mensagem real da Meta consegue ser processada até essa
+                          variável ser configurada no servidor.
+                        </p>
+                      )}
+
+                      <p className="text-[#57534E]">
+                        Callback: <code className="font-mono">{whatsappDiagnostics.webhookCallbackPath}</code>
+                      </p>
+
+                      {whatsappDiagnostics.integrationStatus && (
+                        <p className="text-[#57534E]">
+                          Última verificação de conexão:{' '}
+                          <strong>{whatsappDiagnostics.integrationStatus.state}</strong>
+                          {whatsappDiagnostics.integrationStatus.accountLabel &&
+                            ` (${whatsappDiagnostics.integrationStatus.accountLabel})`}
+                          {whatsappDiagnostics.integrationStatus.errorMessage &&
+                            ` — ${whatsappDiagnostics.integrationStatus.errorMessage}`}
+                          {whatsappDiagnostics.integrationStatus.lastCheckedAt &&
+                            ` em ${new Date(whatsappDiagnostics.integrationStatus.lastCheckedAt).toLocaleString('pt-BR')}`}
+                        </p>
+                      )}
+
+                      <div className="pt-2 border-t border-[#E5DEC9]">
+                        <p className="font-semibold text-[#181512] mb-1">Último evento recebido no webhook</p>
+                        {whatsappDiagnostics.lastEvent ? (
+                          <div className="space-y-0.5 text-[#57534E]">
+                            <p>{new Date(whatsappDiagnostics.lastEvent.receivedAt).toLocaleString('pt-BR')}</p>
+                            <p>
+                              Assinatura:{' '}
+                              <strong>
+                                {whatsappDiagnostics.lastEvent.signatureStatus === 'valida'
+                                  ? 'válida'
+                                  : whatsappDiagnostics.lastEvent.signatureStatus === 'invalida'
+                                  ? 'inválida'
+                                  : 'rejeitado — sem WHATSAPP_APP_SECRET'}
+                              </strong>
+                            </p>
+                            <p>
+                              {whatsappDiagnostics.lastEvent.messagesFound} mensagem(ns) encontrada(s),{' '}
+                              {whatsappDiagnostics.lastEvent.messagesProcessed} processada(s),{' '}
+                              {whatsappDiagnostics.lastEvent.messagesDuplicated} duplicada(s) (já tinha chegado antes)
+                            </p>
+                            {whatsappDiagnostics.lastEvent.attendanceIdsTouched.length > 0 && (
+                              <p>Atendimento(s) afetado(s): {whatsappDiagnostics.lastEvent.attendanceIdsTouched.join(', ')}</p>
+                            )}
+                            {whatsappDiagnostics.lastEvent.errorMessage && (
+                              <p className="text-red-700">Erro: {whatsappDiagnostics.lastEvent.errorMessage}</p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-[#6B6257]">
+                            Nenhum evento chegou neste webhook ainda (ou o servidor foi reiniciado desde então — o
+                            diagnóstico não é persistido em disco entre reinícios sem volume permanente).
+                          </p>
+                        )}
+                      </div>
+
+                      {whatsappDiagnostics.recentEvents.length > 1 && (
+                        <details className="pt-1">
+                          <summary className="cursor-pointer text-[#9A7138] font-semibold">
+                            Eventos recentes ({whatsappDiagnostics.recentEvents.length})
+                          </summary>
+                          <div className="mt-1.5 space-y-1 max-h-40 overflow-y-auto">
+                            {whatsappDiagnostics.recentEvents.map((ev) => (
+                              <p key={ev.id} className="text-[10px] text-[#6B6257]">
+                                {new Date(ev.receivedAt).toLocaleString('pt-BR')} — {ev.signatureStatus} —{' '}
+                                {ev.messagesProcessed}/{ev.messagesFound} processada(s)
+                                {ev.errorMessage ? ` — erro: ${ev.errorMessage}` : ''}
+                              </p>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                    </>
+                  )}
                 </div>
 
                 <form onSubmit={handleSaveSettings} className="space-y-4 max-w-2xl">
