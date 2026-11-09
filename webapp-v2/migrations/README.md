@@ -339,6 +339,15 @@ assistida por humano.
 
 ## O que ainda não está fechado
 
+- **Atualização:** a troca de código que lê/escreve `attendances`/
+  `agentChats` das coleções novas (`persistStoreKeysTransactionally`,
+  `claimWhatsAppMessagesTransactionally`, `restoreStoreFromFirestoreIfNeeded`
+  em `server.ts`) já foi implementada e testada ponta a ponta contra o
+  emulador oficial (incluindo concorrência real) — ver
+  `DEPLOY_WHATSAPP_DURABILITY_FIX.md`, que agora cobre o procedimento
+  completo (migração + deploy do código juntos, nessa ordem). O texto
+  abaixo, de uma revisão anterior desta sessão, ainda descreve corretamente
+  o estado ANTES dessa troca — mantido para contexto histórico.
 - Migrar para coleções continua sendo o único jeito de resolver o limite de
   tamanho do documento (99,7% do limite) de forma permanente — os fixes
   acima tornam a escrita mais segura, não menor, e não dependem da

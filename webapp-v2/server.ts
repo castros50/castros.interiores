@@ -61,6 +61,12 @@ const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 // como o arquivo local: campos ausentes somem, em vez de quebrar a gravação.
 db.settings({ ignoreUndefinedProperties: true });
 const storageBucket = getStorage(app).bucket(firebaseConfig.storageBucket);
+// Cliente "parecido com Firestore" só para reaproveitar tryClaimWhatsAppMessageId
+// (primitivo de reivindicação atômica por .create(), já testado em
+// migrations/) — as demais operações de leitura em massa e escrita com merge
+// parcial usam `db` diretamente (API nativa do Admin SDK, que suporta
+// set(..., {merge:true}), não exposto pela interface mínima da migração).
+const firestoreLikeDb: FirestoreLikeClient = new RealFirestoreClient(db);
 
 
 
@@ -171,6 +177,21 @@ import {
   createDefaultOfficeData,
 } from './src/utils/officeDefaults.ts';
 import { estimateFabricConsumption, estimateFoamConsumption } from './src/utils/materialEstimation.ts';
+// Coleções novas (attendances_v2, agentChats_v2_*, whatsappMessageDedup) —
+// mesmos nomes/lógica já testados em migrations/firestoreCollectionsMigration.ts
+// (16/16 contra o emulador oficial) e usados pela migração real
+// (migrations/run-production-migration.ts). Reaproveitado aqui, não duplicado:
+// os nomes de coleção têm que ser EXATAMENTE os mesmos que a migração grava,
+// senão o servidor nunca enxergaria o que foi migrado.
+import {
+  COLLECTION_ATTENDANCES,
+  COLLECTION_CHAT_MESSAGE_PREFIX,
+  COLLECTION_WHATSAPP_DEDUP,
+  tryClaimWhatsAppMessageId,
+  AlreadyExistsError,
+  type FirestoreLikeClient,
+} from './migrations/firestoreCollectionsMigration.ts';
+import { RealFirestoreClient } from './migrations/realFirestoreClient.ts';
 
 dotenv.config();
 
@@ -2346,7 +2367,12 @@ function handleInboundWhatsAppMessage(
   }
 
   carlaChat.push({
-    id: `cmsg-wa-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    // Determinístico a partir do externalMessageId (não mais tempo+aleatório)
+    // — necessário para a recuperação de racha em
+    // claimWhatsAppMessagesTransactionally poder checar se esta mensagem
+    // específica já foi gravada antes de decidir se uma reivindicação
+    // "já existente" é uma reentrega legítima ou um racha para completar.
+    id: `cmsg-wa-${externalMessageId}`,
     deskId: 'carla_atendimento',
     sender: 'user',
     agentName: attendance.clientName || 'Cliente via WhatsApp',
@@ -2612,31 +2638,38 @@ function isWriteMaintenanceModeActive(): boolean {
 const MAINTENANCE_MODE_ERROR_MESSAGE =
   'Gravação bloqueada: MAINTENANCE_MODE_WRITES_BLOCKED=1 (manutenção para migração de dados). Tente novamente quando a manutenção terminar.';
 
-// Substitui o antigo .set() cego do documento inteiro: lê o estado FRESCO
-// do Firestore dentro de uma transação e aplica só o que esta chamada
-// especificamente mudou (`diff`, calculado por computeStoreDiff). Chaves
-// comuns (settings, juliaData, materials, clients, backgroundTasks,
-// whatsappWebhookLog, officeData) são substituídas por inteiro — uma rota
-// que só muda `settings` nunca toca `attendances`/`agentChats` no documento
-// fresco. `attendances` e `agentChats`, por serem o ponto de contato direto
-// com o webhook do WhatsApp (que cria/atualiza atendimentos e mensagens com
-// sua PRÓPRIA transação concorrente), são mesclados por ITEM (upsert/delete
-// de atendimento por id, mensagem nova por id dentro de cada mesa) e, dentro
-// de cada atendimento, por CAMPO de primeiro nível (ver AttendanceFieldUpdate)
-// — nunca substituição do array ou do registro inteiro. Isso fecha dois
-// casos: "webhook contra edição de atendimento" (uma rota humana editando o
-// atendimento B não apaga o atendimento A que o webhook acabou de criar/
-// atualizar concorrentemente) e "duas edições do MESMO atendimento em
-// campos diferentes" (uma rota muda `reportedDefects`, outra muda
-// `desiredService` no mesmo atendimento ao mesmo tempo — as duas sobrevivem).
+// Substitui o antigo .set() cego do documento inteiro. Desde a troca para
+// coleções por entidade (ver migrations/README.md e DEPLOY_WHATSAPP_
+// DURABILITY_FIX.md), isto grava em DOIS lugares diferentes, nunca mais um
+// documento único:
+//   1. Chaves comuns (settings, juliaData, materials, clients,
+//      backgroundTasks, whatsappWebhookLog, officeData, nextSequence) —
+//      continuam em appState/main, substituídas por inteiro dentro de uma
+//      transação que lê o documento FRESCO primeiro (mesmo padrão de
+//      sempre) — uma rota que só muda `settings` nunca toca as outras
+//      chaves no documento fresco.
+//   2. `attendances` e `agentChats` — cada item (cada atendimento, cada
+//      mensagem) é o seu PRÓPRIO documento em `attendances_v2`/
+//      `agentChats_v2_{deskId}`. Upsert de atendimento usa
+//      `set(fields, {merge:true})` para uma atualização (o próprio
+//      Firestore mescla os campos atomicamente, sem precisar de leitura
+//      prévia nem transação — duas chamadas mudando CAMPOS DIFERENTES do
+//      MESMO atendimento sobrevivem as duas, exatamente como antes) ou
+//      `set(fields)` completo para um atendimento novo. Mensagem nova usa
+//      `set()` simples (nunca editada depois de criada). Isso reduz o
+//      "raio de alcance" de qualquer gravação a um único atendimento/
+//      mensagem — a edição de um atendimento NUNCA pode mais, por
+//      construção, sobrescrever outro atendimento que o webhook tenha
+//      criado/atualizado concorrentemente.
 //
-// LIMITAÇÃO DECLARADA (residual, menor, e não resolvida só por migrar para
-// coleções — ver migrations/README.md): o merge por campo para no PRIMEIRO
-// NÍVEL. Um objeto aninhado (`budget`, `opinion`, `foamInspection`) que
-// mudou é tratado como um bloco só — duas edições concorrentes tocando
-// campos DIFERENTES dentro do MESMO objeto aninhado do MESMO atendimento
-// ainda colidem. E duas edições que mudam exatamente o MESMO campo seguem
-// sendo última-escrita-vence, por ser uma decisão de negócio, não um bug.
+// LIMITAÇÃO DECLARADA (residual, menor — ver migrations/README.md): o
+// merge por campo para no PRIMEIRO NÍVEL. Um objeto aninhado (`budget`,
+// `opinion`, `foamInspection`) que mudou é tratado como um bloco só — duas
+// edições concorrentes tocando campos DIFERENTES dentro do MESMO objeto
+// aninhado do MESMO atendimento ainda colidem (o `set(..., {merge:true})`
+// do Firestore faz merge raso, não recursivo). E duas edições que mudam
+// exatamente o MESMO campo seguem sendo última-escrita-vence, por ser uma
+// decisão de negócio, não um bug.
 async function persistStoreKeysTransactionally(
   store: PersistentStore,
   diff: StoreDiff
@@ -2652,109 +2685,165 @@ async function persistStoreKeysTransactionally(
   if (isWriteMaintenanceModeActive()) {
     return { ok: false, errorMessage: MAINTENANCE_MODE_ERROR_MESSAGE };
   }
-  const docRef = db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC);
-  try {
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(docRef);
-      const fresh = (snap.exists ? snap.data() : {}) as Record<string, unknown>;
 
-      for (const key of diff.changedTopLevelKeys) {
-        fresh[key] = (store as unknown as Record<string, unknown>)[key];
+  const errors: string[] = [];
+
+  if (diff.changedTopLevelKeys.length > 0) {
+    const docRef = db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC);
+    try {
+      await db.runTransaction(async (tx) => {
+        const snap = await tx.get(docRef);
+        const fresh = (snap.exists ? snap.data() : {}) as Record<string, unknown>;
+        for (const key of diff.changedTopLevelKeys) {
+          fresh[key] = (store as unknown as Record<string, unknown>)[key];
+        }
+        fresh.savedAt = new Date().toISOString();
+        tx.set(docRef, fresh);
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      console.error('[Firestore Sync] Falha ao sincronizar as chaves comuns com appState/main:', errorMessage);
+      errors.push(errorMessage);
+    }
+  }
+
+  if (diff.attendanceUpdates.length > 0 || diff.attendanceDeletes.length > 0) {
+    const attendancesCol = db.collection(COLLECTION_ATTENDANCES);
+    for (const update of diff.attendanceUpdates) {
+      try {
+        if (update.isNew) {
+          await attendancesCol.doc(update.id).set(update.fields);
+        } else {
+          // merge:true = o próprio Firestore aplica só estes campos por
+          // cima do documento existente, atomicamente — sem precisar ler
+          // primeiro nem abrir transação (ver limitação declarada acima).
+          await attendancesCol.doc(update.id).set(update.fields, { merge: true });
+        }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        console.error(`[Firestore Sync] Falha ao gravar attendances_v2/${update.id}:`, errorMessage);
+        errors.push(`attendances_v2/${update.id}: ${errorMessage}`);
       }
+    }
+    for (const delId of diff.attendanceDeletes) {
+      try {
+        await attendancesCol.doc(delId).delete();
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        console.error(`[Firestore Sync] Falha ao apagar attendances_v2/${delId}:`, errorMessage);
+        errors.push(`attendances_v2/${delId} (delete): ${errorMessage}`);
+      }
+    }
+  }
 
-      if (diff.attendanceUpdates.length > 0 || diff.attendanceDeletes.length > 0) {
-        const freshAttendances: Array<Record<string, unknown>> = Array.isArray(fresh.attendances)
-          ? (fresh.attendances as Array<Record<string, unknown>>)
-          : [];
-        const byId = new Map(freshAttendances.map((a) => [a.id as string, a]));
-        for (const update of diff.attendanceUpdates) {
-          if (update.isNew) {
-            byId.set(update.id, update.fields);
-          } else {
-            // Mescla só os campos alterados por cima do registro FRESCO —
-            // não substitui o atendimento inteiro, para não apagar um campo
-            // que outra chamada concorrente tenha mudado nesse meio-tempo
-            // (ver limitação declarada: só até o primeiro nível de campos).
-            const current = byId.get(update.id) || { id: update.id };
-            byId.set(update.id, { ...current, ...update.fields });
+  if (Object.keys(diff.agentChatNewMessages).length > 0) {
+    for (const [deskId, newMsgs] of Object.entries(diff.agentChatNewMessages)) {
+      const chatCol = db.collection(`${COLLECTION_CHAT_MESSAGE_PREFIX}${deskId}`);
+      for (const msg of newMsgs) {
+        try {
+          await chatCol.doc(msg.id).set(msg as unknown as Record<string, unknown>);
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          console.error(`[Firestore Sync] Falha ao gravar ${COLLECTION_CHAT_MESSAGE_PREFIX}${deskId}/${msg.id}:`, errorMessage);
+          errors.push(`${COLLECTION_CHAT_MESSAGE_PREFIX}${deskId}/${msg.id}: ${errorMessage}`);
+          continue;
+        }
+        // Mensagens do WhatsApp com externalMessageId também deveriam ter sido
+        // reivindicadas atomicamente no caminho do webhook (ver
+        // claimWhatsAppMessagesTransactionally) ANTES de chegar aqui — isto é
+        // só uma segunda camada defensiva para qualquer outro caminho que
+        // venha a acrescentar uma mensagem do WhatsApp a agentChats sem passar
+        // por lá. AlreadyExistsError aqui é esperado e benigno (o marcador já
+        // existe), nunca tratado como erro — mesmo padrão de
+        // dedupMarkersAlreadyPresent na migração.
+        if (msg.externalChannel === 'whatsapp' && msg.externalMessageId) {
+          try {
+            await firestoreLikeDb
+              .collection(COLLECTION_WHATSAPP_DEDUP)
+              .doc(msg.externalMessageId)
+              .create({ attendanceId: msg.attendanceId, deskId, chatMessageId: msg.id });
+          } catch (err) {
+            if (!(err instanceof AlreadyExistsError)) {
+              const errorMessage = err instanceof Error ? err.message : String(err);
+              console.error(`[Firestore Sync] Falha ao gravar marcador de dedup para ${msg.externalMessageId}:`, errorMessage);
+              errors.push(`whatsappMessageDedup/${msg.externalMessageId}: ${errorMessage}`);
+            }
           }
         }
-        for (const delId of diff.attendanceDeletes) byId.delete(delId);
-        fresh.attendances = Array.from(byId.values());
       }
-
-      if (Object.keys(diff.agentChatNewMessages).length > 0) {
-        const freshChats = { ...((fresh.agentChats || {}) as Record<string, AgentChatMessage[]>) };
-        for (const [deskId, newMsgs] of Object.entries(diff.agentChatNewMessages)) {
-          const existing = freshChats[deskId] || [];
-          const existingIds = new Set(existing.map((m) => m.id));
-          const toAppend = newMsgs.filter((m) => !existingIds.has(m.id));
-          freshChats[deskId] = [...existing, ...toAppend];
-        }
-        fresh.agentChats = freshChats;
-      }
-
-      fresh.savedAt = new Date().toISOString();
-      const json = JSON.stringify(fresh);
-      if (json.length > FIRESTORE_SIZE_WARNING_THRESHOLD) {
-        console.warn(
-          `[Firestore Sync] O estado está com ${json.length} bytes, perto do limite de ${FIRESTORE_DOCUMENT_BYTE_LIMIT} bytes por documento do Firestore. Se continuar crescendo, será necessário migrar para coleções separadas — acima do limite, o backup passa a falhar silenciosamente (capturado abaixo, só visível no log).`
-        );
-      }
-      tx.set(docRef, fresh);
-    });
-    return { ok: true };
-  } catch (err) {
-    // .set()/runTransaction podem lançar de forma síncrona ou rejeitar —
-    // sem este try/catch, isso derrubaria a rota que chamou saveStore(),
-    // mesmo com os dados já salvos com segurança no disco.
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    console.error('[Firestore Sync] Falha ao sincronizar o estado (merge transacional) com o Firestore:', errorMessage);
-    return { ok: false, errorMessage };
+    }
   }
+
+  if (errors.length > 0) {
+    return { ok: false, errorMessage: errors.join(' | ') };
+  }
+  return { ok: true };
 }
 
-// Reivindicação transacional de mensagens do WhatsApp — substitui, para esta
-// rota especificamente, o padrão "ler o documento inteiro localmente,
-// processar, sobrescrever o documento inteiro" por uma transação do
-// Firestore: lê o documento FRESCO dentro da própria transação, processa
-// (reaproveitando handleInboundWhatsAppMessage, sem duplicar lógica) e só
-// então escreve de volta. Isso fecha duas falhas reais encontradas nesta
-// revisão:
+// Reivindicação de mensagens do WhatsApp — desde a troca para coleções por
+// entidade, isto NÃO usa mais uma transação sobre um documento único.
+// Substitui "ler o documento inteiro, procurar o id, sobrescrever o
+// documento inteiro" por um primitivo atômico de verdade:
+// `tryClaimWhatsAppMessageId()` (ver migrations/firestoreCollectionsMigration.ts,
+// já testado com 10 chamadas verdadeiramente concorrentes contra o emulador
+// oficial — exatamente 1 reivindica) grava um marcador
+// `whatsappMessageDedup/{externalMessageId}` com `.create()`, que o
+// Firestore rejeita atomicamente se o documento já existir — sem nenhuma
+// leitura prévia para ficar desatualizada entre duas instâncias. Só depois
+// da reivindicação bem-sucedida a mensagem é processada (reaproveitando
+// handleInboundWhatsAppMessage, sem duplicar lógica) e gravada — em
+// `attendances_v2`/`agentChats_v2_carla_atendimento`, nunca mais no
+// documento único.
 //
-// 1. Resultado incerto de um timeout: se o timeout abaixo expira e a
-//    chamada real ao Firestore continuar presa por baixo (não cancelada —
-//    só deixamos de esperar por ela), e ela eventualmente terminar, o fato
-//    de ser uma transação garante que ela vai reler o estado FRESCO no
-//    momento em que realmente commitar — se uma reentrega já tiver sido
-//    processada por outra chamada nesse meio-tempo, a transação abandonada
-//    vai ver a mensagem já presente e não duplicá-la. Uma sobrescrita
-//    (como era antes) não tem essa proteção: aplicaria o snapshot antigo
-//    por cima do que já foi escrito depois, perdendo dado.
-// 2. Concorrência entre instâncias OU entre chamadas simultâneas na mesma
-//    instância: o Firestore detecta conflito de leitura entre transações
-//    concorrentes e tenta de novo automaticamente — sem isso (só com
-//    .set() cego), duas chamadas que leem o documento antes de qualquer
-//    uma escrever poderiam ambas processar a mesma mensagem como nova.
+// Isso fecha as mesmas duas falhas que a transação antiga fechava:
+// 1. Concorrência entre instâncias/chamadas DISPUTANDO A MESMA MENSAGEM
+//    (mesmo externalMessageId): a reivindicação é atômica por construção —
+//    não depende de nenhuma janela entre leitura e escrita.
+// 2. Concorrência entre instâncias/chamadas processando mensagens
+//    DIFERENTES do MESMO cliente ainda sem atendimento (ex.: duas primeiras
+//    mensagens de um cliente novo chegando quase juntas): isto SÓ fecha de
+//    verdade dentro de uma transação real do Firestore (ver abaixo) — sem
+//    ela, as duas chamadas poderiam ler "nenhum atendimento para este
+//    telefone" ao mesmo tempo e criar dois atendimentos duplicados.
+//    CONFIRMADO EXPERIMENTALMENTE nesta revisão: uma primeira versão deste
+//    código sem transação, testada com 10 chamadas verdadeiramente
+//    concorrentes contra o emulador oficial para o MESMO externalMessageId,
+//    criou atendimentos duplicados (a reivindicação atômica sozinha barra a
+//    MESMA mensagem ser reprocessada, mas uma tentativa de "recuperar" uma
+//    reivindicação sem gravação correspondente — removida desta versão —
+//    tratava incorretamente concorrência real como se fosse uma falha
+//    anterior, e todos os "perdedores" da reivindicação tentavam completar o
+//    trabalho ao mesmo tempo). A versão atual não tenta mais essa
+//    recuperação heurística: usa uma transação real do Firestore,
+//    escopada só aos documentos relevantes desta chamada (nunca o
+//    documento único de ~1MB que causava o travamento original).
 //
-// Isto NÃO protege contra uma escrita não-transacional de OUTRA rota
-// (saveStore() comum, usado em ~100 lugares do app) acontecendo ao mesmo
-// tempo — .set() não participa da detecção de conflito do Firestore, então
-// ainda pode sobrescrever por cima do que esta transação commitou. Fechar
-// isso por completo exigiria ou converter todas as outras rotas para o
-// mesmo padrão transacional (mudança grande, não feita aqui), ou migrar
-// para coleções por entidade (ver migrations/), onde o "raio de alcance" de
-// qualquer escrita cega vira um documento por atendimento/mensagem, não o
-// estado inteiro do app.
+// LIMITAÇÃO DECLARADA: se o processo morrer DEPOIS de uma reivindicação
+// (.create() em whatsappMessageDedup) mas ANTES da transação abaixo
+// commitar, a mensagem fica marcada como reivindicada sem nunca ter sido
+// gravada — a próxima reentrega da Meta vai ver "já reivindicada" e tratar
+// como duplicada, descartando essa mensagem silenciosamente. Isto é uma
+// janela estreita (entre duas chamadas sequenciais ao Firestore) e um
+// comportamento aceito explicitamente em troca de nunca mais criar um
+// atendimento duplicado sob concorrência real — não tentar "adivinhar" se é
+// um racha ou uma corrida de verdade foi a lição desta mesma revisão (ver
+// acima). Uma reconciliação periódica (comparar whatsappMessageDedup contra
+// agentChats_v2_* e reprocessar órfãos encontrados há mais de alguns
+// minutos, não imediatamente) fecharia isso de vez — não implementada aqui,
+// fica como próximo passo declarado.
+//
+// Isto NÃO protege contra uma escrita concorrente de OUTRA rota editando o
+// MESMO atendimento ao mesmo tempo além do primeiro nível de campos — ver a
+// limitação declarada em persistStoreKeysTransactionally.
 interface WhatsAppTransactionResult {
   ok: boolean;
   errorMessage?: string;
   messagesProcessed: number;
   messagesDuplicated: number;
   attendanceIdsTouched: string[];
-  // Devolvido só em sucesso — o próprio dado que a transação commitou no
-  // Firestore, para a rota gravar como cache local sem precisar de uma
-  // segunda leitura.
+  // Devolvido só em sucesso — o store local (settings/materials/etc. do
+  // disco local + attendances/agentChats atualizados) para a rota gravar
+  // como cache local sem precisar de uma segunda leitura.
   mergedStore?: PersistentStore;
 }
 
@@ -2776,38 +2865,103 @@ async function claimWhatsAppMessagesTransactionally(
       attendanceIdsTouched: [],
     };
   }
-  const docRef = db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC);
+
+  const attendancesCol = db.collection(COLLECTION_ATTENDANCES);
+  const chatCol = db.collection(`${COLLECTION_CHAT_MESSAGE_PREFIX}carla_atendimento`);
 
   const run = async (): Promise<WhatsAppTransactionResult> => {
-    return db.runTransaction(async (tx) => {
-      const snap = await tx.get(docRef);
-      const data = (snap.exists ? snap.data() : {}) as PersistentStore & { savedAt?: string };
-      if (!Array.isArray(data.attendances)) data.attendances = [];
-      if (!data.agentChats) data.agentChats = {};
+    // 1. Reivindicação atômica por mensagem, ANTES de qualquer transação —
+    //    .create() já é atômico sozinho (ver tryClaimWhatsAppMessageId).
+    //    `already_claimed` aqui é sempre tratado como duplicata — nunca
+    //    "recuperado" (ver limitação declarada acima: essa recuperação
+    //    heurística foi tentada e removida por criar duplicatas sob
+    //    concorrência real).
+    const claimedItems: typeof incomingMessages = [];
+    let messagesDuplicated = 0;
+    for (const item of incomingMessages) {
+      const externalMessageId = item.msg.id as string | undefined;
+      if (!externalMessageId) {
+        claimedItems.push(item); // sem id — handleInboundWhatsAppMessage trata como 'ignored'
+        continue;
+      }
+      const claim = await tryClaimWhatsAppMessageId(firestoreLikeDb, externalMessageId, {
+        deskId: 'carla_atendimento',
+        chatMessageId: `cmsg-wa-${externalMessageId}`,
+      });
+      if (claim === 'already_claimed') {
+        messagesDuplicated++;
+        continue;
+      }
+      claimedItems.push(item);
+    }
+
+    const localStore = loadStore(); // só para as OUTRAS chaves (settings, juliaData, etc.)
+    if (claimedItems.length === 0) {
+      return { ok: true, messagesProcessed: 0, messagesDuplicated, attendanceIdsTouched: [], mergedStore: localStore };
+    }
+
+    // 2. Processa e grava DENTRO de uma transação real do Firestore —
+    //    escopada só aos atendimentos (consulta à coleção, não ao documento
+    //    único de ~1MB que causava o travamento original) e às poucas
+    //    mensagens novas desta chamada. O Firestore detecta conflito se
+    //    qualquer atendimento mudar entre a leitura e o commit (inclusive
+    //    por outra chamada concorrente criando um atendimento para o MESMO
+    //    telefone) e tenta de novo automaticamente — é isto que fecha a
+    //    corrida "duas primeiras mensagens do mesmo cliente novo, quase
+    //    juntas" sem precisar confiar em comparação em memória.
+    const txResult = await db.runTransaction(async (tx) => {
+      const freshSnap = await tx.get(attendancesCol);
+      const freshAttendances = freshSnap.docs.map((d) => d.data() as unknown as AttendanceRecord);
+      const attendanceIdsBefore = new Set(freshAttendances.map((a) => a.id));
+
+      const workingAgentChats: Record<string, AgentChatMessage[]> = { carla_atendimento: [] };
+      const carlaChatMessages = workingAgentChats['carla_atendimento'];
+      const workingStore: PersistentStore = {
+        ...localStore,
+        attendances: freshAttendances,
+        agentChats: workingAgentChats,
+      };
 
       let messagesProcessed = 0;
-      let messagesDuplicated = 0;
       const attendanceIdsTouched = new Set<string>();
-      for (const { value, msg } of incomingMessages) {
-        const result = handleInboundWhatsAppMessage(data as PersistentStore, value, msg);
+      const newMessages: AgentChatMessage[] = [];
+      for (const { value, msg } of claimedItems) {
+        const beforeLength = carlaChatMessages.length;
+        const result = handleInboundWhatsAppMessage(workingStore, value, msg);
         if (result.status === 'processed') {
           messagesProcessed++;
           if (result.attendanceId) attendanceIdsTouched.add(result.attendanceId);
-        } else if (result.status === 'duplicate') {
-          messagesDuplicated++;
+          newMessages.push(...carlaChatMessages.slice(beforeLength));
         }
+        // 'duplicate' não deveria acontecer aqui (já filtrado pela
+        // reivindicação acima) — handleInboundWhatsAppMessage ainda faz sua
+        // própria checagem em memória como segurança adicional, sem custo.
       }
 
-      const payload = { ...data, savedAt: new Date().toISOString() };
-      tx.set(docRef, payload);
-      return {
-        ok: true,
-        messagesProcessed,
-        messagesDuplicated,
-        attendanceIdsTouched: Array.from(attendanceIdsTouched),
-        mergedStore: data as PersistentStore,
-      };
+      // Grava: atendimentos novos por set() completo, atendimentos
+      // existentes tocados (ex.: originCampaignId) por set(merge:true),
+      // mensagens novas por set() simples — nunca o documento inteiro.
+      for (const a of workingStore.attendances) {
+        if (attendanceIdsTouched.has(a.id)) {
+          tx.set(attendancesCol.doc(a.id), a as unknown as Record<string, unknown>, {
+            merge: attendanceIdsBefore.has(a.id),
+          });
+        }
+      }
+      for (const m of newMessages) {
+        tx.set(chatCol.doc(m.id), m as unknown as Record<string, unknown>);
+      }
+
+      return { messagesProcessed, attendanceIdsTouched: Array.from(attendanceIdsTouched), workingStore };
     });
+
+    return {
+      ok: true,
+      messagesProcessed: txResult.messagesProcessed,
+      messagesDuplicated,
+      attendanceIdsTouched: txResult.attendanceIdsTouched,
+      mergedStore: txResult.workingStore,
+    };
   };
 
   let timedOut = false;
@@ -2824,7 +2978,7 @@ async function claimWhatsAppMessagesTransactionally(
         timedOut = true;
         resolve({
           ok: false,
-          errorMessage: `Transação do Firestore sem resposta após ${timeoutMs}ms — abandonada sem bloquear a resposta; se terminar depois, a própria transação garante que não duplica nada.`,
+          errorMessage: `Processamento do webhook sem resposta após ${timeoutMs}ms — abandonado sem bloquear a resposta; se terminar depois, a reivindicação atômica por mensagem garante que não duplica nada (ver RECUPERAÇÃO DE RACHA).`,
           messagesProcessed: 0,
           messagesDuplicated: 0,
           attendanceIdsTouched: [],
@@ -2834,8 +2988,25 @@ async function claimWhatsAppMessagesTransactionally(
   ]);
   if (timedOut) {
     console.error(
-      `[WhatsApp Webhook] Transação travou além de ${timeoutMs}ms — tratada como falha para efeito da resposta (Meta reentrega); a chamada real pode ainda commitar depois, com segurança.`
+      `[WhatsApp Webhook] Processamento travou além de ${timeoutMs}ms — tratado como falha para efeito da resposta (Meta reentrega); a chamada real pode ainda terminar depois, com segurança.`
     );
+  }
+  return result;
+}
+
+// Lê TODAS as mesas de conversa já conhecidas nas coleções novas — usa
+// db.listCollections() (nível raiz) em vez de uma lista fixa de deskIds,
+// porque novas mesas podem ser criadas depois desta revisão (ver
+// DESK_AGENT_NAMES) sem precisar atualizar este código.
+async function readAllAgentChatsFromCollections(): Promise<Record<string, AgentChatMessage[]>> {
+  const result: Record<string, AgentChatMessage[]> = {};
+  const collections = await db.listCollections();
+  const chatCollections = collections.filter((c) => c.id.startsWith(COLLECTION_CHAT_MESSAGE_PREFIX));
+  for (const col of chatCollections) {
+    const deskId = col.id.slice(COLLECTION_CHAT_MESSAGE_PREFIX.length);
+    const snap = await col.get();
+    if (snap.empty) continue;
+    result[deskId] = snap.docs.map((d) => d.data() as unknown as AgentChatMessage);
   }
   return result;
 }
@@ -2846,16 +3017,55 @@ async function restoreStoreFromFirestoreIfNeeded(): Promise<void> {
       return; // já existe um arquivo local — não sobrescreve com o backup
     }
     const doc = await db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC).get();
-    if (!doc.exists) {
-      console.log('[Firestore Sync] Nenhum backup encontrado no Firestore — iniciando com dados padrão.');
+    const attendancesSnap = await db.collection(COLLECTION_ATTENDANCES).get();
+    const agentChats = await readAllAgentChatsFromCollections();
+
+    if (!doc.exists && attendancesSnap.empty && Object.keys(agentChats).length === 0) {
+      console.log('[Firestore Sync] Nenhum backup encontrado no Firestore (nem no documento único, nem nas coleções) — iniciando com dados padrão.');
       return;
     }
-    const data = doc.data();
-    if (!data) return;
-    const { savedAt, ...storeData } = data as Record<string, unknown> & { savedAt?: string };
+
+    const docData = doc.exists ? doc.data() : {};
+    const { savedAt, attendances: _oldDocAttendances, agentChats: _oldDocAgentChats, ...storeData } =
+      (docData || {}) as Record<string, unknown> & { savedAt?: string; attendances?: unknown; agentChats?: unknown };
+    // `attendances`/`agentChats` do documento único são deliberadamente
+    // ignorados aqui (nunca restaurados a partir deles) — desde a troca
+    // para coleções, a fonte de verdade para essas duas chaves são
+    // attendances_v2/agentChats_v2_*, abaixo. O documento único continua
+    // existindo como histórico congelado (ver migrations/README.md), não
+    // como fonte de restauração.
+
+    const restoredAttendances = attendancesSnap.docs.map((d) => d.data() as unknown as AttendanceRecord);
+
+    // Rede de segurança contra o risco de sequenciamento já documentado em
+    // DEPLOY_WHATSAPP_DURABILITY_FIX.md: se este código for implantado ANTES
+    // da migração real rodar, as coleções novas estão genuinamente vazias
+    // enquanto o documento único ainda tem dados reais — restaurar como
+    // "vazio" pareceria exatamente a perda de dados investigada nesta mesma
+    // sessão, só que desta vez por sequenciamento errado, não por bug. Isto
+    // não tenta adivinhar nem restaurar sozinho a partir do documento único
+    // (poderia mascarar um problema real de permissão/nome de coleção) — só
+    // torna o cenário IMPOSSÍVEL de passar despercebido.
+    const oldDocHadAttendances = Array.isArray((docData as Record<string, unknown> | undefined)?.attendances)
+      ? ((docData as Record<string, unknown>).attendances as unknown[]).length
+      : 0;
+    if (restoredAttendances.length === 0 && oldDocHadAttendances > 0) {
+      console.error(
+        `[Firestore Sync] ALERTA: attendances_v2 está vazia, mas o documento único appState/main tem ${oldDocHadAttendances} atendimento(s). ` +
+          'Isto é esperado SÓ se a migração para coleções (ver migrations/README.md e DEPLOY_WHATSAPP_DURABILITY_FIX.md, Passo 6) ainda não rodou — ' +
+          'se já rodou, isto indica um problema real (projeto/credencial errados, nome de coleção divergente). ' +
+          'Prosseguindo mesmo assim com as coleções como fonte de verdade (pode ficar com 0 atendimentos nesta instância) — ' +
+          'NÃO restaurando a partir do documento único automaticamente, para não mascarar a causa real.'
+      );
+    }
+
+    const storeDataFull = { ...storeData, attendances: restoredAttendances, agentChats: agentChats };
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(STORE_PATH, JSON.stringify(storeData, null, 2), 'utf-8');
-    console.log(`[Firestore Sync] Estado restaurado do Firestore (backup de ${savedAt || 'data desconhecida'}).`);
+    fs.writeFileSync(STORE_PATH, JSON.stringify(storeDataFull, null, 2), 'utf-8');
+    console.log(
+      `[Firestore Sync] Estado restaurado do Firestore (documento único de ${savedAt || 'data desconhecida'}; ` +
+        `${restoredAttendances.length} atendimento(s) e ${Object.keys(agentChats).length} mesa(s) de conversa das coleções).`
+    );
   } catch (err) {
     console.error(
       '[Firestore Sync] Falha ao restaurar o estado do Firestore na inicialização:',
