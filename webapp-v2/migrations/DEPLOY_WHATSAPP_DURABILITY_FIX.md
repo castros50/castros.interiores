@@ -62,14 +62,22 @@ Contra o emulador oficial do Firestore, com o servidor de verdade rodando
   tratada como duplicata, nenhum registro novo.
 - **10 chamadas verdadeiramente concorrentes para o mesmo `externalMessageId`**
   → exatamente 1 atendimento e 1 mensagem criados (achado real desta
-  revisão: uma primeira versão com uma tentativa de "recuperação de racha"
-  criava duplicatas sob esta mesma condição — removida, ver comentário em
-  `claimWhatsAppMessagesTransactionally`).
+  revisão: uma primeira versão reivindicava a mensagem ANTES e FORA da
+  transação de gravação — dois passos não atômicos entre si. Isso corrigia a
+  duplicação sob concorrência, mas abria uma falha diferente: um processo
+  que morresse entre os dois passos perderia a mensagem silenciosamente numa
+  reentrega futura. Corrigido na versão atual: o marcador de dedup, a
+  mensagem e o atendimento são gravados na MESMA transação — ver comentário
+  em `claimWhatsAppMessagesTransactionally`. Revalidado com o mesmo teste de
+  10 chamadas concorrentes depois da correção: continua exatamente 1
+  atendimento e 1 mensagem).
+- Reentrega sequencial da mesma mensagem (depois de já processada) →
+  corretamente tratada como duplicata, nenhum registro novo.
 - **5 chamadas verdadeiramente concorrentes com mensagens DIFERENTES do
   MESMO cliente novo (sem atendimento ainda)** → exatamente 1 atendimento
-  criado, as 5 mensagens corretamente vinculadas a ele (fechado por uma
-  transação real do Firestore escopada à coleção de atendimentos, não ao
-  documento único).
+  criado, as 5 mensagens corretamente vinculadas a ele (fechado pela mesma
+  transação única, que lê atendimentos dentro dela — nunca o documento
+  único).
 - Reinício completo (apaga o disco local, reinicia o processo) → estado
   restaurado corretamente das coleções (`restoreStoreFromFirestoreIfNeeded`).
 - Cenário "código novo antes da migração rodar" (coleções vazias, documento
@@ -246,17 +254,66 @@ oficial — ver `README.md`), agora com um CLI real contra produção
 (`run-production-migration.ts`). Cada escrita real exige
 `--confirm=CONFIRMO-PRODUCAO` — sem isso, o script recusa conectar.
 
-### 4.1 — Bloquear gravações novas na aplicação
+### 4.1 — Deploy intermediário: garantir que o bloqueio de manutenção funcione
+
+**Achado desta revisão: a variável `MAINTENANCE_MODE_WRITES_BLOCKED` só tem
+efeito se o CÓDIGO em produção já souber checá-la** (`isWriteMaintenanceModeActive()`,
+introduzida no commit `1efb21a`). Não sabemos com certeza qual revisão está
+rodando em produção agora — se for anterior a essa correção, ativar a
+variável no Passo 4.2 não bloquearia gravação nenhuma, silenciosamente, e a
+migração do Passo 4.4 partiria de um backup que continua mudando por baixo.
+
+Para eliminar essa incerteza em vez de tentar detectá-la, implantar PRIMEIRO
+o código até `8b06a4d` — a última revisão ANTES da troca para coleções
+(`f9a5258`), que já tem todas as correções de durabilidade e o bloqueio de
+manutenção, mas **continua lendo/escrevendo o documento único** (compatível
+com o armazenamento atual, sem ativar prematuramente a leitura das coleções
+novas, que ainda não existem):
+
+```bash
+cd webapp-v2
+git status
+```
+**Antes de rodar qualquer deploy, conferir que não há nada estranho sendo
+enviado junto** — esta pasta já teve uma cópia aninhada do repositório
+(`webapp-v2/castros.interiores/`) e um `.gcloudignore` não rastreado
+aparecerem por engano numa sessão anterior do Cloud Shell. Se `git status`
+mostrar algo parecido, investigar antes de prosseguir (não apagar sem
+entender o que é).
+
+```bash
+git checkout 8b06a4d
+gcloud run deploy castros-interiores \
+  --source . \
+  --region southamerica-east1 \
+  --project gen-lang-client-0378581840
+```
+
+**O que altera:** publica uma revisão nova do Cloud Run com o código de
+`8b06a4d` — mesmo comportamento de leitura/escrita de hoje (documento
+único), mas agora com certeza absoluta de que `MAINTENANCE_MODE_WRITES_BLOCKED`
+funciona. Não toca em dados.
+
+Confirmar 100% de tráfego nessa revisão (mesmo comando do Passo 6) antes de
+seguir para o 4.2.
+
+**Depois de confirmado, voltar para o código mais recente** (vai ser
+precisado de novo no Passo 5):
+```bash
+git checkout claude/folder-contents-eve6kg
+```
+
+### 4.2 — Bloquear gravações novas na aplicação
 
 ```bash
 gcloud run services update castros-interiores \
   --region southamerica-east1 --project gen-lang-client-0378581840 \
   --update-env-vars MAINTENANCE_MODE_WRITES_BLOCKED=1
 ```
-**O que altera:** nova revisão do Cloud Run com a variável ativa —
-`saveStore()` e a transação do webhook passam a recusar qualquer gravação
-(nem local, nem Firestore), respondendo erro/503 em vez de escrever.
-Leituras continuam normais.
+**O que altera:** nova revisão do Cloud Run (ainda com o código de `8b06a4d`
+do Passo 4.1) com a variável ativa — `saveStore()` e a transação do webhook
+passam a recusar qualquer gravação (nem local, nem Firestore), respondendo
+erro/503 em vez de escrever. Leituras continuam normais.
 
 Confirmar 100% do tráfego nessa revisão nova (mesmo comando do Passo 6) e
 esperar a mesma margem de drenagem (2–3 min) — ver `README.md`, seção
@@ -265,48 +322,54 @@ a limitação declarada: rotas assíncronas sem try/catch próprio podem não
 devolver uma resposta HTTP limpa, mas a gravação em si fica bloqueada mesmo
 assim).
 
-### 4.2 — Reconciliar as fontes antes de confiar em qualquer uma
+### 4.3 — Backup novo, agora com o documento congelado (fonte da migração)
 
-Com gravações bloqueadas e o tráfego drenado, ler as duas fontes:
+Com as gravações bloqueadas e o tráfego drenado, **o documento único já não
+pode mais mudar** — o backup do Passo 1 pode estar desatualizado (foi tirado
+antes do bloqueio). Gerar um backup novo, diretamente do Firestore, para
+servir de fonte real da migração:
 
+```bash
+npx tsx migrations/backup-production.ts \
+  --out=$HOME/backups/castros/appstate_pre_migracao_$(date +%Y%m%dT%H%M%S).json
+```
+
+**O que altera:** nada — é leitura. Este é o arquivo a usar como
+`--snapshot` nos passos 4.4 a 4.6 abaixo (não o backup do Passo 1).
+
+**Verificação opcional, extra:** comparar contra uma leitura ao vivo de uma
+instância, só para checar consistência entre o cache local de uma instância
+e o Firestore (não deveria haver diferença, já que as gravações estão
+bloqueadas há alguns minutos):
 ```bash
 curl -s "https://castros-interiores-377257663620.southamerica-east1.run.app/api/store" \
   -o $HOME/backups/castros/appstate_live_instance_$(date +%Y%m%dT%H%M%S).json
-```
-
-(o backup do Passo 1, já salvo, é a segunda fonte — não precisa reler o
-Firestore de novo).
-
-```bash
 npx tsx migrations/run-production-migration.ts \
   --mode=reconcile \
-  --snapshot=<arquivo do /api/store acima> \
-  --snapshot2=<arquivo do backup do Passo 1>
+  --snapshot=<backup deste passo> \
+  --snapshot2=<arquivo do /api/store acima>
 ```
+Se `identical: false`, investigar antes de seguir — não deveria acontecer
+com as gravações já bloqueadas e drenadas.
 
-**O que altera:** nada — só compara os dois arquivos e imprime o relatório
-(`identical: true/false` e, se `false`, exatamente quais ids existem só de
-um lado). Só seguir com `identical: true` (ou depois de reconciliar
-manualmente as diferenças apontadas).
-
-### 4.3 — Dry-run (confere contagens, não escreve nada)
+### 4.4 — Dry-run (confere contagens, não escreve nada)
 
 ```bash
 npx tsx migrations/run-production-migration.ts \
   --mode=dry-run \
-  --snapshot=<backup reconciliado> \
+  --snapshot=<backup do Passo 4.3> \
   --confirm=CONFIRMO-PRODUCAO
 ```
 
 **O que altera:** nada no Firestore — só calcula e imprime quantos
 atendimentos/mensagens/marcadores de dedup SERIAM escritos.
 
-### 4.4 — Execução real (escreve só nas coleções novas)
+### 4.5 — Execução real (escreve só nas coleções novas)
 
 ```bash
 npx tsx migrations/run-production-migration.ts \
   --mode=execute \
-  --snapshot=<backup reconciliado> \
+  --snapshot=<backup do Passo 4.3> \
   --confirm=CONFIRMO-PRODUCAO
 ```
 
@@ -316,12 +379,12 @@ npx tsx migrations/run-production-migration.ts \
 histórico. Idempotente: pode rodar de novo com segurança (ver Recuperação
 abaixo).
 
-### 4.5 — Verificar integridade
+### 4.6 — Verificar integridade
 
 ```bash
 npx tsx migrations/run-production-migration.ts \
   --mode=verify \
-  --snapshot=<o mesmo backup usado no 4.4> \
+  --snapshot=<o mesmo backup do Passo 4.3> \
   --confirm=CONFIRMO-PRODUCAO
 ```
 
@@ -330,9 +393,9 @@ snapshot original. **Só prosseguir para o Passo 5 (deploy) com `"ok": true`
 aqui** — é o que evita o cenário "código novo, coleções incompletas"
 descrito no topo deste documento.
 
-### 4.6 — Recuperação em caso de falha
+### 4.7 — Recuperação em caso de falha
 
-- **Erros em `attendances`/`agentChats` (fase `errors` do 4.4):** a função é
+- **Erros em `attendances`/`agentChats` (fase `errors` do 4.5):** a função é
   idempotente (`.set()` sobrescreve com o mesmo valor) — corrigir a causa do
   erro (ex.: permissão, rede) e rodar `--mode=execute` de novo é seguro, não
   duplica nada.
@@ -344,29 +407,35 @@ descrito no topo deste documento.
   (idempotente) e `--mode=verify` outra vez, repetindo até `"ok": true`.
 - **Nada disso resolve sozinho:** nenhuma etapa aqui apaga ou sobrescreve o
   documento único `appState/main` — se a migração falhar de um jeito
-  irrecuperável, **não prosseguir para o Passo 5**: sem o deploy, a
-  aplicação continua funcionando exatamente como antes (lendo/escrevendo o
-  documento único), sem nenhuma perda. O pior caso é "as coleções novas
-  ficam incompletas", nunca "dado real perdido" — e o código que leria delas
-  simplesmente ainda não foi implantado.
+  irrecuperável, **não prosseguir para o Passo 5**: sem o deploy final, a
+  aplicação continua funcionando exatamente como no Passo 4.2 (lendo/
+  escrevendo o documento único, com o bloqueio de manutenção ainda ligado),
+  sem nenhuma perda. O pior caso é "as coleções novas ficam incompletas",
+  nunca "dado real perdido".
 
-### 4.7 — Manter o modo de manutenção ativo
+### 4.8 — Manter o modo de manutenção ativo
 
-**Diferente de uma versão anterior deste procedimento: NÃO desativar
-`MAINTENANCE_MODE_WRITES_BLOCKED` aqui.** Manter as gravações bloqueadas até
-o Passo 5 (deploy) e o Passo 6 (confirmar tráfego) terminarem — isso fecha
-de vez a janela entre "migração verificada" e "código novo no ar": nenhuma
-gravação nova pode acontecer no documento único nesse meio-tempo, então não
-há como o Passo 4.5 ficar desatualizado antes do deploy assumir.
+**NÃO desativar `MAINTENANCE_MODE_WRITES_BLOCKED` aqui.** Manter as
+gravações bloqueadas até o Passo 5 (deploy final) e o Passo 6 (confirmar
+tráfego) terminarem — isso fecha de vez a janela entre "migração
+verificada" e "código novo no ar": nenhuma gravação nova pode acontecer no
+documento único nesse meio-tempo, então não há como o backup do Passo 4.3
+ficar desatualizado antes do deploy final assumir.
 
 ---
 
 ## Passo 5 — Deploy do código (durabilidade + troca para coleções)
 
-**Só rodar depois do Passo 4.5 confirmar `"ok": true`.**
-
+**Só rodar depois do Passo 4.6 confirmar `"ok": true`.** Confirmar que está
+de volta na branch (`git checkout claude/folder-contents-eve6kg` do Passo
+4.1, não mais em `8b06a4d`):
 ```bash
 cd webapp-v2
+git log -1 --oneline
+```
+Deve mostrar `f9a5258` (ou um commit mais novo) como topo — não `8b06a4d`.
+
+```bash
 gcloud run deploy castros-interiores \
   --source . \
   --region southamerica-east1 \
@@ -375,7 +444,7 @@ gcloud run deploy castros-interiores \
 
 Builda pelo `Dockerfile` existente (Cloud Build) e publica uma revisão nova.
 Sem `--update-env-vars`, herda as variáveis já configuradas na revisão atual
-(inclusive `MAINTENANCE_MODE_WRITES_BLOCKED=1` do Passo 4.1, ainda ativa de
+(inclusive `MAINTENANCE_MODE_WRITES_BLOCKED=1` do Passo 4.2, ainda ativa de
 propósito, e as atualizadas no Passo 3).
 
 **O que altera:** publica uma revisão nova do Cloud Run, com o código que
@@ -439,41 +508,20 @@ painel da Meta, não prova nada sobre uma mensagem nova de verdade.
      | python3 -m json.tool
    ```
    Conferir `recentEvents[0]`.
-4. **Firestore direto** (fonte de verdade — buscar pelo fragmento único do
-   texto enviado, não por um id fixo). Primeiro gerar um novo backup (o
-   script já imprime o caminho exato em "Salvo em: ..."):
+4. **Firestore direto, de verdade** (não `/api/store` — essa rota reflete só
+   o cache local em disco da instância do Cloud Run que atendeu a
+   requisição, não é uma verificação independente do Firestore). Usar o
+   script novo `migrations/find-in-collections.ts`, que lê
+   `attendances_v2`/`agentChats_v2_{desk}` direto pelo SDK:
    ```bash
-   npx tsx migrations/backup-production.ts \
-     --out=$HOME/backups/castros/appstate_post_validacao_$(date +%Y%m%dT%H%M%S).json
-   ```
-   O backup agora reflete o documento único (que **não deve mais ganhar**
-   `attendances`/`agentChats` novos a partir daqui — conferir que o
-   `attendances`/`agentChats` deste backup não mudou desde o Passo 4). Para
-   achar a mensagem de verdade, ler direto das coleções:
-   ```bash
-   curl -s "https://castros-interiores-377257663620.southamerica-east1.run.app/api/store" \
-     | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-fragment = 'FRAGMENTO'
-found = None
-for desk_id, messages in (d.get('agentChats') or {}).items():
-    for m in messages or []:
-        if fragment in (m.get('text') or ''):
-            found = (desk_id, m)
-if not found:
-    print('Mensagem com esse fragmento NAO encontrada.')
-else:
-    desk_id, m = found
-    att_id = m.get('attendanceId')
-    att = next((a for a in (d.get('attendances') or []) if a.get('id') == att_id), None)
-    print(f'Mensagem encontrada na mesa {desk_id!r}, attendanceId={att_id}')
-    print('Atendimento:', 'ENCONTRADO' if att else 'NAO ENCONTRADO')
-    if att:
-        print(' attendanceNumber:', att.get('attendanceNumber'))
-"
+   npx tsx migrations/find-in-collections.ts \
+     --fragment="FRAGMENTO" \
+     --confirm=CONFIRMO-PRODUCAO
    ```
    (substituir `FRAGMENTO` pelo trecho único do texto enviado no item 1).
+   Confirma, numa leitura independente do Firestore: a mensagem existe na
+   coleção, o `attendanceId` que ela referencia, e que esse atendimento
+   existe de fato em `attendances_v2`.
 5. **Interface:** abrir o app em produção, Atendimentos, localizar o
    atendimento novo, abrir a conversa, confirmar o texto.
 6. **Sobrevivência a reinício (agora também confirma a restauração pelas
@@ -522,7 +570,7 @@ invisível** para a revisão antiga até uma migração/deploy futuros. Por isso
   esperar até a próxima tentativa de deploy desta mesma revisão.
 
 Isto é mais delicado que o rollback de uma troca só de durabilidade (versão
-anterior deste documento) — reforça por que o Passo 4.5 (verificação de
+anterior deste documento) — reforça por que o Passo 4.6 (verificação de
 integridade) e o Passo 7 (validação) não devem ser pulados antes de liberar
 o sistema para uso normal.
 
@@ -542,17 +590,14 @@ o sistema para uso normal.
   volume real de produção — pode ficar mais lento/contencioso à medida que
   a base de atendimentos cresce. Otimização futura declarada, não resolvida
   aqui: um índice próprio por telefone normalizado.
-- **Reivindicação sem gravação correspondente (janela estreita)** — se o
-  processo morrer entre reivindicar um `externalMessageId`
-  (`whatsappMessageDedup`) e a transação que grava a mensagem/atendimento
-  comitar, essa mensagem fica marcada como "já reivindicada" e é descartada
-  silenciosamente numa reentrega futura. Aceito explicitamente em troca de
-  nunca mais criar atendimento duplicado sob concorrência real (ver
-  comentário em `claimWhatsAppMessagesTransactionally` — uma tentativa
-  anterior de "recuperar" esse caso automaticamente foi testada e causava
-  duplicatas sob concorrência verdadeira). Reconciliação periódica
-  (comparar `whatsappMessageDedup` contra as mensagens reais e reprocessar
-  órfãos antigos) fecharia isso — não implementada.
+- **(Resolvida nesta revisão, registrado para contexto)** uma versão
+  anterior tinha uma janela em que o processo podia morrer entre reivindicar
+  um `externalMessageId` e gravar a mensagem/atendimento, descartando a
+  mensagem silenciosamente numa reentrega futura. Corrigido: o marcador de
+  dedup, a mensagem e o atendimento agora são confirmados na MESMA transação
+  (ver comentário em `claimWhatsAppMessagesTransactionally`) — uma falha
+  antes do commit não deixa nenhum rastro, e a reentrega processa do zero
+  normalmente.
 - **Cobertura de teste**: a troca para coleções foi testada ponta a ponta
   contra o emulador oficial nesta revisão (ver "O que foi testado" no
   topo), incluindo concorrência real — mas com dados sintéticos pequenos,

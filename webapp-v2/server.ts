@@ -2783,54 +2783,46 @@ async function persistStoreKeysTransactionally(
 // Reivindicação de mensagens do WhatsApp — desde a troca para coleções por
 // entidade, isto NÃO usa mais uma transação sobre um documento único.
 // Substitui "ler o documento inteiro, procurar o id, sobrescrever o
-// documento inteiro" por um primitivo atômico de verdade:
-// `tryClaimWhatsAppMessageId()` (ver migrations/firestoreCollectionsMigration.ts,
-// já testado com 10 chamadas verdadeiramente concorrentes contra o emulador
-// oficial — exatamente 1 reivindica) grava um marcador
-// `whatsappMessageDedup/{externalMessageId}` com `.create()`, que o
-// Firestore rejeita atomicamente se o documento já existir — sem nenhuma
-// leitura prévia para ficar desatualizada entre duas instâncias. Só depois
-// da reivindicação bem-sucedida a mensagem é processada (reaproveitando
-// handleInboundWhatsAppMessage, sem duplicar lógica) e gravada — em
-// `attendances_v2`/`agentChats_v2_carla_atendimento`, nunca mais no
-// documento único.
+// documento inteiro" por UMA ÚNICA transação real do Firestore que lê
+// atendimentos + a existência de cada marcador de dedup candidato, decide o
+// que processar em memória, e só então grava atendimentos, mensagens E os
+// marcadores de dedup (`whatsappMessageDedup/{externalMessageId}`, via
+// `tx.create()`) — tudo dentro da MESMA transação.
 //
-// Isso fecha as mesmas duas falhas que a transação antiga fechava:
+// Isto corrige uma versão anterior desta revisão, que reivindicava a
+// mensagem com `tryClaimWhatsAppMessageId()` ANTES e FORA da transação de
+// gravação (dois passos sequenciais, não atômicos entre si). Se o processo
+// morresse entre os dois passos, a mensagem ficava "reivindicada" sem nunca
+// ter sido gravada, e a próxima reentrega da Meta via `already_claimed` e
+// descartava silenciosamente — perda real de mensagem, sem aviso. A versão
+// atual fecha isso: como a reivindicação (`tx.create()` no marcador de
+// dedup) só é aplicada se TODA a transação commitar junto com a mensagem e
+// o atendimento, uma falha antes do commit não deixa nenhum rastro — nem o
+// marcador existe — e a reentrega processa a mensagem do zero normalmente,
+// sem descarte.
+//
+// Isso fecha as mesmas duas falhas de concorrência que a transação antiga
+// (documento único) fechava, agora com uma transação só sobre os poucos
+// documentos relevantes desta chamada (nunca o documento de ~1MB que
+// causava o travamento original):
 // 1. Concorrência entre instâncias/chamadas DISPUTANDO A MESMA MENSAGEM
-//    (mesmo externalMessageId): a reivindicação é atômica por construção —
-//    não depende de nenhuma janela entre leitura e escrita.
+//    (mesmo externalMessageId): a leitura da existência do marcador e a
+//    gravação condicional dele acontecem na MESMA transação — se duas
+//    chamadas concorrentes leem "não existe" ao mesmo tempo, o Firestore
+//    detecta o conflito de escrita no commit e re-tenta automaticamente
+//    uma delas, que então vê "já existe" e trata como duplicata.
 // 2. Concorrência entre instâncias/chamadas processando mensagens
 //    DIFERENTES do MESMO cliente ainda sem atendimento (ex.: duas primeiras
-//    mensagens de um cliente novo chegando quase juntas): isto SÓ fecha de
-//    verdade dentro de uma transação real do Firestore (ver abaixo) — sem
-//    ela, as duas chamadas poderiam ler "nenhum atendimento para este
-//    telefone" ao mesmo tempo e criar dois atendimentos duplicados.
+//    mensagens de um cliente novo chegando quase juntas): mesma proteção,
+//    agora também sobre a leitura de atendimentos dentro da transação.
 //    CONFIRMADO EXPERIMENTALMENTE nesta revisão: uma primeira versão deste
-//    código sem transação, testada com 10 chamadas verdadeiramente
-//    concorrentes contra o emulador oficial para o MESMO externalMessageId,
-//    criou atendimentos duplicados (a reivindicação atômica sozinha barra a
-//    MESMA mensagem ser reprocessada, mas uma tentativa de "recuperar" uma
-//    reivindicação sem gravação correspondente — removida desta versão —
-//    tratava incorretamente concorrência real como se fosse uma falha
-//    anterior, e todos os "perdedores" da reivindicação tentavam completar o
-//    trabalho ao mesmo tempo). A versão atual não tenta mais essa
-//    recuperação heurística: usa uma transação real do Firestore,
-//    escopada só aos documentos relevantes desta chamada (nunca o
-//    documento único de ~1MB que causava o travamento original).
-//
-// LIMITAÇÃO DECLARADA: se o processo morrer DEPOIS de uma reivindicação
-// (.create() em whatsappMessageDedup) mas ANTES da transação abaixo
-// commitar, a mensagem fica marcada como reivindicada sem nunca ter sido
-// gravada — a próxima reentrega da Meta vai ver "já reivindicada" e tratar
-// como duplicada, descartando essa mensagem silenciosamente. Isto é uma
-// janela estreita (entre duas chamadas sequenciais ao Firestore) e um
-// comportamento aceito explicitamente em troca de nunca mais criar um
-// atendimento duplicado sob concorrência real — não tentar "adivinhar" se é
-// um racha ou uma corrida de verdade foi a lição desta mesma revisão (ver
-// acima). Uma reconciliação periódica (comparar whatsappMessageDedup contra
-// agentChats_v2_* e reprocessar órfãos encontrados há mais de alguns
-// minutos, não imediatamente) fecharia isso de vez — não implementada aqui,
-// fica como próximo passo declarado.
+//    código SEM transação nenhuma (reivindicação solta, gravação solta),
+//    testada com 10 chamadas verdadeiramente concorrentes para o MESMO
+//    externalMessageId contra o emulador oficial, criou atendimentos
+//    duplicados — uma tentativa de "recuperar" reivindicações sem gravação
+//    correspondente tratava incorretamente concorrência real como se fosse
+//    uma falha anterior, e todos os "perdedores" tentavam completar o
+//    trabalho ao mesmo tempo. Removida em favor desta transação única.
 //
 // Isto NÃO protege contra uma escrita concorrente de OUTRA rota editando o
 // MESMO atendimento ao mesmo tempo além do primeiro nível de campos — ver a
@@ -2868,52 +2860,34 @@ async function claimWhatsAppMessagesTransactionally(
 
   const attendancesCol = db.collection(COLLECTION_ATTENDANCES);
   const chatCol = db.collection(`${COLLECTION_CHAT_MESSAGE_PREFIX}carla_atendimento`);
+  const dedupCol = db.collection(COLLECTION_WHATSAPP_DEDUP);
 
   const run = async (): Promise<WhatsAppTransactionResult> => {
-    // 1. Reivindicação atômica por mensagem, ANTES de qualquer transação —
-    //    .create() já é atômico sozinho (ver tryClaimWhatsAppMessageId).
-    //    `already_claimed` aqui é sempre tratado como duplicata — nunca
-    //    "recuperado" (ver limitação declarada acima: essa recuperação
-    //    heurística foi tentada e removida por criar duplicatas sob
-    //    concorrência real).
-    const claimedItems: typeof incomingMessages = [];
-    let messagesDuplicated = 0;
-    for (const item of incomingMessages) {
-      const externalMessageId = item.msg.id as string | undefined;
-      if (!externalMessageId) {
-        claimedItems.push(item); // sem id — handleInboundWhatsAppMessage trata como 'ignored'
-        continue;
-      }
-      const claim = await tryClaimWhatsAppMessageId(firestoreLikeDb, externalMessageId, {
-        deskId: 'carla_atendimento',
-        chatMessageId: `cmsg-wa-${externalMessageId}`,
-      });
-      if (claim === 'already_claimed') {
-        messagesDuplicated++;
-        continue;
-      }
-      claimedItems.push(item);
-    }
-
     const localStore = loadStore(); // só para as OUTRAS chaves (settings, juliaData, etc.)
-    if (claimedItems.length === 0) {
-      return { ok: true, messagesProcessed: 0, messagesDuplicated, attendanceIdsTouched: [], mergedStore: localStore };
-    }
 
-    // 2. Processa e grava DENTRO de uma transação real do Firestore —
-    //    escopada só aos atendimentos (consulta à coleção, não ao documento
-    //    único de ~1MB que causava o travamento original) e às poucas
-    //    mensagens novas desta chamada. O Firestore detecta conflito se
-    //    qualquer atendimento mudar entre a leitura e o commit (inclusive
-    //    por outra chamada concorrente criando um atendimento para o MESMO
-    //    telefone) e tenta de novo automaticamente — é isto que fecha a
-    //    corrida "duas primeiras mensagens do mesmo cliente novo, quase
-    //    juntas" sem precisar confiar em comparação em memória.
+    // Transação única: lê atendimentos + existência de cada marcador de
+    // dedup candidato, decide em memória o que processar, e grava
+    // atendimentos + mensagens + marcadores de dedup juntos. Nenhuma
+    // escrita acontece fora desta transação — ver comentário acima.
     const txResult = await db.runTransaction(async (tx) => {
+      // 1. LEITURAS primeiro (exigência do Firestore: toda leitura de uma
+      //    transação precisa vir antes de qualquer escrita).
       const freshSnap = await tx.get(attendancesCol);
       const freshAttendances = freshSnap.docs.map((d) => d.data() as unknown as AttendanceRecord);
       const attendanceIdsBefore = new Set(freshAttendances.map((a) => a.id));
 
+      const candidateExternalIds = incomingMessages
+        .map((item) => item.msg.id as string | undefined)
+        .filter((id): id is string => Boolean(id));
+      const dedupSnaps =
+        candidateExternalIds.length > 0
+          ? await tx.getAll(...candidateExternalIds.map((id) => dedupCol.doc(id)))
+          : [];
+      const alreadyClaimedIds = new Set(dedupSnaps.filter((s) => s.exists).map((s) => s.id));
+
+      // 2. PROCESSAMENTO em memória (nenhuma chamada ao Firestore aqui) —
+      //    pula quem já tem marcador de dedup (duplicata real, confirmada
+      //    pela MESMA leitura que vai virar a MESMA escrita abaixo).
       const workingAgentChats: Record<string, AgentChatMessage[]> = { carla_atendimento: [] };
       const carlaChatMessages = workingAgentChats['carla_atendimento'];
       const workingStore: PersistentStore = {
@@ -2923,24 +2897,46 @@ async function claimWhatsAppMessagesTransactionally(
       };
 
       let messagesProcessed = 0;
+      let messagesDuplicated = 0;
       const attendanceIdsTouched = new Set<string>();
       const newMessages: AgentChatMessage[] = [];
-      for (const { value, msg } of claimedItems) {
+      const dedupWrites: Array<{ externalMessageId: string; attendanceId?: string; chatMessageId: string }> = [];
+
+      for (const { value, msg } of incomingMessages) {
+        const externalMessageId = msg.id as string | undefined;
+        if (externalMessageId && alreadyClaimedIds.has(externalMessageId)) {
+          messagesDuplicated++;
+          continue;
+        }
         const beforeLength = carlaChatMessages.length;
         const result = handleInboundWhatsAppMessage(workingStore, value, msg);
         if (result.status === 'processed') {
           messagesProcessed++;
           if (result.attendanceId) attendanceIdsTouched.add(result.attendanceId);
-          newMessages.push(...carlaChatMessages.slice(beforeLength));
+          const added = carlaChatMessages.slice(beforeLength);
+          newMessages.push(...added);
+          if (externalMessageId) {
+            dedupWrites.push({
+              externalMessageId,
+              attendanceId: result.attendanceId,
+              chatMessageId: added[0]?.id ?? `cmsg-wa-${externalMessageId}`,
+            });
+          }
+        } else if (result.status === 'duplicate') {
+          // Segurança adicional — não deveria acontecer (já filtrado pela
+          // checagem de marcador acima), mas handleInboundWhatsAppMessage
+          // ainda faz sua própria checagem em memória, sem custo.
+          messagesDuplicated++;
         }
-        // 'duplicate' não deveria acontecer aqui (já filtrado pela
-        // reivindicação acima) — handleInboundWhatsAppMessage ainda faz sua
-        // própria checagem em memória como segurança adicional, sem custo.
       }
 
-      // Grava: atendimentos novos por set() completo, atendimentos
-      // existentes tocados (ex.: originCampaignId) por set(merge:true),
-      // mensagens novas por set() simples — nunca o documento inteiro.
+      // 3. ESCRITAS — atendimentos, mensagens e marcadores de dedup, todos
+      //    na mesma transação. tx.create() falha a transação INTEIRA se o
+      //    marcador já existir no momento do commit (proteção extra contra
+      //    uma corrida que a leitura do passo 1 não pegou) — se isso
+      //    acontecer, NADA aqui é gravado (nem atendimento, nem mensagem,
+      //    nem marcador) e o Firestore re-tenta a transação inteira
+      //    automaticamente, desta vez vendo o marcador já existente.
       for (const a of workingStore.attendances) {
         if (attendanceIdsTouched.has(a.id)) {
           tx.set(attendancesCol.doc(a.id), a as unknown as Record<string, unknown>, {
@@ -2951,14 +2947,26 @@ async function claimWhatsAppMessagesTransactionally(
       for (const m of newMessages) {
         tx.set(chatCol.doc(m.id), m as unknown as Record<string, unknown>);
       }
+      for (const d of dedupWrites) {
+        tx.create(dedupCol.doc(d.externalMessageId), {
+          attendanceId: d.attendanceId,
+          deskId: 'carla_atendimento',
+          chatMessageId: d.chatMessageId,
+        });
+      }
 
-      return { messagesProcessed, attendanceIdsTouched: Array.from(attendanceIdsTouched), workingStore };
+      return {
+        messagesProcessed,
+        messagesDuplicated,
+        attendanceIdsTouched: Array.from(attendanceIdsTouched),
+        workingStore,
+      };
     });
 
     return {
       ok: true,
       messagesProcessed: txResult.messagesProcessed,
-      messagesDuplicated,
+      messagesDuplicated: txResult.messagesDuplicated,
       attendanceIdsTouched: txResult.attendanceIdsTouched,
       mergedStore: txResult.workingStore,
     };
