@@ -1572,12 +1572,38 @@ const pristineStoreSnapshots = new WeakMap<PersistentStore, string>();
 // escrevendo uma mensagem enquanto um humano edita OUTRO atendimento), uma
 // substituição da chave inteira faria uma das duas gravações vencer por
 // completo, perdendo a mutação da outra que não tinha chegado a ela ainda.
-// Por isso o diff é calculado por ITEM dentro desses dois campos (por id do
-// atendimento; por id da mensagem dentro de cada mesa) — ver
-// persistStoreKeysTransactionally, que faz o merge na mesma granularidade.
+// Por isso o diff é calculado por ITEM (por id do atendimento; por id da
+// mensagem dentro de cada mesa) — e, dentro de cada atendimento, por CAMPO
+// de primeiro nível (ver AttendanceFieldUpdate abaixo): duas chamadas
+// editando o MESMO atendimento em campos DIFERENTES (ex.: uma muda
+// `reportedDefects`, outra muda `clientName`) agora também sobrevivem as
+// duas — só colide de verdade se as duas mudarem exatamente o mesmo campo.
+//
+// LIMITE DECLARADO (não é resolvido pela migração para coleções por si só
+// — ver migrations/README.md): o merge por campo para no PRIMEIRO nível do
+// atendimento. Um objeto aninhado (`budget`, `opinion`, `foamInspection`,
+// etc.) que mudou é tratado como um bloco só — duas edições concorrentes
+// tocando campos DIFERENTES dentro do MESMO objeto aninhado (ex.: uma muda
+// `budget.sellingPriceCents`, outra muda `budget.paymentConditions`, no
+// mesmo atendimento, ao mesmo tempo) ainda colidem, porque `budget` conta
+// como "um campo" nesta camada. Ir mais fundo exigiria merge recursivo
+// (inclusive soldando arrays como `budget.items`/`proposals` pelo próprio
+// id, recursivamente) — fora do escopo desta correção. Isso é verdade
+// independente de o armazenamento ser um documento único ou coleções por
+// entidade: só um merge de verdade (campo a campo, dentro de uma
+// transação) fecha esse tipo de corrida — migrar para coleções sozinho
+// reduz o "raio de alcance" de um `.set()` cego, mas não adiciona
+// granularidade de campo a uma escrita que continue substituindo o
+// registro inteiro.
+interface AttendanceFieldUpdate {
+  id: string;
+  isNew: boolean;
+  fields: Record<string, unknown>; // campos alterados (objeto completo se isNew)
+}
+
 interface StoreDiff {
   changedTopLevelKeys: string[]; // todas as outras chaves (settings, juliaData, materials, clients, backgroundTasks, whatsappWebhookLog, officeData) — substituição inteira, ver limitação abaixo
-  attendanceUpserts: AttendanceRecord[];
+  attendanceUpdates: AttendanceFieldUpdate[];
   attendanceDeletes: string[];
   agentChatNewMessages: Record<string, AgentChatMessage[]>;
 }
@@ -1599,23 +1625,36 @@ function computeStoreDiff(store: PersistentStore): StoreDiff {
     ? allKeys.filter((key) => JSON.stringify((store as unknown as Record<string, unknown>)[key]) !== JSON.stringify((pristine as Record<string, unknown>)[key]))
     : allKeys; // sem snapshot registrado — grava tudo, por segurança
 
-  const attendanceUpserts: AttendanceRecord[] = [];
+  const attendanceUpdates: AttendanceFieldUpdate[] = [];
   const attendanceDeletes: string[] = [];
   const currentAttendances = Array.isArray(store.attendances) ? store.attendances : [];
   if (!hasPristine) {
-    attendanceUpserts.push(...currentAttendances);
+    for (const a of currentAttendances) {
+      attendanceUpdates.push({ id: a.id, isNew: true, fields: a as unknown as Record<string, unknown> });
+    }
   } else {
     const pristineAttendances = Array.isArray((pristine as Record<string, unknown>).attendances)
       ? ((pristine as Record<string, unknown>).attendances as AttendanceRecord[])
       : [];
-    const pristineById = new Map(pristineAttendances.map((a) => [a.id, a]));
+    const pristineById = new Map(pristineAttendances.map((a) => [a.id, a as unknown as Record<string, unknown>]));
     const currentIds = new Set<string>();
     for (const a of currentAttendances) {
       currentIds.add(a.id);
       const before = pristineById.get(a.id);
-      if (!before || JSON.stringify(before) !== JSON.stringify(a)) {
-        attendanceUpserts.push(a);
+      const current = a as unknown as Record<string, unknown>;
+      if (!before) {
+        attendanceUpdates.push({ id: a.id, isNew: true, fields: current });
+        continue;
       }
+      const changedFields: Record<string, unknown> = {};
+      let anyChange = false;
+      for (const key of new Set([...Object.keys(current), ...Object.keys(before)])) {
+        if (JSON.stringify(current[key]) !== JSON.stringify(before[key])) {
+          changedFields[key] = current[key];
+          anyChange = true;
+        }
+      }
+      if (anyChange) attendanceUpdates.push({ id: a.id, isNew: false, fields: changedFields });
     }
     for (const before of pristineAttendances) {
       if (!currentIds.has(before.id)) attendanceDeletes.push(before.id);
@@ -1635,7 +1674,7 @@ function computeStoreDiff(store: PersistentStore): StoreDiff {
     if (newOnes.length > 0) agentChatNewMessages[deskId] = newOnes;
   }
 
-  return { changedTopLevelKeys, attendanceUpserts, attendanceDeletes, agentChatNewMessages };
+  return { changedTopLevelKeys, attendanceUpdates, attendanceDeletes, agentChatNewMessages };
 }
 
 function loadStore(): PersistentStore {
@@ -2581,30 +2620,30 @@ const MAINTENANCE_MODE_ERROR_MESSAGE =
 // que só muda `settings` nunca toca `attendances`/`agentChats` no documento
 // fresco. `attendances` e `agentChats`, por serem o ponto de contato direto
 // com o webhook do WhatsApp (que cria/atualiza atendimentos e mensagens com
-// sua PRÓPRIA transação concorrente), são mesclados por ITEM: upsert/delete
-// de atendimento por id, mensagem nova por id dentro de cada mesa — nunca
-// substituição do array inteiro. Isso fecha o caso "webhook contra edição
-// de atendimento": uma rota humana editando o atendimento B não apaga o
-// atendimento A que o webhook acabou de criar/atualizar concorrentemente,
-// e vice-versa.
+// sua PRÓPRIA transação concorrente), são mesclados por ITEM (upsert/delete
+// de atendimento por id, mensagem nova por id dentro de cada mesa) e, dentro
+// de cada atendimento, por CAMPO de primeiro nível (ver AttendanceFieldUpdate)
+// — nunca substituição do array ou do registro inteiro. Isso fecha dois
+// casos: "webhook contra edição de atendimento" (uma rota humana editando o
+// atendimento B não apaga o atendimento A que o webhook acabou de criar/
+// atualizar concorrentemente) e "duas edições do MESMO atendimento em
+// campos diferentes" (uma rota muda `reportedDefects`, outra muda
+// `desiredService` no mesmo atendimento ao mesmo tempo — as duas sobrevivem).
 //
-// LIMITAÇÃO DECLARADA (residual, menor): duas chamadas que mudam o MESMO
-// atendimento (mesmo id) ao mesmo tempo ainda têm uma delas prevalecer
-// sobre a outra PARA AQUELE REGISTRO INTEIRO — não há merge campo a campo
-// dentro de um único atendimento. Fechar isso por completo exige granula
-// ridade por campo (fora de escopo) ou aceitar que duas pessoas/processos
-// não editem o mesmo atendimento no mesmo instante (risco realista baixo:
-// o webhook só reescreve campos do atendimento em si — não a mensagem —
-// quando identifica a origem de campanha pela primeira vez; no resto do
-// tempo ele só acrescenta mensagem nova, que nem participa deste risco por
-// ser mesclada por id de mensagem, não por substituição do atendimento).
+// LIMITAÇÃO DECLARADA (residual, menor, e não resolvida só por migrar para
+// coleções — ver migrations/README.md): o merge por campo para no PRIMEIRO
+// NÍVEL. Um objeto aninhado (`budget`, `opinion`, `foamInspection`) que
+// mudou é tratado como um bloco só — duas edições concorrentes tocando
+// campos DIFERENTES dentro do MESMO objeto aninhado do MESMO atendimento
+// ainda colidem. E duas edições que mudam exatamente o MESMO campo seguem
+// sendo última-escrita-vence, por ser uma decisão de negócio, não um bug.
 async function persistStoreKeysTransactionally(
   store: PersistentStore,
   diff: StoreDiff
 ): Promise<{ ok: boolean; errorMessage?: string }> {
   const nothingChanged =
     diff.changedTopLevelKeys.length === 0 &&
-    diff.attendanceUpserts.length === 0 &&
+    diff.attendanceUpdates.length === 0 &&
     diff.attendanceDeletes.length === 0 &&
     Object.keys(diff.agentChatNewMessages).length === 0;
   if (nothingChanged) {
@@ -2623,12 +2662,23 @@ async function persistStoreKeysTransactionally(
         fresh[key] = (store as unknown as Record<string, unknown>)[key];
       }
 
-      if (diff.attendanceUpserts.length > 0 || diff.attendanceDeletes.length > 0) {
-        const freshAttendances: AttendanceRecord[] = Array.isArray(fresh.attendances)
-          ? (fresh.attendances as AttendanceRecord[])
+      if (diff.attendanceUpdates.length > 0 || diff.attendanceDeletes.length > 0) {
+        const freshAttendances: Array<Record<string, unknown>> = Array.isArray(fresh.attendances)
+          ? (fresh.attendances as Array<Record<string, unknown>>)
           : [];
-        const byId = new Map(freshAttendances.map((a) => [a.id, a]));
-        for (const upsert of diff.attendanceUpserts) byId.set(upsert.id, upsert);
+        const byId = new Map(freshAttendances.map((a) => [a.id as string, a]));
+        for (const update of diff.attendanceUpdates) {
+          if (update.isNew) {
+            byId.set(update.id, update.fields);
+          } else {
+            // Mescla só os campos alterados por cima do registro FRESCO —
+            // não substitui o atendimento inteiro, para não apagar um campo
+            // que outra chamada concorrente tenha mudado nesse meio-tempo
+            // (ver limitação declarada: só até o primeiro nível de campos).
+            const current = byId.get(update.id) || { id: update.id };
+            byId.set(update.id, { ...current, ...update.fields });
+          }
+        }
         for (const delId of diff.attendanceDeletes) byId.delete(delId);
         fresh.attendances = Array.from(byId.values());
       }
@@ -6831,7 +6881,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     // nesse meio-tempo.
     void persistStoreKeysTransactionally(mergedStore, {
       changedTopLevelKeys: ['whatsappWebhookLog'],
-      attendanceUpserts: [],
+      attendanceUpdates: [],
       attendanceDeletes: [],
       agentChatNewMessages: {},
     });

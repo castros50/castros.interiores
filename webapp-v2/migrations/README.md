@@ -301,20 +301,54 @@ esteja em andamento bem no instante do corte de tráfego — janela de poucos
 segundos no máximo, coberta pelo tempo de drenagem do passo 3 do
 procedimento acima.
 
+## Correção: merge por CAMPO dentro do MESMO atendimento (revisão seguinte)
+
+A versão anterior deste documento dizia que fechar a corrida dentro do
+MESMO atendimento exigia "a migração ou transação por rota". Isso estava
+impreciso e foi corrigido: **migrar para coleções, por si só, não resolve
+esse caso.** Trocar o documento único por um documento por atendimento só
+muda o alcance de um `.set()` cego (de "todo o app" para "um atendimento")
+— se a escrita daquele um documento continuar sendo um `.set()` que
+substitui o registro inteiro, duas edições concorrentes do MESMO
+atendimento colidem exatamente como colidiam antes, só que num raio menor.
+O que fecha essa corrida é merge por campo DENTRO de uma transação — uma
+técnica independente de documento único vs. coleções, que já foi
+implementada e testada aqui, sem esperar a migração:
+
+`computeStoreDiff` agora calcula, para cada atendimento atualizado, só os
+CAMPOS de primeiro nível que mudaram desde o snapshot "pristine" (não o
+registro inteiro) — e `persistStoreKeysTransactionally` mescla só esses
+campos por cima do registro FRESCO lido na transação. Testado contra o
+emulador oficial: duas rotas editando CAMPOS DIFERENTES do MESMO
+atendimento (`reportedDefects` numa, `desiredService` na outra),
+3 rodadas verdadeiramente concorrentes — as duas mudanças sobreviveram.
+
+**Limite que permanece, agora preciso e menor:** o merge para no PRIMEIRO
+NÍVEL de campos do atendimento. Um objeto aninhado (`budget`, `opinion`,
+`foamInspection`, etc.) que mudou é tratado como um bloco só — duas edições
+concorrentes tocando campos DIFERENTES dentro do MESMO objeto aninhado
+(ex.: uma muda `budget.sellingPriceCents`, outra muda
+`budget.paymentConditions`, no mesmo atendimento) ainda colidem. Ir mais
+fundo exigiria merge recursivo, inclusive soldando arrays internos
+(`budget.items`, `proposals`) pelo próprio id — mesma técnica, mais uma
+camada, fora do escopo desta correção. E, claro, duas edições que mudam
+exatamente o MESMO campo para valores diferentes continuam sendo uma
+decisão de negócio (qual valor vale?), não um bug de concorrência — última
+escrita vence, como em qualquer sistema sem resolução de conflito
+assistida por humano.
+
 ## O que ainda não está fechado
 
 - Migrar para coleções continua sendo o único jeito de resolver o limite de
   tamanho do documento (99,7% do limite) de forma permanente — os fixes
-  acima tornam a escrita mais segura, não menor.
-- Granularidade por CAMPO dentro do MESMO atendimento (duas edições
-  concorrentes do mesmo registro) — o merge por item (ver seção anterior)
-  já fecha "registros diferentes", mas duas gravações do mesmo atendimento
-  ao mesmo tempo ainda têm uma prevalecer sobre a outra para aquele
-  registro inteiro. Só a migração ou transação por rota fecham isso por
-  completo.
-- O merge por item de `agentChats` foi verificado pela mesma lógica usada
-  e testada para `attendances` (mesmo código, mesma técnica), mas não foi
-  testado ponta a ponta através de uma rota de chat real nesta sessão
-  (a rota principal de chat chama a API da Anthropic, fora do escopo dos
-  testes rápidos feitos aqui) — limitação de cobertura de teste declarada,
-  não um problema conhecido.
+  acima tornam a escrita mais segura, não menor, e não dependem da
+  migração para funcionar.
+- Merge recursivo dentro de objetos aninhados do atendimento (ver acima).
+- O merge por item/campo de `agentChats` e `attendances` foi testado contra
+  o emulador oficial para o caminho do webhook e para `PUT /api/attendances/:id`
+  especificamente — não para toda rota que toca essas estruturas (ex.: a
+  rota principal de chat chama a API da Anthropic, fora do escopo dos
+  testes rápidos feitos aqui). A técnica é a mesma em todos os casos
+  (passa por `saveStore`/`computeStoreDiff` igual), mas não foi exercitada
+  ponta a ponta em cada rota individualmente — limitação de cobertura de
+  teste declarada, não um problema conhecido.
