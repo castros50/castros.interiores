@@ -1837,69 +1837,6 @@ function saveStore(store: PersistentStore): void {
 // Promise.race com este timeout.
 const FIRESTORE_SYNC_AWAIT_TIMEOUT_MS = 8_000;
 
-// Espera o Firestore responder (ou expirar) SEM gravar nada local ainda —
-// usado por persistStoreDurablyThenCache abaixo. Isolado aqui só para não
-// repetir o Promise.race em cada chamador.
-async function syncToFirestoreWithTimeout(
-  store: PersistentStore
-): Promise<{ ok: boolean; errorMessage?: string }> {
-  let timedOut = false;
-  const result = await Promise.race([
-    persistStoreToFirestore(store),
-    new Promise<{ ok: boolean; errorMessage?: string }>((resolve) => {
-      setTimeout(() => {
-        timedOut = true;
-        resolve({
-          ok: false,
-          errorMessage: `Sem resposta do Firestore após ${FIRESTORE_SYNC_AWAIT_TIMEOUT_MS}ms — a chamada pode ainda terminar em segundo plano, mas deixou de bloquear a resposta.`,
-        });
-      }, FIRESTORE_SYNC_AWAIT_TIMEOUT_MS);
-    }),
-  ]);
-  if (timedOut) {
-    console.error(
-      `[Firestore Sync] Tempo limite de ${FIRESTORE_SYNC_AWAIT_TIMEOUT_MS}ms excedido aguardando a sincronização — seguindo sem bloquear a resposta.`
-    );
-  }
-  return result;
-}
-
-// O disco local do Cloud Run é TEMPORÁRIO — não sobrevive a um redeploy, a
-// uma instância reciclada, nem é visível a outra instância. Por isso ele não
-// pode mais ser a base da decisão "responder sucesso": esta função só grava
-// localmente DEPOIS de confirmar que o Firestore (a única cópia durável que
-// este servidor tem) aceitou a gravação. Se o Firestore falhar ou não
-// responder a tempo, NADA é gravado localmente — a mutação em memória
-// (dedup marker, atendimento, tarefa de resposta automática) é descartada
-// inteira, exatamente como se a requisição nunca tivesse sido processada.
-// Isso é deliberado: um ID marcado como "concluído" só no disco local, sem
-// nunca ter chegado ao Firestore, bloquearia uma reentrega legítima da Meta
-// (o dedup acharia "já processado") mesmo sem nenhuma cópia durável do dado
-// em lugar nenhum — a mensagem seria perdida para sempre no primeiro
-// redeploy ou reciclagem de instância, da pior forma possível: calada.
-// Use isto (nunca saveStore()) em qualquer rota que precise confirmar
-// recebimento a um chamador externo com retentativa própria (ex.: webhook).
-async function persistStoreDurablyThenCache(
-  store: PersistentStore
-): Promise<{ ok: boolean; errorMessage?: string }> {
-  const firestoreResult = await syncToFirestoreWithTimeout(store);
-  if (!firestoreResult.ok) {
-    return firestoreResult;
-  }
-  try {
-    writeStoreToLocalDisk(store);
-  } catch (err) {
-    // O dado já está durável no Firestore — isto só deixa o CACHE local desta
-    // instância desatualizado até o próximo restart (que relê do Firestore).
-    // Não é perda de dado, por isso não reverte o `ok: true`.
-    console.error(
-      '[Store] Firestore confirmado, mas a cópia local (cache) falhou — sem perda de dado, mas esta instância ficará com cache desatualizado até reiniciar:',
-      err instanceof Error ? err.message : err
-    );
-  }
-  return { ok: true };
-}
-
 // ----------------------------------------------------------------------------
 // TAREFAS EM SEGUNDO PLANO (BackgroundTask) — fila persistida no próprio store,
 // processada por processDueBackgroundTasks(). Não há execução "no cliente": uma
@@ -2540,6 +2477,121 @@ function persistStoreToFirestore(store: PersistentStore): Promise<{ ok: boolean;
     console.error('[Firestore Sync] Falha síncrona ao preparar a sincronização com o Firestore:', errorMessage);
     return Promise.resolve({ ok: false, errorMessage });
   }
+}
+
+// Reivindicação transacional de mensagens do WhatsApp — substitui, para esta
+// rota especificamente, o padrão "ler o documento inteiro localmente,
+// processar, sobrescrever o documento inteiro" por uma transação do
+// Firestore: lê o documento FRESCO dentro da própria transação, processa
+// (reaproveitando handleInboundWhatsAppMessage, sem duplicar lógica) e só
+// então escreve de volta. Isso fecha duas falhas reais encontradas nesta
+// revisão:
+//
+// 1. Resultado incerto de um timeout: se o timeout abaixo expira e a
+//    chamada real ao Firestore continuar presa por baixo (não cancelada —
+//    só deixamos de esperar por ela), e ela eventualmente terminar, o fato
+//    de ser uma transação garante que ela vai reler o estado FRESCO no
+//    momento em que realmente commitar — se uma reentrega já tiver sido
+//    processada por outra chamada nesse meio-tempo, a transação abandonada
+//    vai ver a mensagem já presente e não duplicá-la. Uma sobrescrita
+//    (como era antes) não tem essa proteção: aplicaria o snapshot antigo
+//    por cima do que já foi escrito depois, perdendo dado.
+// 2. Concorrência entre instâncias OU entre chamadas simultâneas na mesma
+//    instância: o Firestore detecta conflito de leitura entre transações
+//    concorrentes e tenta de novo automaticamente — sem isso (só com
+//    .set() cego), duas chamadas que leem o documento antes de qualquer
+//    uma escrever poderiam ambas processar a mesma mensagem como nova.
+//
+// Isto NÃO protege contra uma escrita não-transacional de OUTRA rota
+// (saveStore() comum, usado em ~100 lugares do app) acontecendo ao mesmo
+// tempo — .set() não participa da detecção de conflito do Firestore, então
+// ainda pode sobrescrever por cima do que esta transação commitou. Fechar
+// isso por completo exigiria ou converter todas as outras rotas para o
+// mesmo padrão transacional (mudança grande, não feita aqui), ou migrar
+// para coleções por entidade (ver migrations/), onde o "raio de alcance" de
+// qualquer escrita cega vira um documento por atendimento/mensagem, não o
+// estado inteiro do app.
+interface WhatsAppTransactionResult {
+  ok: boolean;
+  errorMessage?: string;
+  messagesProcessed: number;
+  messagesDuplicated: number;
+  attendanceIdsTouched: string[];
+  // Devolvido só em sucesso — o próprio dado que a transação commitou no
+  // Firestore, para a rota gravar como cache local sem precisar de uma
+  // segunda leitura.
+  mergedStore?: PersistentStore;
+}
+
+async function claimWhatsAppMessagesTransactionally(
+  incomingMessages: Array<{
+    value: { contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }> };
+    msg: Record<string, unknown>;
+  }>,
+  timeoutMs: number
+): Promise<WhatsAppTransactionResult> {
+  const docRef = db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC);
+
+  const run = async (): Promise<WhatsAppTransactionResult> => {
+    return db.runTransaction(async (tx) => {
+      const snap = await tx.get(docRef);
+      const data = (snap.exists ? snap.data() : {}) as PersistentStore & { savedAt?: string };
+      if (!Array.isArray(data.attendances)) data.attendances = [];
+      if (!data.agentChats) data.agentChats = {};
+
+      let messagesProcessed = 0;
+      let messagesDuplicated = 0;
+      const attendanceIdsTouched = new Set<string>();
+      for (const { value, msg } of incomingMessages) {
+        const result = handleInboundWhatsAppMessage(data as PersistentStore, value, msg);
+        if (result.status === 'processed') {
+          messagesProcessed++;
+          if (result.attendanceId) attendanceIdsTouched.add(result.attendanceId);
+        } else if (result.status === 'duplicate') {
+          messagesDuplicated++;
+        }
+      }
+
+      const payload = { ...data, savedAt: new Date().toISOString() };
+      tx.set(docRef, payload);
+      return {
+        ok: true,
+        messagesProcessed,
+        messagesDuplicated,
+        attendanceIdsTouched: Array.from(attendanceIdsTouched),
+        mergedStore: data as PersistentStore,
+      };
+    });
+  };
+
+  let timedOut = false;
+  const result = await Promise.race([
+    run().catch((err) => ({
+      ok: false,
+      errorMessage: err instanceof Error ? err.message : String(err),
+      messagesProcessed: 0,
+      messagesDuplicated: 0,
+      attendanceIdsTouched: [],
+    })),
+    new Promise<WhatsAppTransactionResult>((resolve) => {
+      setTimeout(() => {
+        timedOut = true;
+        resolve({
+          ok: false,
+          errorMessage: `Transação do Firestore sem resposta após ${timeoutMs}ms — abandonada sem bloquear a resposta; se terminar depois, a própria transação garante que não duplica nada.`,
+          messagesProcessed: 0,
+          messagesDuplicated: 0,
+          attendanceIdsTouched: [],
+        });
+      }, timeoutMs);
+    }),
+  ]);
+  if (timedOut) {
+    console.error(
+      `[WhatsApp Webhook] Transação travou além de ${timeoutMs}ms — tratada como falha para efeito da resposta (Meta reentrega); a chamada real pode ainda commitar depois, com segurança.`
+    );
+  }
+  return result;
 }
 
 async function restoreStoreFromFirestoreIfNeeded(): Promise<void> {
@@ -6455,23 +6507,17 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       return;
     }
 
-    // Processa em memória primeiro, mas só CONFIRMA (grava local + responde
-    // 200) depois que o Firestore aceitar a gravação (ver
-    // persistStoreDurablyThenCache). O disco local do Cloud Run é temporário
-    // — gravar só nele não é prova de que o dado sobrevive a um redeploy, a
-    // uma instância reciclada, ou que outra instância algum dia vai ver essa
-    // mensagem. Por isso a ordem muda: a mutação (dedup marker, atendimento,
-    // tarefa de resposta automática) só é commitada se e quando o Firestore
-    // confirmar; se falhar, ela é descartada por completo e a Meta reentrega
-    // depois — sem nenhum ID marcado como concluído bloqueando essa
-    // reentrega.
-    const store = loadStore();
-    let messagesFound = 0;
-    let messagesProcessed = 0;
-    let messagesDuplicated = 0;
-    const attendanceIdsTouched = new Set<string>();
-    let errorMessage: string | undefined;
+    // Extrai as mensagens do payload ANTES de tocar em qualquer estado — a
+    // leitura real do store acontece dentro da transação (claimWhatsAppMessages
+    // Transactionally), nunca aqui, para garantir que o dedup e a gravação
+    // vejam sempre o estado mais recente no momento exato do commit, não um
+    // snapshot local possivelmente desatualizado.
     let entryCount = 0;
+    let parseErrorMessage: string | undefined;
+    const incomingMessages: Array<{
+      value: { contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }> };
+      msg: Record<string, unknown>;
+    }> = [];
     try {
       const entries = (req.body?.entry || []) as Array<{
         changes?: Array<{ value?: Record<string, unknown> }>;
@@ -6484,60 +6530,49 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
             contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }>;
           };
           for (const msg of value.messages || []) {
-            messagesFound++;
-            const result = handleInboundWhatsAppMessage(store, value, msg);
-            if (result.status === 'processed') {
-              messagesProcessed++;
-              if (result.attendanceId) attendanceIdsTouched.add(result.attendanceId);
-            } else if (result.status === 'duplicate') {
-              messagesDuplicated++;
-            }
+            incomingMessages.push({ value, msg });
           }
         }
       }
     } catch (err) {
-      errorMessage = err instanceof Error ? err.message : String(err);
-      console.error('[WhatsApp Webhook] Erro ao processar payload recebido:', err);
+      parseErrorMessage = err instanceof Error ? err.message : String(err);
+      console.error('[WhatsApp Webhook] Erro ao interpretar payload recebido:', err);
     }
+    const messagesFound = incomingMessages.length;
 
-    recordWhatsAppWebhookEvent(store, {
-      signatureStatus: 'valida',
-      entryCount,
-      messagesFound,
-      messagesProcessed,
-      messagesDuplicated,
-      attendanceIdsTouched: Array.from(attendanceIdsTouched),
-      errorMessage,
-    });
+    // Transação do Firestore: lê fresco, reivindica (reaproveitando
+    // handleInboundWhatsAppMessage) e escreve de volta — tudo atômico, com
+    // timeout para nunca travar a resposta (ver claimWhatsAppMessages
+    // Transactionally para o porquê disto fechar as duas falhas revisadas
+    // nesta sessão: resultado incerto após timeout, e concorrência entre
+    // instâncias/chamadas).
+    const transactionResult = await claimWhatsAppMessagesTransactionally(incomingMessages, FIRESTORE_SYNC_AWAIT_TIMEOUT_MS);
 
-    const durableResult = await persistStoreDurablyThenCache(store);
-
-    if (!durableResult.ok) {
-      // Nada do que foi processado acima (mensagens, atendimentos, a tarefa
-      // de resposta automática) foi gravado em lugar nenhum — nem localmente.
-      // `store` morre com esta requisição. Responder 200 aqui diria à Meta
+    if (!transactionResult.ok || parseErrorMessage) {
+      // Nada foi commitado no Firestore (fonte durável) — não existe
+      // "mensagem processada" sem isso. Responder 200 aqui diria à Meta
       // "não precisa reentregar" sobre algo que não existe em nenhuma cópia
-      // durável; por isso HTTP 503, para que a Meta tente de novo depois.
-      //
-      // Ainda registramos ISSO no diagnóstico — mas numa cópia relida do
-      // disco (sem a mutação da mensagem desta requisição), para que o
-      // evento de falha fique visível sem deixar nenhum dedup marker
-      // "pendurado" localmente sem backup real (o que bloquearia a
-      // reentrega legítima vendo "já processado" quando, na verdade, nada
-      // sobrevive a esta instância).
+      // durável; por isso HTTP 503. O disco local NÃO é tocado agora — se a
+      // transação abandonada (por timeout) ainda commitar depois, ela
+      // mesma garante não duplicar nada (ver comentário da função);
+      // continuar sem gravar aqui evita que esta instância fique com um
+      // cache local inconsistente com o que pode vir a existir no Firestore.
+      const combinedError = parseErrorMessage || transactionResult.errorMessage;
       console.error(
-        `[WhatsApp Webhook] Persistência durável falhou (${durableResult.errorMessage}) — respondendo erro para a Meta reentregar; nenhuma mensagem foi marcada como concluída.`
+        `[WhatsApp Webhook] Reivindicação transacional falhou (${combinedError}) — respondendo erro para a Meta reentregar; nenhuma mensagem foi marcada como concluída.`
       );
+      // Ainda registra o evento no diagnóstico — best-effort, numa cópia
+      // local independente (não afeta a decisão de dedup, só visibilidade).
       const diagnosticOnlyStore = loadStore();
       recordWhatsAppWebhookEvent(diagnosticOnlyStore, {
         signatureStatus: 'valida',
         entryCount,
         messagesFound,
         messagesProcessed: 0,
-        messagesDuplicated,
+        messagesDuplicated: 0,
         attendanceIdsTouched: [],
-        errorMessage: errorMessage || 'Processado em memória, mas a persistência durável falhou — reentrega esperada.',
-        firestoreSyncError: durableResult.errorMessage,
+        errorMessage: combinedError || 'Reivindicação transacional falhou — reentrega esperada.',
+        firestoreSyncError: transactionResult.errorMessage,
       });
       try {
         writeStoreToLocalDisk(diagnosticOnlyStore);
@@ -6548,14 +6583,41 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       return;
     }
 
+    // Sucesso confirmado pelo Firestore — agora sim atualiza o cache local
+    // (best-effort: se falhar, o Firestore já é a fonte de verdade) e
+    // registra o evento no mesmo snapshot que acabou de ser commitado.
+    const mergedStore = transactionResult.mergedStore as PersistentStore;
+    recordWhatsAppWebhookEvent(mergedStore, {
+      signatureStatus: 'valida',
+      entryCount,
+      messagesFound,
+      messagesProcessed: transactionResult.messagesProcessed,
+      messagesDuplicated: transactionResult.messagesDuplicated,
+      attendanceIdsTouched: transactionResult.attendanceIdsTouched,
+    });
+    try {
+      writeStoreToLocalDisk(mergedStore);
+    } catch (err) {
+      console.error(
+        '[Store] Firestore confirmado, mas a cópia local (cache) falhou — sem perda de dado:',
+        err instanceof Error ? err.message : err
+      );
+    }
+    // A entrada de diagnóstico (log do evento) foi adicionada DEPOIS do
+    // commit da transação — só existe localmente até aqui. Sincroniza em
+    // segundo plano (fire-and-forget, best-effort, como saveStore()): a
+    // mensagem/atendimento já estão duráveis desde a transação acima; isto
+    // é só para o histórico de diagnóstico não desaparecer num redeploy.
+    void persistStoreToFirestore(mergedStore);
+
     res.sendStatus(200);
 
     // Atualiza a mesa da Carla (e qualquer outro dispositivo já aberto) ao vivo —
     // antes, a mensagem era salva mas só aparecia depois de um F5 manual. Isto
     // acontece depois da resposta por ser só uma notificação best-effort — o
     // dado em si já está persistido com segurança no passo acima.
-    for (const attendanceId of attendanceIdsTouched) {
-      const attendance = store.attendances.find((a) => a.id === attendanceId);
+    for (const attendanceId of transactionResult.attendanceIdsTouched) {
+      const attendance = mergedStore.attendances.find((a) => a.id === attendanceId);
       if (attendance) {
         broadcastRealtimeEvent({
           type: 'attendance:updated',
