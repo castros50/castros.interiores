@@ -223,7 +223,14 @@ export async function runMigration(
 // --- Verificação de integridade (lê de volta e compara com o original) ----
 
 export interface IntegrityMismatch {
-  kind: 'attendance_missing' | 'attendance_field_diff' | 'chat_message_missing' | 'dedup_marker_missing' | 'extra_document_in_new_collection';
+  kind:
+    | 'attendance_missing'
+    | 'attendance_field_diff'
+    | 'chat_message_missing'
+    | 'chat_message_field_diff'
+    | 'dedup_marker_missing'
+    | 'dedup_marker_field_diff'
+    | 'extra_document_in_new_collection';
   id: string;
   detail: string;
 }
@@ -266,30 +273,90 @@ export async function verifyMigrationIntegrity(
     }
   }
 
+  // Mensagens: existência E conteúdo (texto, attendanceId, externalMessageId,
+  // etc.) — antes só a existência era checada, o que deixaria passar uma
+  // mensagem gravada com o id certo mas campos errados/truncados.
   for (const expected of plan.chatMessageWrites) {
     const doc = await client.collection<MigrationChatMessage>(chatCollectionName(expected.deskId)).doc(expected.id).get();
     if (!doc.exists) {
       mismatches.push({ kind: 'chat_message_missing', id: expected.id, detail: `mensagem da mesa ${expected.deskId} não encontrada` });
+      continue;
+    }
+    const actual = doc.data() as MigrationChatMessage;
+    const diffFields = shallowFieldDiff(expected.data, actual);
+    if (diffFields.length > 0) {
+      mismatches.push({
+        kind: 'chat_message_field_diff',
+        id: expected.id,
+        detail: `mensagem da mesa ${expected.deskId} encontrada mas com campos diferentes: ${diffFields.join(', ')}`,
+      });
     }
   }
 
-  const dedupCol = client.collection<unknown>(COLLECTION_WHATSAPP_DEDUP);
+  // Marcadores de dedup: existência E vínculo (attendanceId/deskId/
+  // chatMessageId) — antes só a existência era checada, o que deixaria
+  // passar um marcador apontando para o atendimento/mensagem ERRADOS.
+  const dedupCol = client.collection<{ attendanceId?: string; deskId: string; chatMessageId: string }>(
+    COLLECTION_WHATSAPP_DEDUP
+  );
   for (const expected of plan.whatsappDedupWrites) {
     const doc = await dedupCol.doc(expected.externalMessageId).get();
     if (!doc.exists) {
       mismatches.push({ kind: 'dedup_marker_missing', id: expected.externalMessageId, detail: 'marcador de deduplicação não encontrado' });
+      continue;
+    }
+    const actual = doc.data() as { attendanceId?: string; deskId: string; chatMessageId: string };
+    const diffFields = shallowFieldDiff(
+      expected.data as unknown as Record<string, unknown>,
+      actual as unknown as Record<string, unknown>
+    );
+    if (diffFields.length > 0) {
+      mismatches.push({
+        kind: 'dedup_marker_field_diff',
+        id: expected.externalMessageId,
+        detail: `marcador encontrado mas com vínculo diferente do esperado: ${diffFields.join(', ')}`,
+      });
     }
   }
 
   // Documentos extras nas coleções novas que não vieram do snapshot original
-  // indicariam uma migração rodada contra uma base diferente da esperada —
+  // indicariam uma migração rodada contra uma base diferente da esperada,
+  // uma execução anterior com outro snapshot, ou contaminação por teste —
   // sinal de que o "snapshot" usado não era a fonte certa (ver
-  // reconcileInstanceWithFirestore).
+  // reconcileSnapshots). Checado nas TRÊS famílias de coleção, não só em
+  // attendances_v2 como antes — mensagens e marcadores extras também
+  // indicam a mesma classe de problema.
   const expectedAttendanceIds = new Set(plan.attendanceWrites.map((w) => w.id));
   const actualAttendanceIds = await attendancesCol.listDocumentIds();
   for (const id of actualAttendanceIds) {
     if (!expectedAttendanceIds.has(id)) {
-      mismatches.push({ kind: 'extra_document_in_new_collection', id, detail: 'presente na coleção nova mas não no snapshot verificado' });
+      mismatches.push({ kind: 'extra_document_in_new_collection', id, detail: 'presente em attendances_v2 mas não no snapshot verificado' });
+    }
+  }
+
+  const expectedChatIdsByDesk = new Map<string, Set<string>>();
+  for (const w of plan.chatMessageWrites) {
+    if (!expectedChatIdsByDesk.has(w.deskId)) expectedChatIdsByDesk.set(w.deskId, new Set());
+    expectedChatIdsByDesk.get(w.deskId)!.add(w.id);
+  }
+  for (const [deskId, expectedIds] of expectedChatIdsByDesk) {
+    const actualIds = await client.collection<MigrationChatMessage>(chatCollectionName(deskId)).listDocumentIds();
+    for (const id of actualIds) {
+      if (!expectedIds.has(id)) {
+        mismatches.push({
+          kind: 'extra_document_in_new_collection',
+          id,
+          detail: `presente em ${chatCollectionName(deskId)} mas não no snapshot verificado`,
+        });
+      }
+    }
+  }
+
+  const expectedDedupIds = new Set(plan.whatsappDedupWrites.map((w) => w.externalMessageId));
+  const actualDedupIds = await dedupCol.listDocumentIds();
+  for (const id of actualDedupIds) {
+    if (!expectedDedupIds.has(id)) {
+      mismatches.push({ kind: 'extra_document_in_new_collection', id, detail: `presente em ${COLLECTION_WHATSAPP_DEDUP} mas não no snapshot verificado` });
     }
   }
 

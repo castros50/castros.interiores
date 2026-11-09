@@ -44,9 +44,20 @@ deploy (Passo 5)**, diferente de uma versão anterior deste procedimento.
 Isto também responde à limitação anterior: migrar os dados sozinho (sem
 trocar o código) não reduzia `appState/main` nem o risco de "entity too
 large". Com a troca de código incluída, depois deste procedimento o
-documento único **para de crescer** com `attendances`/`agentChats` — o
-risco de tamanho fica resolvido para gravações futuras (o documento já
-existente continua grande, intacto, como histórico).
+documento único **para de crescer** com `attendances`/`agentChats`.
+
+**Correção importante a este raciocínio (ver seção "Espaço restante em
+appState/main" mais abaixo): isto NÃO significa que o risco de tamanho fica
+resolvido.** O backup real de produção (Passo 1 desta mesma sessão) já
+mostrou 1.064.240 bytes (101,5% do limite) com **0 atendimentos e só 23
+mensagens pequenas no total** — ou seja, `attendances`/`agentChats` não são
+a causa principal do tamanho atual do documento. Parar de escrever essas
+duas chaves ali reduz o RISCO FUTURO de elas crescerem sem limite (o que é
+real e vale o corte), mas **não teria, por si só, resolvido o "entity too
+large" que motivou esta revisão** — alguma outra chave (`materials`,
+`juliaData`, `clients` ou `officeData` são as candidatas mais plausíveis
+pelo código) já está perto do limite sozinha. Ver a seção dedicada abaixo
+para como confirmar isso sem tocar em produção.
 
 Serviço: `castros-interiores`, região `southamerica-east1`, projeto
 `gen-lang-client-0378581840`.
@@ -89,6 +100,123 @@ centenas de mensagens) — os testes acima usam poucos registros sintéticos.
 A query completa da coleção de atendimentos dentro da transação do webhook
 (ver limitação declarada mais abaixo) pode ficar mais lenta/contenciosa à
 medida que o número de atendimentos cresce — não medido aqui.
+
+## Segunda revisão (4 problemas concretos) — correções e testes
+
+Uma segunda revisão do commit `71682ff` apontou 4 problemas concretos, todos
+corrigidos nesta revisão e testados contra o emulador oficial (nunca contra
+produção):
+
+1. **Cache local descartava outras mesas/mensagens antigas a cada chamada do
+   webhook.** `claimWhatsAppMessagesTransactionally` devolvia um
+   `mergedStore` cujo `agentChats` só tinha `{carla_atendimento: <mensagens
+   novas desta chamada>}` — a rota do webhook então gravava isso por cima do
+   `store.json` inteiro, descartando `pedro_avaliacao`/`lucas_projetos`/
+   histórico antigo da própria Carla a cada chamada concorrente.
+   **Corrigido:** a função agora relê o disco local (`loadStore()`) DEPOIS
+   do commit no Firestore e faz merge por item (atendimentos por id,
+   mensagens novas por id) por cima dessa leitura fresca, nunca mais
+   substitui o objeto inteiro. **Testado:** semeei mensagens antigas em
+   `pedro_avaliacao`, `lucas_projetos` e `carla_atendimento` direto no
+   `data/store.json`, mandei uma mensagem nova assinada via webhook, e
+   confirmei via `GET /api/store` que as 3 mesas e todas as mensagens (novas
+   e antigas) sobreviveram.
+2. **Falha de restauração na inicialização não impedia o servidor de subir.**
+   `restoreStoreFromFirestoreIfNeeded()` só logava e retornava em caso de
+   erro — uma falha real (rede, permissão, projeto errado) deixava
+   `startServer()` seguir normalmente, e o primeiro `loadStore()` criaria e
+   gravaria dados padrão/demo em produção sem ninguém notar. **Corrigido:**
+   a função agora relança o erro, e `startServer()` captura isso e chama
+   `process.exit(1)` ANTES de o Express abrir a porta — nenhuma rota aceita
+   tráfego nesse estado. **Testado:** rodei o servidor sem `data/store.json`
+   local (simulando um contêiner novo) e com `FIRESTORE_EMULATOR_HOST`
+   apontando para uma porta sem ninguém escutando — o processo terminou com
+   código de saída 1 e a mensagem `[Firestore Sync] FATAL`, e a linha
+   "Servidor Castros Interiores rodando na porta" nunca apareceu no log (a
+   porta nunca abriu).
+3. **Tarefa de resposta automática não era durável nem idempotente de
+   verdade.** `createBackgroundTask()` só mexia num `workingStore.backgroundTasks`
+   que podia vir de disco local desatualizado, e nunca era gravada no
+   Firestore dentro da MESMA transação do webhook — risco de perda no
+   restart e de resposta automática duplicada numa reentrega.
+   **Corrigido:** a transação agora lê `backgroundTasks` fresco do próprio
+   documento `appState/main` (`tx.get`) e, se a lista cresceu, grava de volta
+   (`tx.set(..., {merge:true})`) na MESMA transação que grava
+   atendimento/mensagem/marcador de dedup. **Bug real encontrado durante este
+   teste e também corrigido:** a primeira versão desta correção substituiu
+   `settings`/`juliaData`/etc. por chaves lidas só do documento do Firestore
+   (via `tx.get(storeDocRef)`), e não mais do `loadStore()` local — contra o
+   emulador recém-iniciado (documento `appState/main` ainda sem `settings`),
+   isso quebrava com `Cannot read properties of undefined (reading
+   'carlaAutoReply')`. Corrigido mantendo `loadStore()` como base para as
+   outras chaves (igual ao comportamento original) e só sobrepondo
+   `backgroundTasks` com a leitura fresca do Firestore. **Testado:** com
+   `settings.carlaAutoReply.enabled=true`, mandei uma mensagem assinada de
+   cliente novo via webhook e confirmei, lendo `appState/main` DIRETO pelo
+   SDK (não pela API da aplicação), que a tarefa
+   `enviar_resposta_whatsapp` com `idempotencyKey: wa-reply-<id>` estava
+   gravada no documento. Reenviei a mesma mensagem (mesmo `externalMessageId`)
+   e confirmei que nenhuma segunda tarefa foi criada (dedup da própria
+   mensagem bloqueia o reprocessamento antes de chegar à tarefa).
+4. **Verificação de integridade da migração só checava existência, não
+   conteúdo/vínculo, e só detectava documentos extras em `attendances_v2`.**
+   **Corrigido:** `verifyMigrationIntegrity` agora faz diff de campo
+   (`shallowFieldDiff`) em mensagens de chat (`chat_message_field_diff`) e em
+   marcadores de dedup (`dedup_marker_field_diff`, pegando um vínculo
+   `attendanceId`/`deskId`/`chatMessageId` errado), e detecta documento extra/
+   órfão nas TRÊS famílias de coleção (antes só em `attendances_v2`).
+   **Testado:** adicionei um novo cenário `[E5]` em
+   `firestoreCollectionsMigration.emulatortest.ts` que corrompe de verdade,
+   contra o emulador oficial, o texto de uma mensagem já migrada, o vínculo
+   de um marcador de dedup, e cria um documento órfão em cada uma das duas
+   coleções (mensagens e dedup) — confirmando que cada um dos 4 cenários é
+   detectado com o `kind` específico esperado, e que a verificação volta a
+   passar limpa depois de desfazer as 4 corrupções. Suite completa:
+   **23/23 passaram** (12 testes anteriores + 11 novas asserções do E5).
+
+### Espaço restante em `appState/main`
+
+A revisão também pediu para confirmar se sobra espaço para as chaves que
+CONTINUAM nesse documento, já que o webhook ainda grava diagnóstico
+(`whatsappWebhookLog`) ali. Duas coisas foram corrigidas/criadas para
+responder isso sem tocar em produção:
+
+- **O diagnóstico de tamanho (`/api/whatsapp/diagnostics` →
+  `firestoreBackup`) media o tamanho ERRADO.** `getFirestoreStoreSizeInfo`
+  calculava o tamanho a partir do store local inteiro, que ainda carrega
+  `attendances`/`agentChats` para servir a UI — mas essas duas chaves nunca
+  mais são escritas em `appState/main` desde o corte para coleções (ver
+  `persistStoreKeysTransactionally`). Isso superestimava o tamanho real do
+  documento. **Corrigido:** agora mede só as chaves que de fato vão para
+  `appState/main` (`nextSequence`, `materials`, `settings`, `juliaData`,
+  `officeData`, `backgroundTasks`, `clients`, `whatsappWebhookLog`) e inclui
+  um novo campo `keyBreakdown` (bytes por chave, maior primeiro) na mesma
+  resposta — permite ver ao vivo, em Configurações, o que está ocupando o
+  espaço, sem adivinhar.
+- **Novo script `migrations/inspect-main-doc-size.ts`** — só leitura, roda
+  contra o arquivo JSON do backup já baixado (Passo 1), sem credencial nem
+  rede: mostra a mesma quebra por chave e, principalmente, calcula quanto
+  sobraria em `appState/main` se `attendances`/`agentChats` fossem removidos
+  por completo. Rodado contra o backup sintético local disponível nesta
+  sessão (não o de produção — essa conferência real fica para quem rodar o
+  comando abaixo com o backup verdadeiro já baixado no Passo 1):
+  ```bash
+  npx tsx migrations/inspect-main-doc-size.ts --file=$HOME/backups/castros/appstate_main_backup_AAAAMMDDThhmmss.json
+  ```
+  **Honestamente, não tenho o arquivo de backup real de produção disponível
+  nesta sessão** (foi baixado no Cloud Shell do usuário, uma máquina
+  diferente desta) — por isso não calculei a quebra exata da produção real.
+  O que sei com certeza, a partir do próprio resumo que o
+  `backup-production.ts` já imprimiu no Passo 1 desta sessão: o documento
+  real tinha 1.064.240 bytes, **0 atendimentos e 23 mensagens pequenas** —
+  então a soma de `attendances`+`agentChats` ali é necessariamente pequena
+  (poucos KB, não centenas), e o restante (as chaves que continuam depois do
+  corte) já é responsável pela quase totalidade dos 1.064.240 bytes. **Rodar
+  o comando acima com o backup real é o próximo passo concreto antes de
+  confiar que o corte para coleções, por si só, resolve o limite de
+  tamanho** — o script aponta explicitamente um `ALERTA` se o que sobra
+  depois de remover `attendances`/`agentChats` ainda ocupar mais de 80% do
+  limite.
 
 ## Ordem do procedimento
 
@@ -149,10 +277,14 @@ curl -s "https://castros-interiores-377257663620.southamerica-east1.run.app/api/
   | python3 -m json.tool
 ```
 
-Olhar `firestoreBackup.bytes`, `firestoreBackup.percentUsed` e
-`firestoreBackup.critical`. Última medição conhecida (09/11/2026, antes
-desta sessão): 1.045.502 bytes (99,7%) — já acima do limiar crítico
-(1.030.000).
+Olhar `firestoreBackup.bytes`, `firestoreBackup.percentUsed`,
+`firestoreBackup.critical` e `firestoreBackup.keyBreakdown` (novo nesta
+revisão — bytes por chave, maior primeiro; só mede as chaves que de fato
+continuam em `appState/main` depois do corte para coleções, ver seção
+"Espaço restante em appState/main" acima). Última medição conhecida
+(09/11/2026, antes desta sessão): 1.045.502 bytes (99,7%) — já acima do
+limiar crítico (1.030.000); o backup do Passo 1 desta sessão, pouco depois,
+já media 1.064.240 bytes (101,5%) com 0 atendimentos.
 
 Diferente de uma versão anterior deste documento, este número **não decide
 mais** se a migração do Passo 4 é necessária — ela passou a ser obrigatória
@@ -608,6 +740,16 @@ o sistema para uso normal.
   contra o emulador oficial nesta revisão (ver "O que foi testado" no
   topo), incluindo concorrência real — mas com dados sintéticos pequenos,
   não o volume de produção.
+- **NÃO RESOLVIDA — risco de tamanho de `appState/main`**: ver a seção
+  "Espaço restante em appState/main" acima. O corte para coleções impede
+  `attendances`/`agentChats` de crescerem ali, mas o backup real já mostrou
+  o documento em 101,5% do limite com 0 atendimentos — ou seja, outra(s)
+  chave(s) (`materials`/`juliaData`/`clients`/`officeData` são as
+  candidatas mais plausíveis) já ocupam a maior parte do espaço sozinhas.
+  **Rodar `migrations/inspect-main-doc-size.ts` contra o backup real,
+  confirmar qual chave é, e decidir se ela também precisa de sua própria
+  coleção (mesmo padrão já aplicado a attendances/agentChats) é trabalho
+  ainda necessário, não coberto por este procedimento.**
 - **PITR desativado** (confirmado nesta sessão) — sem recuperação automática
   por ponto no tempo se dados forem perdidos/corrompidos.
 - **Rotas da API sem autenticação própria no servidor** — observado

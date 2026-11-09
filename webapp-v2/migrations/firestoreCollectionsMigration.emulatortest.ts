@@ -180,12 +180,81 @@ async function testRetryAfterEmulatorBackUp() {
   if (failed > 0) process.exit(1);
 }
 
+async function testContentAndExtraDocumentDetectionOnRealEmulator() {
+  console.log('\n[E5] detecção de conteúdo divergente e documentos extras — mensagens e marcadores de dedup, emulador real');
+  const db = createEmulatorFirestore('demo-castros-migration');
+  const client = new RealFirestoreClient(db);
+  const chatCol = `${COLLECTION_CHAT_MESSAGE_PREFIX}carla_atendimento`;
+  await clearCollections(db, [COLLECTION_ATTENDANCES, chatCol, COLLECTION_WHATSAPP_DEDUP]);
+
+  const snapshot = buildSyntheticSnapshot('e5');
+  const real = await runMigration(client, snapshot, { dryRun: false });
+  assert(real.errors.length === 0, 'migração real (base para o E5) sem erros');
+
+  const cleanReport = await verifyMigrationIntegrity(client, snapshot);
+  assert(cleanReport.ok, 'integridade passa limpa antes de corromper nada (base para o E5)');
+
+  // 1. Corrompe de verdade o CONTEÚDO de uma mensagem já migrada (antes só a
+  //    existência era checada — isto confirma que o diff de campos da
+  //    mensagem dispara mesmo com o documento presente).
+  await db.collection(chatCol).doc('msg-1-e5').set({ ...snapshot.agentChats!.carla_atendimento![0], text: 'TEXTO TROCADO' });
+  const chatDiffReport = await verifyMigrationIntegrity(client, snapshot);
+  assert(!chatDiffReport.ok, 'detecta mensagem com conteúdo divergente (existe, mas campo errado)');
+  assert(
+    chatDiffReport.mismatches.some((m) => m.kind === 'chat_message_field_diff' && m.id === 'msg-1-e5'),
+    'o mismatch reportado é especificamente chat_message_field_diff para msg-1-e5'
+  );
+  // restaura para isolar o próximo cenário
+  await db.collection(chatCol).doc('msg-1-e5').set(snapshot.agentChats!.carla_atendimento![0]);
+
+  // 2. Corrompe o VÍNCULO de um marcador de dedup (attendanceId errado) —
+  //    antes só a existência do marcador era checada, deixando passar um
+  //    marcador apontando para o atendimento/mensagem ERRADOS.
+  const dedupSnapBefore = await db.collection(COLLECTION_WHATSAPP_DEDUP).doc('wamid-AAA-e5').get();
+  const dedupDataBefore = dedupSnapBefore.data() as Record<string, unknown>;
+  await db.collection(COLLECTION_WHATSAPP_DEDUP).doc('wamid-AAA-e5').set({ ...dedupDataBefore, attendanceId: 'att-ERRADO' });
+  const dedupDiffReport = await verifyMigrationIntegrity(client, snapshot);
+  assert(!dedupDiffReport.ok, 'detecta marcador de dedup com vínculo divergente');
+  assert(
+    dedupDiffReport.mismatches.some((m) => m.kind === 'dedup_marker_field_diff' && m.id === 'wamid-AAA-e5'),
+    'o mismatch reportado é especificamente dedup_marker_field_diff para wamid-AAA-e5'
+  );
+  await db.collection(COLLECTION_WHATSAPP_DEDUP).doc('wamid-AAA-e5').set(dedupDataBefore);
+
+  // 3. Documento extra (órfão) na coleção de MENSAGENS de uma mesa — não
+  //    presente em nenhum snapshot verificado (antes só attendances_v2 era
+  //    checada para extras).
+  await db.collection(chatCol).doc('msg-ORFA-e5').set({ id: 'msg-ORFA-e5', externalChannel: 'whatsapp', text: 'mensagem órfã' });
+  const chatExtraReport = await verifyMigrationIntegrity(client, snapshot);
+  assert(!chatExtraReport.ok, 'detecta mensagem extra/órfã na coleção de mensagens da mesa');
+  assert(
+    chatExtraReport.mismatches.some((m) => m.kind === 'extra_document_in_new_collection' && m.id === 'msg-ORFA-e5'),
+    'o mismatch reportado é extra_document_in_new_collection para msg-ORFA-e5'
+  );
+  await db.collection(chatCol).doc('msg-ORFA-e5').delete();
+
+  // 4. Documento extra (órfão) na coleção de DEDUP.
+  await db.collection(COLLECTION_WHATSAPP_DEDUP).doc('wamid-ORFAO-e5').set({ deskId: 'carla_atendimento', chatMessageId: 'msg-x' });
+  const dedupExtraReport = await verifyMigrationIntegrity(client, snapshot);
+  assert(!dedupExtraReport.ok, 'detecta marcador de dedup extra/órfão');
+  assert(
+    dedupExtraReport.mismatches.some((m) => m.kind === 'extra_document_in_new_collection' && m.id === 'wamid-ORFAO-e5'),
+    'o mismatch reportado é extra_document_in_new_collection para wamid-ORFAO-e5'
+  );
+  await db.collection(COLLECTION_WHATSAPP_DEDUP).doc('wamid-ORFAO-e5').delete();
+
+  // Confirma que, depois de desfazer tudo, a integridade volta a passar limpa.
+  const finalReport = await verifyMigrationIntegrity(client, snapshot);
+  assert(finalReport.ok, 'depois de desfazer as 4 corrupções, integridade volta a passar limpa');
+}
+
 async function main() {
   const phase = process.argv[2] || 'core';
   if (phase === 'core') {
     await testMigrationAndIntegrityOnRealEmulator();
     await testRecoveryOnRealEmulator();
     await testConcurrencyOnRealEmulator();
+    await testContentAndExtraDocumentDetectionOnRealEmulator();
     console.log(`\n${passed} passaram, ${failed} falharam.`);
     if (failed > 0) process.exit(1);
     return;

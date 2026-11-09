@@ -2610,20 +2610,61 @@ const FIRESTORE_SIZE_WARNING_THRESHOLD = 900_000;
 // isso, por isso este segundo nível.
 const FIRESTORE_SIZE_CRITICAL_THRESHOLD = 1_030_000;
 
+// Chaves que REALMENTE continuam sendo gravadas em appState/main desde o
+// corte para coleções por entidade (ver persistStoreKeysTransactionally e o
+// comentário acima dela) — `attendances`/`agentChats` saíram de verdade para
+// attendances_v2/agentChats_v2_*, nunca mais escritos neste documento único.
+// Medir o tamanho usando o store local inteiro (que ainda carrega
+// attendances/agentChats para servir a UI) sobrestimaria o documento real —
+// ver DEPLOY_WHATSAPP_DURABILITY_FIX.md, seção "Espaço restante em
+// appState/main", para o porquê disto importar de verdade (o documento real
+// em produção já estava perto do limite com 0 atendimentos).
+const FIRESTORE_MAIN_DOC_KEYS: Array<keyof PersistentStore> = [
+  'nextSequence',
+  'materials',
+  'settings',
+  'juliaData',
+  'officeData',
+  'backgroundTasks',
+  'clients',
+  'whatsappWebhookLog',
+];
+
+function buildFirestoreMainDocShape(store: PersistentStore): Record<string, unknown> {
+  const shape: Record<string, unknown> = { savedAt: new Date().toISOString() };
+  for (const key of FIRESTORE_MAIN_DOC_KEYS) {
+    shape[key] = store[key];
+  }
+  return shape;
+}
+
+// Quebra por chave do que de fato vai para appState/main — nunca
+// attendances/agentChats (ver FIRESTORE_MAIN_DOC_KEYS acima). Permite
+// responder "o que está ocupando o espaço" sem precisar adivinhar: a chave
+// com mais bytes aparece primeiro.
+function getFirestoreMainDocKeyBreakdown(store: PersistentStore): Array<{ key: string; bytes: number }> {
+  return FIRESTORE_MAIN_DOC_KEYS.map((key) => ({
+    key,
+    bytes: Buffer.byteLength(JSON.stringify(store[key] ?? null), 'utf-8'),
+  })).sort((a, b) => b.bytes - a.bytes);
+}
+
 function getFirestoreStoreSizeInfo(store: PersistentStore): {
   bytes: number;
   limitBytes: number;
   percentUsed: number;
   nearLimit: boolean;
   critical: boolean;
+  keyBreakdown: Array<{ key: string; bytes: number }>;
 } {
-  const bytes = Buffer.byteLength(JSON.stringify({ ...store, savedAt: new Date().toISOString() }), 'utf-8');
+  const bytes = Buffer.byteLength(JSON.stringify(buildFirestoreMainDocShape(store)), 'utf-8');
   return {
     bytes,
     limitBytes: FIRESTORE_DOCUMENT_BYTE_LIMIT,
     percentUsed: Math.round((bytes / FIRESTORE_DOCUMENT_BYTE_LIMIT) * 1000) / 10,
     nearLimit: bytes > FIRESTORE_SIZE_WARNING_THRESHOLD,
     critical: bytes > FIRESTORE_SIZE_CRITICAL_THRESHOLD,
+    keyBreakdown: getFirestoreMainDocKeyBreakdown(store),
   };
 }
 
@@ -2861,20 +2902,41 @@ async function claimWhatsAppMessagesTransactionally(
   const attendancesCol = db.collection(COLLECTION_ATTENDANCES);
   const chatCol = db.collection(`${COLLECTION_CHAT_MESSAGE_PREFIX}carla_atendimento`);
   const dedupCol = db.collection(COLLECTION_WHATSAPP_DEDUP);
+  const storeDocRef = db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC);
 
   const run = async (): Promise<WhatsAppTransactionResult> => {
-    const localStore = loadStore(); // só para as OUTRAS chaves (settings, juliaData, etc.)
-
-    // Transação única: lê atendimentos + existência de cada marcador de
-    // dedup candidato, decide em memória o que processar, e grava
-    // atendimentos + mensagens + marcadores de dedup juntos. Nenhuma
-    // escrita acontece fora desta transação — ver comentário acima.
+    // Transação única: lê atendimentos + backgroundTasks frescos do
+    // documento único + existência de cada marcador de dedup candidato,
+    // decide em memória o que processar, e grava atendimentos, mensagens,
+    // marcadores de dedup E a(s) tarefa(s) automática(s) nova(s) (ex.:
+    // resposta automática) juntos. Nenhuma escrita acontece fora desta
+    // transação — ver comentário acima. `backgroundTasks` é lido fresco do
+    // Firestore (não do disco local) pelo mesmo motivo que `attendances`
+    // já era: a checagem de idempotência de createBackgroundTask() só vale
+    // alguma coisa contra o estado mais atual possível, não contra um cache
+    // local potencialmente desatualizado entre instâncias.
     const txResult = await db.runTransaction(async (tx) => {
       // 1. LEITURAS primeiro (exigência do Firestore: toda leitura de uma
       //    transação precisa vir antes de qualquer escrita).
       const freshSnap = await tx.get(attendancesCol);
       const freshAttendances = freshSnap.docs.map((d) => d.data() as unknown as AttendanceRecord);
       const attendanceIdsBefore = new Set(freshAttendances.map((a) => a.id));
+
+      // `settings`/`juliaData` (usados por handleInboundWhatsAppMessage para
+      // resposta automática e casamento de campanha) vêm do disco local via
+      // loadStore() — igual ao comportamento original — e NÃO do documento
+      // único: o documento pode genuinamente não ter essas chaves ainda
+      // (ex.: ainda não existe, ou nenhuma rota de /api/settings rodou desde
+      // o corte para coleções), e workingStore.settings precisa sempre
+      // existir (handleInboundWhatsAppMessage lê store.settings.carlaAutoReply
+      // sem checagem de undefined). loadStore() sempre aplica os defaults.
+      const localStore = loadStore();
+
+      const storeDocSnap = await tx.get(storeDocRef);
+      const storeDocData = (storeDocSnap.exists ? storeDocSnap.data() : {}) as Record<string, unknown>;
+      const freshBackgroundTasks: BackgroundTask[] = Array.isArray(storeDocData.backgroundTasks)
+        ? (storeDocData.backgroundTasks as BackgroundTask[])
+        : [];
 
       const candidateExternalIds = incomingMessages
         .map((item) => item.msg.id as string | undefined)
@@ -2894,6 +2956,7 @@ async function claimWhatsAppMessagesTransactionally(
         ...localStore,
         attendances: freshAttendances,
         agentChats: workingAgentChats,
+        backgroundTasks: [...freshBackgroundTasks],
       };
 
       let messagesProcessed = 0;
@@ -2936,13 +2999,14 @@ async function claimWhatsAppMessagesTransactionally(
         }
       }
 
-      // 3. ESCRITAS — atendimentos, mensagens e marcadores de dedup, todos
-      //    na mesma transação. tx.create() falha a transação INTEIRA se o
-      //    marcador já existir no momento do commit (proteção extra contra
-      //    uma corrida que a leitura do passo 1 não pegou) — se isso
-      //    acontecer, NADA aqui é gravado (nem atendimento, nem mensagem,
-      //    nem marcador) e o Firestore re-tenta a transação inteira
-      //    automaticamente, desta vez vendo o marcador já existente.
+      // 3. ESCRITAS — atendimentos, mensagens, marcadores de dedup e
+      //    backgroundTasks novas, todos na mesma transação. tx.create()
+      //    falha a transação INTEIRA se o marcador já existir no momento do
+      //    commit (proteção extra contra uma corrida que a leitura do passo
+      //    1 não pegou) — se isso acontecer, NADA aqui é gravado (nem
+      //    atendimento, nem mensagem, nem marcador, nem tarefa) e o
+      //    Firestore re-tenta a transação inteira automaticamente, desta
+      //    vez vendo o marcador já existente.
       for (const a of workingStore.attendances) {
         if (attendanceIdsTouched.has(a.id)) {
           // merge:true aqui é redundante com o objeto inteiro (não é um
@@ -2969,21 +3033,65 @@ async function claimWhatsAppMessagesTransactionally(
           chatMessageId: d.chatMessageId,
         });
       }
+      const finalBackgroundTasks = workingStore.backgroundTasks || [];
+      if (finalBackgroundTasks.length !== freshBackgroundTasks.length) {
+        // Só a chave backgroundTasks do documento único — nunca settings,
+        // juliaData, etc., que não foram lidos nesta transação e não devem
+        // ser tocados por ela (outras rotas cuidam deles pelo caminho
+        // genérico de saveStore()).
+        tx.set(storeDocRef, { backgroundTasks: finalBackgroundTasks }, { merge: true });
+      }
 
       return {
         messagesProcessed,
         messagesDuplicated,
         attendanceIdsTouched: Array.from(attendanceIdsTouched),
-        workingStore,
+        touchedAttendances: workingStore.attendances.filter((a) => attendanceIdsTouched.has(a.id)),
+        newMessages,
+        backgroundTasksChanged: finalBackgroundTasks.length !== freshBackgroundTasks.length,
+        backgroundTasks: finalBackgroundTasks,
       };
     });
+
+    // Cache local: mescla o que esta chamada mudou (atendimentos tocados,
+    // mensagens novas, backgroundTasks) por CIMA de uma leitura FRESCA do
+    // disco local (feita só agora, depois do commit — não a capturada antes
+    // da transação, que poderia já estar desatualizada quando a transação
+    // finalmente commita, inclusive depois de re-tentativas). Precisa ser
+    // assim e não um "mergedStore" pronto vindo de dentro da transação:
+    // `workingStore.agentChats` dentro da transação só tem as mensagens
+    // NOVAS desta chamada (não o histórico nem as outras mesas) — escrever
+    // isso direto por cima do disco local apagaria o cache de toda mesa que
+    // não fosse carla_atendimento, e todo histórico de mensagens antigas,
+    // a cada webhook novo ou duplicado. Achado real desta revisão.
+    const freshLocal = loadStore();
+    const mergedAttendances = [...freshLocal.attendances];
+    const attIndexById = new Map(mergedAttendances.map((a, i) => [a.id, i] as const));
+    for (const a of txResult.touchedAttendances) {
+      const idx = attIndexById.get(a.id);
+      if (idx !== undefined) mergedAttendances[idx] = a;
+      else mergedAttendances.push(a);
+    }
+    const mergedAgentChats: Record<string, AgentChatMessage[]> = { ...(freshLocal.agentChats || {}) };
+    const existingCarla = mergedAgentChats['carla_atendimento'] || [];
+    const existingCarlaIds = new Set(existingCarla.map((m) => m.id));
+    mergedAgentChats['carla_atendimento'] = [
+      ...existingCarla,
+      ...txResult.newMessages.filter((m) => !existingCarlaIds.has(m.id)),
+    ];
+    const mergedStore: PersistentStore = {
+      ...freshLocal,
+      attendances: mergedAttendances,
+      agentChats: mergedAgentChats,
+      backgroundTasks: txResult.backgroundTasksChanged ? txResult.backgroundTasks : freshLocal.backgroundTasks,
+    };
 
     return {
       ok: true,
       messagesProcessed: txResult.messagesProcessed,
       messagesDuplicated: txResult.messagesDuplicated,
       attendanceIdsTouched: txResult.attendanceIdsTouched,
-      mergedStore: txResult.workingStore,
+      mergedStore,
     };
   };
 
@@ -3090,9 +3198,16 @@ async function restoreStoreFromFirestoreIfNeeded(): Promise<void> {
         `${restoredAttendances.length} atendimento(s) e ${Object.keys(agentChats).length} mesa(s) de conversa das coleções).`
     );
   } catch (err) {
-    console.error(
-      '[Firestore Sync] Falha ao restaurar o estado do Firestore na inicialização:',
-      err instanceof Error ? err.message : err
+    // Antes, isto só logava e retornava — a inicialização seguia normalmente
+    // SEM nenhum arquivo local, e o primeiro loadStore() criaria o store
+    // PADRÃO (com os dois atendimentos de demonstração) e o gravaria em
+    // produção sem ninguém perceber. Uma falha de restauração de verdade
+    // (rede, permissão, projeto errado) tem que impedir a inicialização
+    // operacional, não ser tratada como "nada para restaurar" — por isso
+    // isto agora relança, e quem chama (startServer) não deixa o processo
+    // subir para servir tráfego nesse estado.
+    throw new Error(
+      `Falha ao restaurar o estado do Firestore na inicialização: ${err instanceof Error ? err.message : String(err)}`
     );
   }
 }
@@ -3976,7 +4091,23 @@ async function startServer() {
   // (ex.: container recém-criado, sem volume persistente), recupera o último
   // estado salvo no Firestore. Sem isso, qualquer redeploy sem disco permanente
   // perderia os dados do mesmo jeito que o sistema anterior perdia na VPS.
-  await restoreStoreFromFirestoreIfNeeded();
+  //
+  // Uma falha aqui é fatal de propósito: o processo encerra ANTES de abrir a
+  // porta, nunca chega a aceitar tráfego nem a gravar nada. A alternativa
+  // (seguir em frente) deixaria o primeiro loadStore() criar o store PADRÃO
+  // de demonstração e gravá-lo em produção como se fosse o estado real — o
+  // Cloud Run reinicia o contêiner automaticamente após uma falha de start,
+  // então isto se comporta como uma reentrega seria, não como downtime
+  // permanente, desde que a causa (rede/permissão/projeto) seja corrigida.
+  try {
+    await restoreStoreFromFirestoreIfNeeded();
+  } catch (err) {
+    console.error(
+      '[Firestore Sync] FATAL — inicialização abortada, nenhuma rota vai aceitar tráfego:',
+      err instanceof Error ? err.message : err
+    );
+    process.exit(1);
+  }
 
   const app = express();
   app.use(
