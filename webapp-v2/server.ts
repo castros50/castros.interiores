@@ -1826,18 +1826,29 @@ function saveStore(store: PersistentStore): void {
   void persistStoreToFirestore(store);
 }
 
+// Em produção, observamos o backup do Firestore ficar mais de uma hora sem
+// nenhum "savedAt" novo, sem nenhuma falha aparecer no log — nem confirmação
+// de sucesso nem de erro. Isso é consistente com a chamada ao Firestore
+// nunca settling (nem resolve, nem rejeita) em vez de falhar rápido — bem
+// provável justamente pelo tamanho do documento estar praticamente no limite
+// (ver FIRESTORE_SIZE_CRITICAL_THRESHOLD). Sem um limite de tempo explícito,
+// aguardar essa chamada no webhook (ver abaixo) poderia travar a resposta
+// indefinidamente, o que é pior que o problema original — por isso o
+// Promise.race com este timeout.
+const FIRESTORE_SYNC_AWAIT_TIMEOUT_MS = 8_000;
+
 // Mesma gravação local de saveStore(), mas AGUARDA a sincronização com o
-// Firestore terminar antes de retornar, e devolve o resultado de cada etapa
-// em vez de void — quem chama precisa saber se a gravação local (a única que
-// garante que o dado não foi perdido) realmente aconteceu, para nunca
-// responder sucesso por uma mensagem que não foi persistida em lugar nenhum.
-// Use isto (nunca saveStore()) em qualquer rota que responda rápido e
-// sinalize sucesso pro chamador externo antes de terminar de processar (ex.:
-// webhook) — no Cloud Run, com alocação de CPU só durante o processamento da
-// requisição, qualquer tarefa "em segundo plano" iniciada depois que a
-// resposta HTTP já foi enviada corre o risco de nunca terminar, porque a
-// instância pode ter a CPU cortada assim que a requisição é considerada
-// concluída.
+// Firestore terminar (ou expirar) antes de retornar, e devolve o resultado
+// de cada etapa em vez de void — quem chama precisa saber se a gravação
+// local (a única que garante que o dado não foi perdido) realmente
+// aconteceu, para nunca responder sucesso por uma mensagem que não foi
+// persistida em lugar nenhum. Use isto (nunca saveStore()) em qualquer rota
+// que responda rápido e sinalize sucesso pro chamador externo antes de
+// terminar de processar (ex.: webhook) — no Cloud Run, com alocação de CPU
+// só durante o processamento da requisição, qualquer tarefa "em segundo
+// plano" iniciada depois que a resposta HTTP já foi enviada corre o risco de
+// nunca terminar, porque a instância pode ter a CPU cortada assim que a
+// requisição é considerada concluída.
 async function saveStoreAwaitingFirestoreSync(store: PersistentStore): Promise<{
   localWriteOk: boolean;
   localWriteError?: string;
@@ -1856,7 +1867,24 @@ async function saveStoreAwaitingFirestoreSync(store: PersistentStore): Promise<{
       localWriteError
     );
   }
-  const firestoreResult = await persistStoreToFirestore(store);
+  let timedOut = false;
+  const firestoreResult = await Promise.race([
+    persistStoreToFirestore(store),
+    new Promise<{ ok: boolean; errorMessage?: string }>((resolve) => {
+      setTimeout(() => {
+        timedOut = true;
+        resolve({
+          ok: false,
+          errorMessage: `Sem resposta do Firestore após ${FIRESTORE_SYNC_AWAIT_TIMEOUT_MS}ms — a chamada pode ainda terminar em segundo plano, mas deixou de bloquear a resposta.`,
+        });
+      }, FIRESTORE_SYNC_AWAIT_TIMEOUT_MS);
+    }),
+  ]);
+  if (timedOut) {
+    console.error(
+      `[Firestore Sync] Tempo limite de ${FIRESTORE_SYNC_AWAIT_TIMEOUT_MS}ms excedido aguardando a sincronização — seguindo sem bloquear a resposta.`
+    );
+  }
   return {
     localWriteOk,
     localWriteError,
