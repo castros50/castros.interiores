@@ -1804,7 +1804,7 @@ function loadStore(): PersistentStore {
   return initialStore;
 }
 
-function saveStore(store: PersistentStore): void {
+function writeStoreToLocalDisk(store: PersistentStore): void {
   fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), 'utf-8');
   if (store.juliaData) {
     try {
@@ -1817,9 +1817,26 @@ function saveStore(store: PersistentStore): void {
       // ignore backup write error
     }
   }
+}
+
+function saveStore(store: PersistentStore): void {
+  writeStoreToLocalDisk(store);
   // Sincroniza com o Firestore em segundo plano — não bloqueia a resposta da rota
   // que chamou saveStore(), mas garante que o dado sobreviva a um redeploy sem disco.
-  persistStoreToFirestore(store);
+  void persistStoreToFirestore(store);
+}
+
+// Mesma gravação local de saveStore(), mas AGUARDA a sincronização com o
+// Firestore terminar antes de retornar. Use isto (nunca saveStore()) em
+// qualquer rota que responda rápido e sinalize sucesso pro chamador externo
+// antes de terminar de processar (ex.: webhook) — no Cloud Run, com alocação
+// de CPU só durante o processamento da requisição, qualquer tarefa "em
+// segundo plano" iniciada depois que a resposta HTTP já foi enviada corre o
+// risco de nunca terminar, porque a instância pode ter a CPU cortada assim
+// que a requisição é considerada concluída.
+async function saveStoreAwaitingFirestoreSync(store: PersistentStore): Promise<void> {
+  writeStoreToLocalDisk(store);
+  await persistStoreToFirestore(store);
 }
 
 // ----------------------------------------------------------------------------
@@ -2402,18 +2419,44 @@ const inFlightGeminiRequests = new Set<string>();
 const FIRESTORE_STORE_COLLECTION = 'appState';
 const FIRESTORE_STORE_DOC = 'main';
 
-function persistStoreToFirestore(store: PersistentStore): void {
+// Tamanho máximo de um documento do Firestore. Ultrapassar isso faz o .set()
+// abaixo ser rejeitado (erro "entity too large"), silenciosamente capturado
+// pelo .catch() — ou seja, o backup para de funcionar sem travar nenhuma rota,
+// mas também sem avisar ninguém, a não ser pelo log do servidor. Por isso o
+// tamanho atual é devolvido por getFirestoreStoreSizeInfo() para aparecer no
+// diagnóstico do WhatsApp em Configurações.
+const FIRESTORE_DOCUMENT_BYTE_LIMIT = 1_048_576;
+const FIRESTORE_SIZE_WARNING_THRESHOLD = 900_000;
+
+function getFirestoreStoreSizeInfo(store: PersistentStore): {
+  bytes: number;
+  limitBytes: number;
+  percentUsed: number;
+  nearLimit: boolean;
+} {
+  const bytes = Buffer.byteLength(JSON.stringify({ ...store, savedAt: new Date().toISOString() }), 'utf-8');
+  return {
+    bytes,
+    limitBytes: FIRESTORE_DOCUMENT_BYTE_LIMIT,
+    percentUsed: Math.round((bytes / FIRESTORE_DOCUMENT_BYTE_LIMIT) * 1000) / 10,
+    nearLimit: bytes > FIRESTORE_SIZE_WARNING_THRESHOLD,
+  };
+}
+
+function persistStoreToFirestore(store: PersistentStore): Promise<void> {
   const payload = { ...store, savedAt: new Date().toISOString() };
   const json = JSON.stringify(payload);
-  if (json.length > 900_000) {
+  if (json.length > FIRESTORE_SIZE_WARNING_THRESHOLD) {
     console.warn(
-      `[Firestore Sync] O estado está com ${json.length} bytes, perto do limite de 1MB por documento do Firestore. Se continuar crescendo, será necessário migrar para coleções separadas.`
+      `[Firestore Sync] O estado está com ${json.length} bytes, perto do limite de ${FIRESTORE_DOCUMENT_BYTE_LIMIT} bytes por documento do Firestore. Se continuar crescendo, será necessário migrar para coleções separadas — acima do limite, o backup passa a falhar silenciosamente (capturado abaixo, só visível no log).`
     );
   }
   try {
-    db.collection(FIRESTORE_STORE_COLLECTION)
+    return db
+      .collection(FIRESTORE_STORE_COLLECTION)
       .doc(FIRESTORE_STORE_DOC)
       .set(payload)
+      .then(() => undefined)
       .catch((err) => {
         console.error(
           '[Firestore Sync] Falha ao sincronizar o estado com o Firestore:',
@@ -2428,6 +2471,7 @@ function persistStoreToFirestore(store: PersistentStore): void {
       '[Firestore Sync] Falha síncrona ao preparar a sincronização com o Firestore:',
       err instanceof Error ? err.message : err
     );
+    return Promise.resolve();
   }
 }
 
@@ -6307,7 +6351,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         attendanceIdsTouched: [],
         errorMessage: 'WHATSAPP_APP_SECRET não configurada no servidor — evento rejeitado sem verificar assinatura.',
       });
-      saveStore(store);
+      await saveStoreAwaitingFirestoreSync(store);
       res.sendStatus(401);
       return;
     }
@@ -6335,16 +6379,19 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         attendanceIdsTouched: [],
         errorMessage: 'Assinatura X-Hub-Signature-256 ausente ou não confere com WHATSAPP_APP_SECRET.',
       });
-      saveStore(store);
+      await saveStoreAwaitingFirestoreSync(store);
       res.sendStatus(401);
       return;
     }
 
-    // Sempre responde 200 rapidamente a partir daqui (padrão exigido pela Meta
-    // após a assinatura ser validada) mesmo se o processamento interno falhar —
-    // o erro fica registrado no diagnóstico e no log do servidor.
-    res.sendStatus(200);
-
+    // Processa e grava ANTES de responder (ver saveStoreAwaitingFirestoreSync
+    // acima). Antes, a rota respondia 200 logo depois de validar a assinatura e
+    // só então processava/gravava "em segundo plano" — no Cloud Run (CPU
+    // alocada só durante o processamento da requisição), isso deixa a gravação
+    // local e a sincronização com o Firestore reféns de a instância continuar
+    // com CPU depois de a resposta já ter sido enviada, o que não é garantido.
+    // A Meta tolera alguns segundos de resposta ao webhook antes de reentregar,
+    // então responder só depois de persistir é seguro e muito mais confiável.
     const store = loadStore();
     let messagesFound = 0;
     let messagesProcessed = 0;
@@ -6357,7 +6404,6 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         changes?: Array<{ value?: Record<string, unknown> }>;
       }>;
       entryCount = entries.length;
-      let changed = false;
       for (const entry of entries) {
         for (const change of entry.changes || []) {
           const value = (change.value || {}) as {
@@ -6370,14 +6416,12 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
             if (result.status === 'processed') {
               messagesProcessed++;
               if (result.attendanceId) attendanceIdsTouched.add(result.attendanceId);
-              changed = true;
             } else if (result.status === 'duplicate') {
               messagesDuplicated++;
             }
           }
         }
       }
-      if (changed) saveStore(store);
     } catch (err) {
       errorMessage = err instanceof Error ? err.message : String(err);
       console.error('[WhatsApp Webhook] Erro ao processar payload recebido:', err);
@@ -6392,10 +6436,13 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       attendanceIdsTouched: Array.from(attendanceIdsTouched),
       errorMessage,
     });
-    saveStore(store);
+    await saveStoreAwaitingFirestoreSync(store);
+    res.sendStatus(200);
 
     // Atualiza a mesa da Carla (e qualquer outro dispositivo já aberto) ao vivo —
-    // antes, a mensagem era salva mas só aparecia depois de um F5 manual.
+    // antes, a mensagem era salva mas só aparecia depois de um F5 manual. Isto
+    // acontece depois da resposta por ser só uma notificação best-effort — o
+    // dado em si já está persistido com segurança no passo acima.
     for (const attendanceId of attendanceIdsTouched) {
       const attendance = store.attendances.find((a) => a.id === attendanceId);
       if (attendance) {
@@ -6427,6 +6474,10 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       integrationStatus: store.settings.integrations?.whatsapp || null,
       lastEvent: log[0] || null,
       recentEvents: log.slice(0, 10),
+      // Acima do limite, o backup no Firestore (restaurado quando a instância
+      // do Cloud Run sobe sem disco local) passa a falhar silenciosamente —
+      // ver persistStoreToFirestore(). nearLimit vira o aviso visível aqui.
+      firestoreBackup: getFirestoreStoreSizeInfo(store),
     });
   });
 

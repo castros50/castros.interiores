@@ -217,6 +217,7 @@ export default function App() {
       messagesDuplicated: number;
       errorMessage?: string;
     }>;
+    firestoreBackup?: { bytes: number; limitBytes: number; percentUsed: number; nearLimit: boolean };
   } | null>(null);
   const [isVerifyingWhatsApp, setIsVerifyingWhatsApp] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -2671,6 +2672,30 @@ export default function App() {
                           </p>
                         )}
                       </div>
+
+                      {whatsappDiagnostics.firestoreBackup && (
+                        <div className="pt-2 border-t border-[#E5DEC9]">
+                          <p className="font-semibold text-[#181512] mb-1">Backup no Firestore (restaurado quando a instância sobe sem disco local)</p>
+                          <p
+                            className={
+                              whatsappDiagnostics.firestoreBackup.nearLimit
+                                ? 'text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1.5'
+                                : 'text-[#57534E]'
+                            }
+                          >
+                            {whatsappDiagnostics.firestoreBackup.bytes.toLocaleString('pt-BR')} de{' '}
+                            {whatsappDiagnostics.firestoreBackup.limitBytes.toLocaleString('pt-BR')} bytes usados (
+                            {whatsappDiagnostics.firestoreBackup.percentUsed}% do limite por documento do Firestore)
+                            {whatsappDiagnostics.firestoreBackup.nearLimit && (
+                              <>
+                                {' '}— próximo do limite. Acima dele, o backup passa a falhar silenciosamente (só visível
+                                no log do servidor) e um redeploy ou reinício sem disco local perde os dados mais
+                                recentes. É necessário migrar para coleções separadas em breve.
+                              </>
+                            )}
+                          </p>
+                        </div>
+                      )}
 
                       {whatsappDiagnostics.recentEvents.length > 1 && (
                         <details className="pt-1">
