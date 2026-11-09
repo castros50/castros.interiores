@@ -1837,38 +1837,14 @@ function saveStore(store: PersistentStore): void {
 // Promise.race com este timeout.
 const FIRESTORE_SYNC_AWAIT_TIMEOUT_MS = 8_000;
 
-// Mesma gravação local de saveStore(), mas AGUARDA a sincronização com o
-// Firestore terminar (ou expirar) antes de retornar, e devolve o resultado
-// de cada etapa em vez de void — quem chama precisa saber se a gravação
-// local (a única que garante que o dado não foi perdido) realmente
-// aconteceu, para nunca responder sucesso por uma mensagem que não foi
-// persistida em lugar nenhum. Use isto (nunca saveStore()) em qualquer rota
-// que responda rápido e sinalize sucesso pro chamador externo antes de
-// terminar de processar (ex.: webhook) — no Cloud Run, com alocação de CPU
-// só durante o processamento da requisição, qualquer tarefa "em segundo
-// plano" iniciada depois que a resposta HTTP já foi enviada corre o risco de
-// nunca terminar, porque a instância pode ter a CPU cortada assim que a
-// requisição é considerada concluída.
-async function saveStoreAwaitingFirestoreSync(store: PersistentStore): Promise<{
-  localWriteOk: boolean;
-  localWriteError?: string;
-  firestoreOk: boolean;
-  firestoreError?: string;
-}> {
-  let localWriteOk = true;
-  let localWriteError: string | undefined;
-  try {
-    writeStoreToLocalDisk(store);
-  } catch (err) {
-    localWriteOk = false;
-    localWriteError = err instanceof Error ? err.message : String(err);
-    console.error(
-      '[Store] Falha ao gravar o estado no disco local — nada foi persistido com segurança:',
-      localWriteError
-    );
-  }
+// Espera o Firestore responder (ou expirar) SEM gravar nada local ainda —
+// usado por persistStoreDurablyThenCache abaixo. Isolado aqui só para não
+// repetir o Promise.race em cada chamador.
+async function syncToFirestoreWithTimeout(
+  store: PersistentStore
+): Promise<{ ok: boolean; errorMessage?: string }> {
   let timedOut = false;
-  const firestoreResult = await Promise.race([
+  const result = await Promise.race([
     persistStoreToFirestore(store),
     new Promise<{ ok: boolean; errorMessage?: string }>((resolve) => {
       setTimeout(() => {
@@ -1885,12 +1861,43 @@ async function saveStoreAwaitingFirestoreSync(store: PersistentStore): Promise<{
       `[Firestore Sync] Tempo limite de ${FIRESTORE_SYNC_AWAIT_TIMEOUT_MS}ms excedido aguardando a sincronização — seguindo sem bloquear a resposta.`
     );
   }
-  return {
-    localWriteOk,
-    localWriteError,
-    firestoreOk: firestoreResult.ok,
-    firestoreError: firestoreResult.errorMessage,
-  };
+  return result;
+}
+
+// O disco local do Cloud Run é TEMPORÁRIO — não sobrevive a um redeploy, a
+// uma instância reciclada, nem é visível a outra instância. Por isso ele não
+// pode mais ser a base da decisão "responder sucesso": esta função só grava
+// localmente DEPOIS de confirmar que o Firestore (a única cópia durável que
+// este servidor tem) aceitou a gravação. Se o Firestore falhar ou não
+// responder a tempo, NADA é gravado localmente — a mutação em memória
+// (dedup marker, atendimento, tarefa de resposta automática) é descartada
+// inteira, exatamente como se a requisição nunca tivesse sido processada.
+// Isso é deliberado: um ID marcado como "concluído" só no disco local, sem
+// nunca ter chegado ao Firestore, bloquearia uma reentrega legítima da Meta
+// (o dedup acharia "já processado") mesmo sem nenhuma cópia durável do dado
+// em lugar nenhum — a mensagem seria perdida para sempre no primeiro
+// redeploy ou reciclagem de instância, da pior forma possível: calada.
+// Use isto (nunca saveStore()) em qualquer rota que precise confirmar
+// recebimento a um chamador externo com retentativa própria (ex.: webhook).
+async function persistStoreDurablyThenCache(
+  store: PersistentStore
+): Promise<{ ok: boolean; errorMessage?: string }> {
+  const firestoreResult = await syncToFirestoreWithTimeout(store);
+  if (!firestoreResult.ok) {
+    return firestoreResult;
+  }
+  try {
+    writeStoreToLocalDisk(store);
+  } catch (err) {
+    // O dado já está durável no Firestore — isto só deixa o CACHE local desta
+    // instância desatualizado até o próximo restart (que relê do Firestore).
+    // Não é perda de dado, por isso não reverte o `ok: true`.
+    console.error(
+      '[Store] Firestore confirmado, mas a cópia local (cache) falhou — sem perda de dado, mas esta instância ficará com cache desatualizado até reiniciar:',
+      err instanceof Error ? err.message : err
+    );
+  }
+  return { ok: true };
 }
 
 // ----------------------------------------------------------------------------
@@ -6401,6 +6408,10 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     // configuração ausente (ver getAnthropicApiKey/getGeminiApiKey): rejeita
     // explicitamente, nunca processa "no escuro".
     if (!appSecret) {
+      // Sem mensagem de cliente em jogo aqui (a chamada já é rejeitada) — o
+      // registro é só para diagnóstico, por isso gravação local best-effort
+      // (saveStore) é suficiente; não precisa esperar o Firestore para
+      // responder 401.
       const store = loadStore();
       recordWhatsAppWebhookEvent(store, {
         signatureStatus: 'rejeitado_sem_app_secret',
@@ -6411,7 +6422,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         attendanceIdsTouched: [],
         errorMessage: 'WHATSAPP_APP_SECRET não configurada no servidor — evento rejeitado sem verificar assinatura.',
       });
-      await saveStoreAwaitingFirestoreSync(store);
+      saveStore(store);
       res.sendStatus(401);
       return;
     }
@@ -6439,19 +6450,21 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         attendanceIdsTouched: [],
         errorMessage: 'Assinatura X-Hub-Signature-256 ausente ou não confere com WHATSAPP_APP_SECRET.',
       });
-      await saveStoreAwaitingFirestoreSync(store);
+      saveStore(store);
       res.sendStatus(401);
       return;
     }
 
-    // Processa e grava ANTES de responder (ver saveStoreAwaitingFirestoreSync
-    // acima). Antes, a rota respondia 200 logo depois de validar a assinatura e
-    // só então processava/gravava "em segundo plano" — no Cloud Run (CPU
-    // alocada só durante o processamento da requisição), isso deixa a gravação
-    // local e a sincronização com o Firestore reféns de a instância continuar
-    // com CPU depois de a resposta já ter sido enviada, o que não é garantido.
-    // A Meta tolera alguns segundos de resposta ao webhook antes de reentregar,
-    // então responder só depois de persistir é seguro e muito mais confiável.
+    // Processa em memória primeiro, mas só CONFIRMA (grava local + responde
+    // 200) depois que o Firestore aceitar a gravação (ver
+    // persistStoreDurablyThenCache). O disco local do Cloud Run é temporário
+    // — gravar só nele não é prova de que o dado sobrevive a um redeploy, a
+    // uma instância reciclada, ou que outra instância algum dia vai ver essa
+    // mensagem. Por isso a ordem muda: a mutação (dedup marker, atendimento,
+    // tarefa de resposta automática) só é commitada se e quando o Firestore
+    // confirmar; se falhar, ela é descartada por completo e a Meta reentrega
+    // depois — sem nenhum ID marcado como concluído bloqueando essa
+    // reentrega.
     const store = loadStore();
     let messagesFound = 0;
     let messagesProcessed = 0;
@@ -6496,37 +6509,43 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       attendanceIdsTouched: Array.from(attendanceIdsTouched),
       errorMessage,
     });
-    const saveResult = await saveStoreAwaitingFirestoreSync(store);
 
-    if (!saveResult.localWriteOk) {
-      // Nada foi persistido em lugar nenhum — nem no disco local (a única
-      // cópia síncrona e confiável que este servidor tem). Não existe
-      // "mensagem processada" sem isso: o objeto `store` mutado em memória
-      // morre com esta requisição (loadStore() relê o arquivo do zero na
-      // próxima chamada). Responder 200 aqui diria à Meta "não precisa
-      // reentregar", perdendo a mensagem de vez — por isso HTTP 500: é o
-      // único jeito de pedir reentrega depois, sem fingir sucesso.
+    const durableResult = await persistStoreDurablyThenCache(store);
+
+    if (!durableResult.ok) {
+      // Nada do que foi processado acima (mensagens, atendimentos, a tarefa
+      // de resposta automática) foi gravado em lugar nenhum — nem localmente.
+      // `store` morre com esta requisição. Responder 200 aqui diria à Meta
+      // "não precisa reentregar" sobre algo que não existe em nenhuma cópia
+      // durável; por isso HTTP 503, para que a Meta tente de novo depois.
+      //
+      // Ainda registramos ISSO no diagnóstico — mas numa cópia relida do
+      // disco (sem a mutação da mensagem desta requisição), para que o
+      // evento de falha fique visível sem deixar nenhum dedup marker
+      // "pendurado" localmente sem backup real (o que bloquearia a
+      // reentrega legítima vendo "já processado" quando, na verdade, nada
+      // sobrevive a esta instância).
       console.error(
-        `[WhatsApp Webhook] Gravação local falhou (${saveResult.localWriteError}) — respondendo erro para a Meta reentregar, nenhuma mensagem foi marcada como processada.`
+        `[WhatsApp Webhook] Persistência durável falhou (${durableResult.errorMessage}) — respondendo erro para a Meta reentregar; nenhuma mensagem foi marcada como concluída.`
       );
-      res.sendStatus(500);
-      return;
-    }
-
-    if (!saveResult.firestoreOk) {
-      // O disco local está seguro (resposta 200 abaixo é honesta), mas o
-      // backup no Firestore falhou — registra isso no mesmo evento para
-      // aparecer no diagnóstico. É best-effort: se esta segunda gravação
-      // falhar também, o dado principal já está salvo mesmo assim.
-      const lastEntry = store.whatsappWebhookLog?.[0];
-      if (lastEntry) {
-        lastEntry.firestoreSyncError = saveResult.firestoreError;
-        try {
-          writeStoreToLocalDisk(store);
-        } catch {
-          // a gravação principal já funcionou acima; esta é só uma anotação.
-        }
+      const diagnosticOnlyStore = loadStore();
+      recordWhatsAppWebhookEvent(diagnosticOnlyStore, {
+        signatureStatus: 'valida',
+        entryCount,
+        messagesFound,
+        messagesProcessed: 0,
+        messagesDuplicated,
+        attendanceIdsTouched: [],
+        errorMessage: errorMessage || 'Processado em memória, mas a persistência durável falhou — reentrega esperada.',
+        firestoreSyncError: durableResult.errorMessage,
+      });
+      try {
+        writeStoreToLocalDisk(diagnosticOnlyStore);
+      } catch {
+        // best-effort — só para visibilidade no diagnóstico, não é a falha principal.
       }
+      res.sendStatus(503);
+      return;
     }
 
     res.sendStatus(200);
