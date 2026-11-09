@@ -1557,6 +1557,28 @@ function reconcileJuliaPhotosFromDisk(juliaData: JuliaDepartmentData): boolean {
   return changed;
 }
 
+// Guarda, por objeto `store` devolvido por loadStore(), uma cópia serializada
+// de como ele estava no momento da leitura — saveStore() compara contra isto
+// para saber EXATAMENTE quais chaves de topo a chamada em questão mudou, e
+// só sincroniza essas chaves com o Firestore (ver persistStoreKeysTransac
+// tionally). Um `store` nunca antes visto aqui (ex.: construído à mão, ou
+// a chamada interna de loadStore() a si mesma durante reconciliação) trata
+// TODAS as chaves como alteradas — comportamento seguro por omissão.
+const pristineStoreSnapshots = new WeakMap<PersistentStore, string>();
+
+function computeChangedTopLevelKeys(store: PersistentStore): string[] {
+  const pristineJson = pristineStoreSnapshots.get(store);
+  const allKeys = Object.keys(store);
+  if (!pristineJson) return allKeys; // sem snapshot registrado — grava tudo, por segurança
+  let pristine: Record<string, unknown>;
+  try {
+    pristine = JSON.parse(pristineJson) as Record<string, unknown>;
+  } catch {
+    return allKeys;
+  }
+  return allKeys.filter((key) => JSON.stringify((store as unknown as Record<string, unknown>)[key]) !== JSON.stringify(pristine[key]));
+}
+
 function loadStore(): PersistentStore {
   try {
     if (fs.existsSync(STORE_PATH)) {
@@ -1769,8 +1791,16 @@ function loadStore(): PersistentStore {
         }
 
         if (storeModified) {
-          saveStore(parsed);
+          try {
+            saveStore(parsed);
+          } catch {
+            // best-effort (ex.: janela de manutenção ativa) — mesmo sem
+            // conseguir persistir a reconciliação agora, `parsed` já está
+            // correto em memória; nunca cair para o catch externo e perder
+            // o dado real só por não ter conseguido salvar a reconciliação.
+          }
         }
+        pristineStoreSnapshots.set(parsed, JSON.stringify(parsed));
         return parsed;
       }
     }
@@ -1800,7 +1830,13 @@ function loadStore(): PersistentStore {
     officeData: createDefaultOfficeData(),
     backgroundTasks: [],
   };
-  saveStore(initialStore);
+  try {
+    saveStore(initialStore);
+  } catch {
+    // best-effort (ex.: janela de manutenção ativa) — ainda devolve o
+    // store padrão em memória; uma leitura (GET /api/store) não deve
+    // falhar por causa do bloqueio de gravação da manutenção.
+  }
   return initialStore;
 }
 
@@ -1820,10 +1856,26 @@ function writeStoreToLocalDisk(store: PersistentStore): void {
 }
 
 function saveStore(store: PersistentStore): void {
+  if (isWriteMaintenanceModeActive()) {
+    // Nada é gravado — nem localmente, nem no Firestore. É deliberado: a
+    // janela de manutenção existe para congelar TODO o estado mutável
+    // enquanto uma migração real roda (ver migrations/README.md); se o
+    // disco local continuasse mudando enquanto o Firestore fica parado, o
+    // app terminaria a janela com uma divergência que nunca mais sincroniza
+    // (o código muda para ler das coleções novas depois da migração, sem
+    // nenhum caminho de volta para esse estado só-local). As ~100 rotas que
+    // chamam saveStore() sem tratar essa exceção respondem 500 em vez de um
+    // falso sucesso — aceitável numa janela de manutenção curta e avisada.
+    throw new Error(MAINTENANCE_MODE_ERROR_MESSAGE);
+  }
   writeStoreToLocalDisk(store);
-  // Sincroniza com o Firestore em segundo plano — não bloqueia a resposta da rota
-  // que chamou saveStore(), mas garante que o dado sobreviva a um redeploy sem disco.
-  void persistStoreToFirestore(store);
+  const changedKeys = computeChangedTopLevelKeys(store);
+  // Sincroniza com o Firestore em segundo plano — não bloqueia a resposta da
+  // rota que chamou saveStore(), mas garante que o dado sobreviva a um
+  // redeploy sem disco. Só as chaves de topo que esta chamada mudou (ver
+  // persistStoreKeysTransactionally) — nunca o documento inteiro às cegas.
+  void persistStoreKeysTransactionally(store, changedKeys);
+  pristineStoreSnapshots.set(store, JSON.stringify(store));
 }
 
 // Em produção, observamos o backup do Firestore ficar mais de uma hora sem
@@ -2450,32 +2502,70 @@ function getFirestoreStoreSizeInfo(store: PersistentStore): {
   };
 }
 
-function persistStoreToFirestore(store: PersistentStore): Promise<{ ok: boolean; errorMessage?: string }> {
-  const payload = { ...store, savedAt: new Date().toISOString() };
-  const json = JSON.stringify(payload);
-  if (json.length > FIRESTORE_SIZE_WARNING_THRESHOLD) {
-    console.warn(
-      `[Firestore Sync] O estado está com ${json.length} bytes, perto do limite de ${FIRESTORE_DOCUMENT_BYTE_LIMIT} bytes por documento do Firestore. Se continuar crescendo, será necessário migrar para coleções separadas — acima do limite, o backup passa a falhar silenciosamente (capturado abaixo, só visível no log).`
-    );
+// Interruptor de manutenção para a janela de migração para coleções (ver
+// migrations/README.md). Bloqueia TODA gravação no ponto central — nunca
+// ligado por código algum, só por quem opera o deploy, exatamente durante
+// uma migração real. Verificado antes de qualquer tentativa de rede, então
+// o bloqueio é instantâneo (sem round-trip ao Firestore).
+function isWriteMaintenanceModeActive(): boolean {
+  return process.env.MAINTENANCE_MODE_WRITES_BLOCKED === '1';
+}
+const MAINTENANCE_MODE_ERROR_MESSAGE =
+  'Gravação bloqueada: MAINTENANCE_MODE_WRITES_BLOCKED=1 (manutenção para migração de dados). Tente novamente quando a manutenção terminar.';
+
+// Substitui o antigo .set() cego do documento inteiro: lê o estado FRESCO
+// do Firestore dentro de uma transação e sobrescreve só as chaves de topo
+// que esta chamada especificamente mudou (`changedKeys`, calculado por
+// saveStore() comparando contra o snapshot "pristine" de loadStore()) — uma
+// rota que só muda `settings`, por exemplo, nunca mais pode sobrescrever
+// `attendances`/`agentChats` com uma cópia desatualizada, porque nem chega
+// a tocar essas chaves no documento fresco lido na transação.
+//
+// LIMITAÇÃO DECLARADA: a granularidade é por chave de TOPO do
+// PersistentStore, não por item. Duas chamadas que mudam a mesma chave de
+// topo ao mesmo tempo (ex.: duas rotas diferentes editando `attendances`
+// simultaneamente) ainda podem ter uma delas prevalecer sobre a outra
+// dentro dessa chave — fechar isso por completo exige granularidade por
+// documento (ver migrations/, coleções por entidade) ou converter cada
+// rota para sua própria transação. Isto aqui fecha o caso mais comum e
+// mais grave: uma rota que não tem nada a ver com o assunto (ex.
+// configurações) sobrescrevendo dados de atendimento/WhatsApp só porque
+// escreveu depois, com uma cópia local desatualizada.
+async function persistStoreKeysTransactionally(
+  store: PersistentStore,
+  changedKeys: string[]
+): Promise<{ ok: boolean; errorMessage?: string }> {
+  if (changedKeys.length === 0) {
+    return { ok: true }; // nada para gravar
   }
+  if (isWriteMaintenanceModeActive()) {
+    return { ok: false, errorMessage: MAINTENANCE_MODE_ERROR_MESSAGE };
+  }
+  const docRef = db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC);
   try {
-    return db
-      .collection(FIRESTORE_STORE_COLLECTION)
-      .doc(FIRESTORE_STORE_DOC)
-      .set(payload)
-      .then(() => ({ ok: true }))
-      .catch((err) => {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        console.error('[Firestore Sync] Falha ao sincronizar o estado com o Firestore:', errorMessage);
-        return { ok: false, errorMessage };
-      });
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(docRef);
+      const fresh = (snap.exists ? snap.data() : {}) as Record<string, unknown>;
+      for (const key of changedKeys) {
+        fresh[key] = (store as unknown as Record<string, unknown>)[key];
+      }
+      fresh.savedAt = new Date().toISOString();
+      const json = JSON.stringify(fresh);
+      if (json.length > FIRESTORE_SIZE_WARNING_THRESHOLD) {
+        console.warn(
+          `[Firestore Sync] O estado está com ${json.length} bytes, perto do limite de ${FIRESTORE_DOCUMENT_BYTE_LIMIT} bytes por documento do Firestore. Se continuar crescendo, será necessário migrar para coleções separadas — acima do limite, o backup passa a falhar silenciosamente (capturado abaixo, só visível no log).`
+        );
+      }
+      tx.set(docRef, fresh);
+    });
+    return { ok: true };
   } catch (err) {
-    // .set() pode lançar de forma síncrona (ex.: dado inválido) antes mesmo de
-    // devolver uma promise — sem este try/catch, isso derrubaria a rota que
-    // chamou saveStore(), mesmo com os dados já salvos com segurança no disco.
+    // .set()/runTransaction podem lançar de forma síncrona ou rejeitar —
+    // sem este try/catch, isso derrubaria a rota que chamou saveStore(),
+    // mesmo com os dados já salvos com segurança no disco.
     const errorMessage = err instanceof Error ? err.message : String(err);
-    console.error('[Firestore Sync] Falha síncrona ao preparar a sincronização com o Firestore:', errorMessage);
-    return Promise.resolve({ ok: false, errorMessage });
+    console.error('[Firestore Sync] Falha ao sincronizar o estado (merge transacional) com o Firestore:', errorMessage);
+    return { ok: false, errorMessage };
   }
 }
 
@@ -2530,6 +2620,17 @@ async function claimWhatsAppMessagesTransactionally(
   }>,
   timeoutMs: number
 ): Promise<WhatsAppTransactionResult> {
+  if (isWriteMaintenanceModeActive()) {
+    // Bloqueia antes de qualquer tentativa de rede — nenhuma mensagem é
+    // marcada como concluída, a Meta reentrega depois da manutenção.
+    return {
+      ok: false,
+      errorMessage: MAINTENANCE_MODE_ERROR_MESSAGE,
+      messagesProcessed: 0,
+      messagesDuplicated: 0,
+      attendanceIdsTouched: [],
+    };
+  }
   const docRef = db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC);
 
   const run = async (): Promise<WhatsAppTransactionResult> => {
@@ -6474,7 +6575,12 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         attendanceIdsTouched: [],
         errorMessage: 'WHATSAPP_APP_SECRET não configurada no servidor — evento rejeitado sem verificar assinatura.',
       });
-      saveStore(store);
+      try {
+        saveStore(store);
+      } catch {
+        // best-effort (ex.: janela de manutenção ativa) — a rejeição de
+        // segurança abaixo precisa acontecer de qualquer forma.
+      }
       res.sendStatus(401);
       return;
     }
@@ -6502,7 +6608,12 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         attendanceIdsTouched: [],
         errorMessage: 'Assinatura X-Hub-Signature-256 ausente ou não confere com WHATSAPP_APP_SECRET.',
       });
-      saveStore(store);
+      try {
+        saveStore(store);
+      } catch {
+        // best-effort (ex.: janela de manutenção ativa) — a rejeição de
+        // segurança abaixo precisa acontecer de qualquer forma.
+      }
       res.sendStatus(401);
       return;
     }
@@ -6605,10 +6716,12 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     }
     // A entrada de diagnóstico (log do evento) foi adicionada DEPOIS do
     // commit da transação — só existe localmente até aqui. Sincroniza em
-    // segundo plano (fire-and-forget, best-effort, como saveStore()): a
-    // mensagem/atendimento já estão duráveis desde a transação acima; isto
-    // é só para o histórico de diagnóstico não desaparecer num redeploy.
-    void persistStoreToFirestore(mergedStore);
+    // segundo plano (fire-and-forget, best-effort, como saveStore()), e só a
+    // chave do log em si — a mensagem/atendimento já estão duráveis desde a
+    // transação acima, não precisam ser regravados, e não gravar as outras
+    // chaves evita sobrescrever por cima do que outra rota tenha mudado
+    // nesse meio-tempo.
+    void persistStoreKeysTransactionally(mergedStore, ['whatsappWebhookLog']);
 
     res.sendStatus(200);
 
@@ -6649,7 +6762,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       recentEvents: log.slice(0, 10),
       // Acima do limite, o backup no Firestore (restaurado quando a instância
       // do Cloud Run sobe sem disco local) passa a falhar silenciosamente —
-      // ver persistStoreToFirestore(). nearLimit vira o aviso visível aqui.
+      // ver persistStoreKeysTransactionally(). nearLimit vira o aviso visível aqui.
       firestoreBackup: getFirestoreStoreSizeInfo(store),
     });
   });

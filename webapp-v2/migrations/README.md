@@ -52,45 +52,55 @@ serializa as requisições dentro da mesma instância.
 
 **Controle de gravações durante a janela (como fazer de verdade):**
 
-1. Fixar o serviço em uma única instância **e forçar concorrência 1**, para
-   que o próprio Cloud Run NÃO despache uma segunda requisição à instância
-   antes da primeira responder — isso sim serializa as requisições HTTP de
-   verdade:
+A garantia real não é mais apenas configuração do Cloud Run — é um
+interruptor em código. `server.ts` agora lê `MAINTENANCE_MODE_WRITES_BLOCKED`:
+quando igual a `"1"`, `saveStore()` lança erro sem gravar nada (nem local,
+nem Firestore) e a transação do webhook (`claimWhatsAppMessagesTransactionally`)
+recusa antes de qualquer chamada de rede, respondendo 503. Isso bloqueia
+gravações no ponto central usado por TODAS as rotas que escrevem no
+documento único, não só o webhook.
+
+1. Ativar a manutenção (variável de ambiente do serviço) ANTES de ler
+   qualquer snapshot para a migração:
    ```bash
    gcloud run services update castros-interiores \
      --region southamerica-east1 --project gen-lang-client-0378581840 \
-     --min-instances=1 --max-instances=1 --concurrency=1
+     --update-env-vars MAINTENANCE_MODE_WRITES_BLOCKED=1
    ```
-   (reverter para os valores originais depois — consultar a configuração
-   atual antes de mudar, com `gcloud run services describe castros-interiores
-   --region southamerica-east1 --format="yaml(spec.template.metadata.annotations)"`,
-   que é leitura, não escrita.) Isso cobre a grande maioria das gravações do
-   app (todas as rotas HTTP comuns), mas **não é uma garantia absoluta**:
-   uma sincronização em segundo plano já disparada por uma requisição
-   anterior (`saveStore()` é fire-and-forget) ainda pode terminar depois,
-   em paralelo com a próxima requisição já serializada. Por isso o passo 3
-   (reconciliar-e-repetir) abaixo é a garantia real, não a configuração do
-   Cloud Run por si só.
-2. Com uma única instância e concorrência 1 em vigor, ler o `GET /api/store`
-   dela (agora é a única fonte local que existe) e também ler o documento
+   **Limitação declarada:** rotas `async` que chamam `saveStore()` sem seu
+   próprio try/catch não recebem uma resposta de erro limpa quando a
+   gravação é bloqueada — a requisição pode ficar sem resposta (travada)
+   em vez de um 500 imediato, porque o Express 4 não captura automaticamente
+   uma rejeição não tratada de um handler assíncrono. O BLOQUEIO DA
+   GRAVAÇÃO EM SI é garantido mesmo assim (nada chega a ser escrito); o que
+   não é garantido é uma resposta HTTP elegante para todo cliente que tentar
+   escrever durante a janela. Por isso a comunicação ao usuário final ("não
+   use o sistema durante a manutenção") continua sendo parte do
+   procedimento, não um substituto para o interruptor.
+2. Com as gravações bloqueadas, ler o `GET /api/store` de uma instância (as
+   leituras continuam funcionando normalmente) e também ler o documento
    `appState/main` direto do Firestore (consulta somente leitura — ver a
-   seção de backup abaixo para o comando exato).
+   seção de backup abaixo para o comando exato). Como nada pode mais ser
+   escrito, os dois devem corresponder ao estado final e estável — não há
+   mais janela de corrida entre a leitura do snapshot e a migração.
 3. Rodar `reconcileSnapshots(local, firestore)` com os dois. Se
-   `identical: false`, investigar e reconciliar manualmente (ex.: reenviar o
-   que só existe localmente para o Firestore) **antes** de seguir.
-4. **Reconciliar-e-repetir (a garantia real contra escritas durante a
-   janela):** depois de rodar `runMigration` de verdade (passo 3 do
-   procedimento abaixo), relia o documento `appState/main` do Firestore MAIS
-   UMA VEZ e rode `reconcileSnapshots` entre esse novo snapshot e o snapshot
-   que foi usado como base da migração. Se houver qualquer diferença (uma
-   gravação realmente aconteceu durante a janela, apesar da concorrência 1),
-   rode `runMigration` de novo com o snapshot atualizado — `runMigration` é
-   idempotente (ver seção de Recuperação), então repetir é seguro. Repita
-   esse ciclo até duas leituras consecutivas do Firestore saírem idênticas
-   (nenhuma gravação nova aconteceu entre elas) — só então a migração está
-   genuinamente completa e estável, não apenas "rodou uma vez sem erro".
+   `identical: false`, investigar (algo pode ter sido gravado um instante
+   antes da manutenção entrar em vigor) e reconciliar manualmente (ex.:
+   reenviar o que só existe localmente para o Firestore) **antes** de
+   seguir.
+4. **Reconciliar-e-repetir (defesa adicional, não a garantia principal
+   agora):** com o interruptor de manutenção ativo, nenhuma gravação nova
+   deveria acontecer — mas, dada a limitação declarada acima (requisições
+   `async` sem try/catch próprio podem já ter lido um snapshot ANTES de
+   `saveStore()` recusar), vale reler o documento `appState/main` do
+   Firestore MAIS UMA VEZ depois de rodar `runMigration` de verdade e rodar
+   `reconcileSnapshots` entre esse novo snapshot e o snapshot usado como
+   base. Se houver qualquer diferença, rode `runMigration` de novo com o
+   snapshot atualizado — `runMigration` é idempotente (ver seção de
+   Recuperação). Repita até duas leituras consecutivas saírem idênticas.
 5. Só com as duas fontes iguais (ou já reconciliadas, e o ciclo do passo 4
-   convergido) a migração deve ser considerada concluída.
+   convergido) a migração deve ser considerada concluída. Desativar
+   `MAINTENANCE_MODE_WRITES_BLOCKED` só depois disso.
 
 ## Backup antes de migrar
 
@@ -191,11 +201,54 @@ revisadas nesta sessão:
    ou, sob contenção alta, HTTP 503 (nunca um falso sucesso nem uma
    duplicata).
 
-**Isso NÃO substitui a migração**: continua valendo para o tamanho do
-documento (99,7% do limite) e para o fato de que as ~100 outras rotas que
-gravam no mesmo documento único ainda usam `.set()` comum (não
-transacional) — uma escrita concorrente de QUALQUER outra rota ainda pode
-sobrescrever por cima do que o webhook commitou, porque `.set()` não
-participa da detecção de conflito do Firestore. Migrar para coleções reduz
-o "raio de alcance" de qualquer escrita cega a um documento por
-atendimento/mensagem, em vez do estado inteiro do app.
+## Correção da sobrescrita pelas outras rotas (revisão seguinte, mesma sessão)
+
+O parágrafo acima ("~100 rotas ainda usam `.set()` comum") foi corrigido
+por código, não só documentado como risco: `saveStore()` (usada por
+praticamente todas as rotas que não são o webhook) agora também grava via
+transação — `persistStoreKeysTransactionally`. A diferença chave: em vez de
+sobrescrever o documento inteiro com a cópia local (possivelmente
+desatualizada) de quem chamou, `loadStore()` registra um snapshot
+"pristine" de como o store estava no momento da leitura, e `saveStore()`
+compara contra ele para saber EXATAMENTE quais chaves de topo (`attendances`,
+`settings`, `agentChats`, etc.) aquela chamada específica mudou. A
+transação lê o documento FRESCO do Firestore e só sobrescreve essas chaves
+— uma rota que só mexe em `settings` nunca mais pode apagar por cima
+`attendances`/`agentChats`, porque nem toca nessas chaves no documento
+fresco.
+
+Testado contra o emulador real: 8 rodadas de webhook (cria atendimento) e
+`PUT /api/settings` (muda só `cityState`) disparadas **verdadeiramente
+concorrentes** (mesma chamada de shell, `&` + `wait`) — resultado: as 8
+mensagens do WhatsApp E a atualização de configurações coexistem,
+nenhuma sobrescreveu a outra.
+
+**Limitação que permanece, agora menor e específica:** a granularidade é
+por CHAVE DE TOPO, não por item dentro dela. Duas rotas que mudam a MESMA
+chave ao mesmo tempo (ex.: duas edições concorrentes de atendimentos
+diferentes, ambas tocando `attendances`) ainda podem ter uma sobrescrever
+parte da mudança da outra dentro dessa chave — isso só se fecha de verdade
+com granularidade por documento (a migração para coleções) ou convertendo
+cada rota para sua própria transação cirúrgica (o que já foi feito
+especificamente para o webhook, a rota de maior risco).
+
+## Interruptor de manutenção para a janela de migração (mesma revisão)
+
+`MAINTENANCE_MODE_WRITES_BLOCKED=1` (variável de ambiente do serviço)
+bloqueia gravações de verdade — não é mais só uma recomendação de
+configuração do Cloud Run. Testado contra o emulador real: com a variável
+ativa, o webhook responde 503 em ~30ms (sem nem tentar a rede) e
+`PUT /api/settings` responde 500 (gravação recusada) — e nada foi escrito
+em nenhum dos dois casos. Leituras (`GET /api/store`) continuam funcionando
+normalmente. Ver a seção "Controle de gravações durante a janela" acima
+para o procedimento completo e a limitação declarada (rotas assíncronas
+sem try/catch próprio podem não receber uma resposta HTTP limpa, embora a
+gravação em si fique sempre bloqueada).
+
+## O que ainda não está fechado
+
+- Migrar para coleções continua sendo o único jeito de resolver o limite de
+  tamanho do documento (99,7% do limite) de forma permanente — os fixes
+  acima tornam a escrita mais segura, não menor.
+- Granularidade por item dentro de uma mesma chave de topo (ver limitação
+  acima) — só a migração ou transações por rota fecham isso por completo.
