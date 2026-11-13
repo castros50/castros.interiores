@@ -9183,6 +9183,32 @@ Lembre-se: NUNCA mencione avaliação técnica de defeitos, problemas estruturai
     }
   });
 
+  // Limpa todo o histórico de conversa de UMA mesa. Na mesa da Carla (carla_atendimento)
+  // essa mesma lista também guarda o histórico real das mensagens trocadas por WhatsApp
+  // com os clientes — a confirmação em duas etapas desse caso específico acontece no
+  // front-end; aqui só executa o que foi confirmado, sem adivinhar intenção.
+  app.delete('/api/chat/history', (req, res) => {
+    try {
+      const { deskId, actorName } = req.body as { deskId?: DepartmentId; actorName?: string };
+      if (!deskId) {
+        res.status(400).json({ error: 'Informe a mesa (deskId) cuja conversa deve ser apagada.' });
+        return;
+      }
+      const store = loadStore();
+      if (!store.agentChats) store.agentChats = {};
+      const previousCount = (store.agentChats[deskId] || []).length;
+      store.agentChats[deskId] = [];
+      saveStore(store);
+      console.log(
+        `[chat] Conversa da mesa "${deskId}" apagada por "${actorName || 'não identificado'}" (${previousCount} mensagem(ns) removida(s)).`
+      );
+      res.json({ ok: true, removedCount: previousCount });
+    } catch (err) {
+      console.error('Erro ao limpar histórico de chat:', err);
+      res.status(500).json({ error: 'Erro ao limpar a conversa.' });
+    }
+  });
+
   // Execute Confirmed Agent Action Proposal
   app.post('/api/chat/execute-action', (req, res) => {
     try {

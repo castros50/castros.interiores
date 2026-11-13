@@ -17,6 +17,7 @@ import {
   User,
   Bot,
   Settings2,
+  Trash2,
 } from 'lucide-react';
 import { DepartmentId, AgentChatMessage, AgentActionProposal, AgentVoiceConfig } from '../types';
 import { AgentPortrait } from './AgentPortrait';
@@ -77,6 +78,12 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
 
   // Execução de ação estruturada
   const [executingActionId, setExecutingActionId] = useState<string | null>(null);
+
+  // Limpar conversa — na mesa da Carla (carla_atendimento) a mesma lista guarda também o
+  // histórico real de WhatsApp com os clientes, então ali a confirmação exige 2 etapas
+  // (step 1 = aviso forte, step 2 = confirmação final); nas demais mesas é só 1 etapa.
+  const [clearChatStep, setClearChatStep] = useState<0 | 1 | 2>(0);
+  const [isClearingChat, setIsClearingChat] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -214,6 +221,23 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
   const stopSpeaking = () => {
     stopAllAgentSpeech();
     setIsSpeaking(false);
+  };
+
+  const handleClearChat = async () => {
+    setIsClearingChat(true);
+    try {
+      const res = await fetch('/api/chat/history', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deskId }),
+      });
+      if (res.ok) {
+        setMessages([]);
+      }
+    } finally {
+      setIsClearingChat(false);
+      setClearChatStep(0);
+    }
   };
 
   // Falar texto em voz alta com a voz desta mesa (salva ou atribuída
@@ -680,6 +704,17 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
             <span className="hidden sm:inline">Voz da mesa</span>
           </button>
 
+          {/* Limpar conversa desta mesa */}
+          <button
+            type="button"
+            onClick={() => setClearChatStep(1)}
+            className="p-2 rounded-lg border text-xs flex items-center gap-1.5 transition-colors bg-[#2E2722] border-[#57534E] text-[#E5DEC9] hover:border-red-500 hover:text-red-300"
+            title="Limpar toda a conversa desta mesa"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Limpar Conversa</span>
+          </button>
+
           {/* Botão Parar Reprodução */}
           {isSpeaking && (
             <button
@@ -694,6 +729,88 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
           )}
         </div>
       </div>
+
+      {/* Confirmação de limpar conversa */}
+      {clearChatStep > 0 && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-3 space-y-2">
+          {deskId === 'carla_atendimento' && clearChatStep === 1 && (
+            <>
+              <p className="text-xs font-bold text-red-900">
+                Atenção: nesta mesa, a mesma conversa guarda também o HISTÓRICO REAL DE WHATSAPP com TODOS OS CLIENTES
+                — não só o que aparece na tela agora.
+              </p>
+              <p className="text-[11px] text-red-800">
+                Limpar vai apagar permanentemente todas as mensagens trocadas por WhatsApp com todos os clientes
+                registradas aqui. Essa ação não pode ser desfeita.
+              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setClearChatStep(0)}
+                  className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] bg-white text-[#181512] text-xs font-semibold"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setClearChatStep(2)}
+                  className="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 text-white text-xs font-semibold"
+                >
+                  Entendo o risco, continuar
+                </button>
+              </div>
+            </>
+          )}
+          {deskId === 'carla_atendimento' && clearChatStep === 2 && (
+            <>
+              <p className="text-xs font-bold text-red-900">
+                Confirmação final: apagar mesmo o histórico de WhatsApp de todos os clientes desta mesa?
+              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setClearChatStep(0)}
+                  className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] bg-white text-[#181512] text-xs font-semibold"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isClearingChat}
+                  onClick={handleClearChat}
+                  className="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white text-xs font-semibold"
+                >
+                  {isClearingChat ? 'Apagando...' : 'Sim, apagar tudo mesmo assim'}
+                </button>
+              </div>
+            </>
+          )}
+          {deskId !== 'carla_atendimento' && clearChatStep === 1 && (
+            <>
+              <p className="text-xs font-bold text-red-900">
+                Apagar toda a conversa desta mesa? Essa ação não pode ser desfeita.
+              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setClearChatStep(0)}
+                  className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] bg-white text-[#181512] text-xs font-semibold"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isClearingChat}
+                  onClick={handleClearChat}
+                  className="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white text-xs font-semibold"
+                >
+                  {isClearingChat ? 'Apagando...' : 'Sim, apagar'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Seletor de voz individual da mesa */}
       {voicePickerOpen && (
