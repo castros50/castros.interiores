@@ -7175,6 +7175,20 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
     const signatureValid = verifyYCloudWebhookSignature(rawBody, signatureHeader, webhookSecret);
 
+    // DIAGNÓSTICO TEMPORÁRIO (remover depois de achar a causa): não expõe o
+    // segredo (a assinatura "s=" é um HMAC, não reversível) — só ajuda a ver
+    // se o cabeçalho/corpo chegaram do jeito esperado.
+    if (!signatureValid) {
+      console.error('[WhatsApp Webhook][DEBUG] assinatura inválida', {
+        contentType: req.headers['content-type'],
+        signatureHeaderPresent: Boolean(signatureHeader),
+        signatureHeaderRaw: signatureHeader,
+        rawBodyPresent: Boolean(rawBody),
+        rawBodyLength: rawBody?.length,
+        rawBodyPreview: rawBody ? rawBody.toString('utf8').slice(0, 200) : undefined,
+      });
+    }
+
     if (!signatureValid) {
       const store = loadStore();
       recordWhatsAppWebhookEvent(store, {
