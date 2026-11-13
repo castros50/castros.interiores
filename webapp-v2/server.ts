@@ -7177,15 +7177,34 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
 
     // DIAGNÓSTICO TEMPORÁRIO (remover depois de achar a causa): não expõe o
     // segredo (a assinatura "s=" é um HMAC, não reversível) — só ajuda a ver
-    // se o cabeçalho/corpo chegaram do jeito esperado.
+    // se o cabeçalho/corpo chegaram do jeito esperado, e compara a assinatura
+    // calculada aqui com a recebida.
     if (!signatureValid) {
+      let recomputedHex: string | undefined;
+      let timestampUsed: string | undefined;
+      try {
+        const fields = (signatureHeader || '').split(',').map((part) => part.trim().split('='));
+        timestampUsed = fields.find(([key]) => key === 't')?.[1];
+        if (timestampUsed && rawBody) {
+          recomputedHex = crypto
+            .createHmac('sha256', webhookSecret)
+            .update(timestampUsed + '.')
+            .update(rawBody)
+            .digest('hex');
+        }
+      } catch {
+        // ignora — é só diagnóstico
+      }
       console.error('[WhatsApp Webhook][DEBUG] assinatura inválida', {
         contentType: req.headers['content-type'],
-        signatureHeaderPresent: Boolean(signatureHeader),
         signatureHeaderRaw: signatureHeader,
         rawBodyPresent: Boolean(rawBody),
         rawBodyLength: rawBody?.length,
-        rawBodyPreview: rawBody ? rawBody.toString('utf8').slice(0, 200) : undefined,
+        rawBodyFull: rawBody ? rawBody.toString('utf8') : undefined,
+        timestampUsed,
+        recomputedHex,
+        webhookSecretLength: webhookSecret.length,
+        webhookSecretEdges: `${webhookSecret.slice(0, 6)}...${webhookSecret.slice(-4)}`,
       });
     }
 
