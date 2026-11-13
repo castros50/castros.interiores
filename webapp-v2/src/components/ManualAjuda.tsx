@@ -491,12 +491,12 @@ export const ManualAjuda: React.FC = () => {
               <p className="text-xs font-bold text-amber-900">1. Integração real do WhatsApp (e opcionalmente Instagram/Facebook)</p>
               <p className="text-[11px] text-amber-900 mt-1">
                 O código do webhook, do envio de mensagens e da verificação de conexão já está pronto e testado
-                internamente, mas só funciona com credenciais reais da Meta (WhatsApp Business Cloud API), que só
-                o responsável pela oficina pode obter e configurar — nunca pelo chat. É preciso definir, como
-                variáveis de ambiente do servidor: <code>WHATSAPP_VERIFY_TOKEN</code>,{' '}
-                <code>WHATSAPP_APP_SECRET</code>, <code>WHATSAPP_ACCESS_TOKEN</code> e{' '}
-                <code>WHATSAPP_PHONE_NUMBER_ID</code>, além de cadastrar a URL pública{' '}
-                <code>/api/webhooks/whatsapp</code> no painel da Meta.
+                internamente, e roda via YCloud (Provedor de Soluções/BSP oficial do WhatsApp Business Platform da
+                Meta) — mas só funciona com credenciais reais, que só o responsável pela oficina pode obter e
+                configurar — nunca pelo chat. É preciso definir, como variáveis de ambiente do servidor:{' '}
+                <code>YCLOUD_WEBHOOK_SECRET</code>, <code>YCLOUD_API_KEY</code> e{' '}
+                <code>YCLOUD_WHATSAPP_FROM</code>, além de cadastrar a URL pública{' '}
+                <code>/api/webhooks/whatsapp</code> como endpoint de webhook no console da YCloud.
               </p>
             </div>
             <div className="p-3 rounded-lg border border-amber-200 bg-amber-50">

@@ -195,7 +195,7 @@ export default function App() {
   const [isLoadingStore, setIsLoadingStore] = useState(true);
   const [geminiConfigured, setGeminiConfigured] = useState(true);
   const [whatsappDiagnostics, setWhatsappDiagnostics] = useState<{
-    config: { verifyToken: boolean; appSecret: boolean; accessToken: boolean; phoneNumberId: boolean };
+    config: { webhookSecret: boolean; apiKey: boolean; fromNumber: boolean };
     webhookCallbackPath: string;
     integrationStatus: { state: string; lastCheckedAt?: string; errorMessage?: string; accountLabel?: string } | null;
     lastEvent: {
@@ -2596,10 +2596,9 @@ export default function App() {
                     <>
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         {([
-                          ['WHATSAPP_VERIFY_TOKEN', whatsappDiagnostics.config.verifyToken],
-                          ['WHATSAPP_APP_SECRET', whatsappDiagnostics.config.appSecret],
-                          ['WHATSAPP_ACCESS_TOKEN', whatsappDiagnostics.config.accessToken],
-                          ['WHATSAPP_PHONE_NUMBER_ID', whatsappDiagnostics.config.phoneNumberId],
+                          ['YCLOUD_WEBHOOK_SECRET', whatsappDiagnostics.config.webhookSecret],
+                          ['YCLOUD_API_KEY', whatsappDiagnostics.config.apiKey],
+                          ['YCLOUD_WHATSAPP_FROM', whatsappDiagnostics.config.fromNumber],
                         ] as const).map(([label, present]) => (
                           <div
                             key={label}
@@ -2615,10 +2614,10 @@ export default function App() {
                         ))}
                       </div>
 
-                      {!whatsappDiagnostics.config.appSecret && (
+                      {!whatsappDiagnostics.config.webhookSecret && (
                         <p className="text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1.5">
-                          Sem WHATSAPP_APP_SECRET configurada, todo evento recebido no webhook está sendo
-                          recusado (HTTP 401) — nenhuma mensagem real da Meta consegue ser processada até essa
+                          Sem YCLOUD_WEBHOOK_SECRET configurada, todo evento recebido no webhook está sendo
+                          recusado (HTTP 401) — nenhuma mensagem real de cliente consegue ser processada até essa
                           variável ser configurada no servidor.
                         </p>
                       )}
@@ -2652,7 +2651,7 @@ export default function App() {
                                   ? 'válida'
                                   : whatsappDiagnostics.lastEvent.signatureStatus === 'invalida'
                                   ? 'inválida'
-                                  : 'rejeitado — sem WHATSAPP_APP_SECRET'}
+                                  : 'rejeitado — sem YCLOUD_WEBHOOK_SECRET'}
                               </strong>
                             </p>
                             <p>

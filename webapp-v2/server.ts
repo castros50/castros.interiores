@@ -2083,8 +2083,12 @@ function createBackgroundTask(
 async function checkIntegrationConnection(
   channel: 'whatsapp' | 'instagram' | 'facebook'
 ): Promise<{ ok: boolean; state: IntegrationConnectionState; message: string; accountLabel?: string }> {
-  const envMap: Record<'whatsapp' | 'instagram' | 'facebook', { token: string; id: string }> = {
-    whatsapp: { token: 'WHATSAPP_ACCESS_TOKEN', id: 'WHATSAPP_PHONE_NUMBER_ID' },
+  // WhatsApp não fala mais direto com a Graph API da Meta — a conta roda via
+  // YCloud (Provedor de Soluções/BSP), que tem endpoint e credenciais próprios.
+  if (channel === 'whatsapp') {
+    return checkYCloudWhatsAppConnection();
+  }
+  const envMap: Record<'instagram' | 'facebook', { token: string; id: string }> = {
     instagram: { token: 'META_ACCESS_TOKEN', id: 'META_IG_BUSINESS_ACCOUNT_ID' },
     facebook: { token: 'META_ACCESS_TOKEN', id: 'META_PAGE_ID' },
   };
@@ -2175,45 +2179,96 @@ async function checkPaidAdsIntegrationConnection(): Promise<{
   }
 }
 
-// Envia uma mensagem de texto REAL via WhatsApp Cloud API oficial da Meta. Exige
-// WHATSAPP_ACCESS_TOKEN e WHATSAPP_PHONE_NUMBER_ID como variáveis de ambiente do
-// servidor — nunca aceita essas credenciais vindas do chat, do corpo da requisição
-// ou de qualquer entrada do navegador.
+// Verifica a integração do WhatsApp junto à YCloud (Provedor de Soluções/BSP
+// oficial da Meta) usando só credenciais do ambiente do servidor — nunca
+// solicitadas pelo chat nem expostas ao navegador. Sem as variáveis, resultado
+// honesto "não configurado"; a chamada real confirma que a chave de API é
+// válida (não confirma por si só que o número está "Conectado" na Meta — isso
+// é visto em /api/whatsapp/diagnostics via o último evento de webhook real).
+async function checkYCloudWhatsAppConnection(): Promise<{
+  ok: boolean;
+  state: IntegrationConnectionState;
+  message: string;
+  accountLabel?: string;
+}> {
+  const apiKey = process.env.YCLOUD_API_KEY;
+  const fromNumber = process.env.YCLOUD_WHATSAPP_FROM;
+  if (!apiKey || !fromNumber) {
+    const missing = [!apiKey ? 'YCLOUD_API_KEY' : null, !fromNumber ? 'YCLOUD_WHATSAPP_FROM' : null].filter(Boolean);
+    return {
+      ok: false,
+      state: 'nao_configurado',
+      message: `Integração oficial (YCloud) não configurada no ambiente. Variável(is) ausente(s): ${missing.join(', ')}.`,
+    };
+  }
+  try {
+    const resp = await fetch('https://api.ycloud.com/v2/balance', {
+      headers: { 'X-API-Key': apiKey, Accept: 'application/json' },
+    });
+    const data = (await resp.json()) as { error?: { message?: string } };
+    if (!resp.ok || data.error) {
+      return {
+        ok: false,
+        state: 'erro',
+        message: data.error?.message || `Falha ao verificar integração YCloud (HTTP ${resp.status}).`,
+      };
+    }
+    return {
+      ok: true,
+      state: 'conectado',
+      message: 'Integração YCloud verificada com sucesso (chave de API válida).',
+      accountLabel: fromNumber,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      state: 'erro',
+      message: err instanceof Error ? err.message : 'Falha de rede ao verificar integração YCloud.',
+    };
+  }
+}
+
+// Envia uma mensagem de texto REAL via YCloud (Provedor de Soluções do WhatsApp
+// Business/BSP, não mais a Graph API da Meta direto). Exige YCLOUD_API_KEY e
+// YCLOUD_WHATSAPP_FROM como variáveis de ambiente do servidor — nunca aceita
+// essas credenciais vindas do chat, do corpo da requisição ou de qualquer
+// entrada do navegador.
 async function sendWhatsAppMessage(
   to: string,
   text: string
 ): Promise<{ ok: boolean; externalId?: string; errorMessage?: string }> {
-  const token = process.env.WHATSAPP_ACCESS_TOKEN;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  if (!token || !phoneNumberId) {
+  const apiKey = process.env.YCLOUD_API_KEY;
+  const fromNumber = process.env.YCLOUD_WHATSAPP_FROM;
+  if (!apiKey || !fromNumber) {
     return {
       ok: false,
       errorMessage:
-        'Integração do WhatsApp não configurada no ambiente (WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID ausentes).',
+        'Integração do WhatsApp não configurada no ambiente (YCLOUD_API_KEY/YCLOUD_WHATSAPP_FROM ausentes).',
     };
   }
   try {
-    const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
+    const resp = await fetch('https://api.ycloud.com/v2/whatsapp/messages/sendDirectly', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        'X-API-Key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: to.replace(/\D/g, ''),
+        from: fromNumber,
+        to: to.startsWith('+') ? to : `+${to.replace(/\D/g, '')}`,
         type: 'text',
         text: { body: text },
       }),
     });
     const data = (await resp.json()) as {
-      messages?: Array<{ id: string }>;
+      id?: string;
+      wamid?: string;
       error?: { message?: string };
     };
     if (!resp.ok || data.error) {
       return { ok: false, errorMessage: data.error?.message || `Falha ao enviar (HTTP ${resp.status}).` };
     }
-    return { ok: true, externalId: data.messages?.[0]?.id };
+    return { ok: true, externalId: data.wamid || data.id };
   } catch (err) {
     return { ok: false, errorMessage: err instanceof Error ? err.message : 'Falha de rede ao enviar mensagem.' };
   }
@@ -4114,7 +4169,7 @@ async function startServer() {
     express.json({
       limit: '50mb',
       // Guarda os bytes crus do corpo para a verificação de assinatura HMAC do
-      // webhook do WhatsApp (X-Hub-Signature-256) — não altera o comportamento
+      // webhook do WhatsApp (YCloud-Signature) — não altera o comportamento
       // de nenhuma outra rota, que continua recebendo req.body já parseado.
       verify: (req, _res, buf) => {
         (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
@@ -6715,14 +6770,11 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     const hasFacebookApi = Boolean(
       process.env.FACEBOOK_PAGE_ACCESS_TOKEN && process.env.FACEBOOK_PAGE_ID
     );
-    // Corrigido: antes checava WHATSAPP_CLOUD_API_TOKEN, uma variável que nunca é lida em
-    // nenhum outro lugar do código — a variável real usada para enviar/verificar é
-    // WHATSAPP_ACCESS_TOKEN (ver sendWhatsAppMessage/checkIntegrationConnection acima).
-    // Esse descompasso fazia esta rota relatar "não conectado" mesmo com a integração
-    // corretamente configurada.
+    // A variável real usada para enviar/verificar o WhatsApp é YCLOUD_API_KEY +
+    // YCLOUD_WHATSAPP_FROM (ver sendWhatsAppMessage/checkYCloudWhatsAppConnection
+    // acima) — a integração roda via YCloud (BSP), não mais direto na Graph API.
     const hasWhatsAppCloudApi = Boolean(
-      process.env.WHATSAPP_ACCESS_TOKEN &&
-        process.env.WHATSAPP_PHONE_NUMBER_ID
+      process.env.YCLOUD_API_KEY && process.env.YCLOUD_WHATSAPP_FROM
     );
 
     res.json({
@@ -7052,37 +7104,49 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
   });
 
   // --------------------------------------------------------------------------
-  // WEBHOOK OFICIAL DO WHATSAPP (Meta Cloud API) — recebe mensagens reais de
-  // clientes e as entrega à Carla. Totalmente implementado, mas SÓ funciona
-  // quando o usuário configurar as credenciais reais como variáveis de ambiente
-  // do servidor (nunca pelo chat): WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET,
-  // WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID. Sem elas, esta rota nunca
-  // recebe tráfego real da Meta — ver documentação de configuração.
+  // WEBHOOK OFICIAL DO WHATSAPP (via YCloud, Provedor de Soluções/BSP da Meta)
+  // — recebe mensagens reais de clientes e as entrega à Carla. Totalmente
+  // implementado, mas SÓ funciona quando o usuário configurar as credenciais
+  // reais como variáveis de ambiente do servidor (nunca pelo chat):
+  // YCLOUD_WEBHOOK_SECRET, YCLOUD_API_KEY, YCLOUD_WHATSAPP_FROM, e registrar
+  // esta URL como endpoint de webhook no painel da YCloud (Developers >
+  // Webhook). Sem elas, esta rota nunca recebe tráfego real.
   // --------------------------------------------------------------------------
 
-  // Handshake de verificação que a Meta chama uma vez ao configurar o webhook.
-  app.get('/api/webhooks/whatsapp', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-    const expected = process.env.WHATSAPP_VERIFY_TOKEN;
-    if (expected && mode === 'subscribe' && token === expected) {
-      res.status(200).send(challenge);
-    } else {
-      res.sendStatus(403);
-    }
-  });
+  // Verifica a assinatura HMAC-SHA256 dos webhooks da YCloud (cabeçalho
+  // "YCloud-Signature: t=<timestamp>,s=<hex>"), usando sempre os bytes crus do
+  // corpo (nunca o JSON reserializado — espaços/ordem de chaves mudam o hash)
+  // e comparação em tempo constante. Tolerância de 5 minutos contra replay,
+  // igual ao exemplo oficial da documentação da YCloud.
+  function verifyYCloudWebhookSignature(
+    rawBody: Buffer | undefined,
+    header: string | undefined,
+    secret: string
+  ): boolean {
+    if (!rawBody || !header) return false;
+    const fields = header.split(',').map((part) => part.trim().split('='));
+    const timestamps = fields.filter(([key]) => key === 't').map(([, value]) => value);
+    const signatures = fields.filter(([key]) => key === 's').map(([, value]) => value);
+    if (timestamps.length !== 1 || !timestamps[0] || !/^\d+$/.test(timestamps[0])) return false;
+    if (Math.abs(Math.floor(Date.now() / 1000) - Number(timestamps[0])) > 300) return false;
+    const expected = crypto.createHmac('sha256', secret).update(timestamps[0] + '.').update(rawBody).digest();
+    return signatures.some((signature) => {
+      if (!signature || !/^[a-fA-F0-9]{64}$/.test(signature)) return false;
+      const sigBuf = Buffer.from(signature, 'hex');
+      return sigBuf.length === expected.length && crypto.timingSafeEqual(expected, sigBuf);
+    });
+  }
 
   app.post('/api/webhooks/whatsapp', async (req, res) => {
-    const appSecret = process.env.WHATSAPP_APP_SECRET;
+    const webhookSecret = process.env.YCLOUD_WEBHOOK_SECRET;
 
-    // Sem WHATSAPP_APP_SECRET configurada, não há como verificar que a chamada
-    // é mesmo da Meta — processar mesmo assim aceitaria qualquer POST de
-    // qualquer origem como se fosse mensagem real de cliente (a URL do webhook
-    // é pública, conhecida). Mesmo padrão já usado em todo o resto do app para
-    // configuração ausente (ver getAnthropicApiKey/getGeminiApiKey): rejeita
-    // explicitamente, nunca processa "no escuro".
-    if (!appSecret) {
+    // Sem YCLOUD_WEBHOOK_SECRET configurada, não há como verificar que a
+    // chamada é mesmo da YCloud — processar mesmo assim aceitaria qualquer
+    // POST de qualquer origem como se fosse mensagem real de cliente (a URL
+    // do webhook é pública, conhecida). Mesmo padrão já usado em todo o resto
+    // do app para configuração ausente (ver getAnthropicApiKey/getGeminiApiKey):
+    // rejeita explicitamente, nunca processa "no escuro".
+    if (!webhookSecret) {
       // Sem mensagem de cliente em jogo aqui (a chamada já é rejeitada) — o
       // registro é só para diagnóstico, por isso gravação local best-effort
       // (saveStore) é suficiente; não precisa esperar o Firestore para
@@ -7090,12 +7154,12 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       const store = loadStore();
       recordWhatsAppWebhookEvent(store, {
         signatureStatus: 'rejeitado_sem_app_secret',
-        entryCount: Array.isArray(req.body?.entry) ? req.body.entry.length : 0,
+        entryCount: 0,
         messagesFound: 0,
         messagesProcessed: 0,
         messagesDuplicated: 0,
         attendanceIdsTouched: [],
-        errorMessage: 'WHATSAPP_APP_SECRET não configurada no servidor — evento rejeitado sem verificar assinatura.',
+        errorMessage: 'YCLOUD_WEBHOOK_SECRET não configurada no servidor — evento rejeitado sem verificar assinatura.',
       });
       try {
         saveStore(store);
@@ -7107,28 +7171,20 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       return;
     }
 
-    const signatureHeader = req.headers['x-hub-signature-256'] as string | undefined;
+    const signatureHeader = req.headers['ycloud-signature'] as string | undefined;
     const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
-    const expectedSig =
-      'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody || Buffer.alloc(0)).digest('hex');
-    const sigBuf = Buffer.from(signatureHeader || '');
-    const expectedBuf = Buffer.from(expectedSig);
-    const signatureValid =
-      !!signatureHeader &&
-      !!rawBody &&
-      sigBuf.length === expectedBuf.length &&
-      crypto.timingSafeEqual(sigBuf, expectedBuf);
+    const signatureValid = verifyYCloudWebhookSignature(rawBody, signatureHeader, webhookSecret);
 
     if (!signatureValid) {
       const store = loadStore();
       recordWhatsAppWebhookEvent(store, {
         signatureStatus: 'invalida',
-        entryCount: Array.isArray(req.body?.entry) ? req.body.entry.length : 0,
+        entryCount: 0,
         messagesFound: 0,
         messagesProcessed: 0,
         messagesDuplicated: 0,
         attendanceIdsTouched: [],
-        errorMessage: 'Assinatura X-Hub-Signature-256 ausente ou não confere com WHATSAPP_APP_SECRET.',
+        errorMessage: 'Assinatura YCloud-Signature ausente ou não confere com YCLOUD_WEBHOOK_SECRET.',
       });
       try {
         saveStore(store);
@@ -7152,19 +7208,37 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       msg: Record<string, unknown>;
     }> = [];
     try {
-      const entries = (req.body?.entry || []) as Array<{
-        changes?: Array<{ value?: Record<string, unknown> }>;
-      }>;
-      entryCount = entries.length;
-      for (const entry of entries) {
-        for (const change of entry.changes || []) {
-          const value = (change.value || {}) as {
-            messages?: Array<Record<string, unknown>>;
-            contacts?: Array<{ profile?: { name?: string }; referral?: Record<string, unknown> }>;
-          };
-          for (const msg of value.messages || []) {
-            incomingMessages.push({ value, msg });
-          }
+      // A YCloud entrega UM evento por chamada (não um lote estilo
+      // entry[].changes[].value.messages[] da Meta). Só
+      // "whatsapp.inbound_message.received" vira mensagem de atendimento aqui
+      // — outros tipos (status de entrega, preferência de marketing, SMS,
+      // etc.) são reconhecidos e ignorados silenciosamente, mas ainda recebem
+      // 200 OK pra YCloud não reentregar o mesmo evento à toa.
+      const event = req.body as {
+        type?: string;
+        whatsappInboundMessage?: Record<string, unknown>;
+      };
+      if (event?.type === 'whatsapp.inbound_message.received' && event.whatsappInboundMessage) {
+        entryCount = 1;
+        const inbound = event.whatsappInboundMessage;
+        // externalMessageId precisa ser o wamid (ID original na própria rede
+        // do WhatsApp) e não o "id" interno da YCloud — é esse valor que já
+        // era usado como chave de dedup/documento do Firestore desde a
+        // integração direta com a Meta, e reentregas do mesmo wamid (de
+        // qualquer provedor) precisam continuar batendo na mesma chave.
+        const wamid = (inbound.wamid as string | undefined) || (inbound.id as string | undefined);
+        if (wamid) {
+          incomingMessages.push({
+            value: {
+              contacts: [
+                {
+                  profile: { name: (inbound.customerProfile as { name?: string } | undefined)?.name },
+                  referral: inbound.referral as Record<string, unknown> | undefined,
+                },
+              ],
+            },
+            msg: { ...inbound, id: wamid },
+          });
         }
       }
     } catch (err) {
@@ -7278,10 +7352,9 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     res.json({
       ok: true,
       config: {
-        verifyToken: Boolean(process.env.WHATSAPP_VERIFY_TOKEN),
-        appSecret: Boolean(process.env.WHATSAPP_APP_SECRET),
-        accessToken: Boolean(process.env.WHATSAPP_ACCESS_TOKEN),
-        phoneNumberId: Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID),
+        webhookSecret: Boolean(process.env.YCLOUD_WEBHOOK_SECRET),
+        apiKey: Boolean(process.env.YCLOUD_API_KEY),
+        fromNumber: Boolean(process.env.YCLOUD_WHATSAPP_FROM),
       },
       webhookCallbackPath: '/api/webhooks/whatsapp',
       integrationStatus: store.settings.integrations?.whatsapp || null,
