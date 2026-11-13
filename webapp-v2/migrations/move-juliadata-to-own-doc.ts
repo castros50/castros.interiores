@@ -31,15 +31,30 @@ function arg(name: string): string | undefined {
   return process.argv.slice(2).find((a) => a.startsWith(pref))?.slice(pref.length);
 }
 
+// Nenhuma chamada de rede abaixo pode ficar pendurada pra sempre — se
+// travar, isso diz ONDE em vez de deixar o script parado sem explicação.
+const STEP_TIMEOUT_MS = 20_000;
+function withTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Tempo esgotado (${STEP_TIMEOUT_MS}ms) em: ${label}`)), STEP_TIMEOUT_MS)
+    ),
+  ]);
+}
+
 async function main() {
   const confirm = arg('confirm') || '';
   const projectId = arg('project') || 'gen-lang-client-0378581840';
 
+  console.log(`Conectando ao Firestore do projeto "${projectId}"...`);
   const db = createProductionFirestore(projectId, confirm);
   const mainRef = db.collection('appState').doc('main');
   const juliaRef = db.collection('appState').doc('juliaData');
 
-  const mainSnap = await mainRef.get();
+  console.log('Lendo appState/main...');
+  const mainSnap = await withTimeout('mainRef.get()', mainRef.get());
+  console.log('Leitura de appState/main concluída.');
   if (!mainSnap.exists) {
     console.log('appState/main não existe — nada a fazer.');
     return;
@@ -57,13 +72,13 @@ async function main() {
   const juliaBytes = Buffer.byteLength(JSON.stringify(juliaData ?? null), 'utf-8');
   console.log(`Campo juliaData encontrado: ${juliaBytes} bytes. Copiando para appState/juliaData...`);
 
-  await juliaRef.set({ juliaData, savedAt: new Date().toISOString() });
+  await withTimeout('juliaRef.set()', juliaRef.set({ juliaData, savedAt: new Date().toISOString() }));
   console.log('appState/juliaData gravado com sucesso.');
 
-  await mainRef.update({ juliaData: FieldValue.delete() });
+  await withTimeout('mainRef.update() (delete field)', mainRef.update({ juliaData: FieldValue.delete() }));
   console.log('Campo juliaData removido de appState/main.');
 
-  const mainSnapAfter = await mainRef.get();
+  const mainSnapAfter = await withTimeout('mainRef.get() (depois)', mainRef.get());
   const mainBytesAfter = Buffer.byteLength(JSON.stringify(mainSnapAfter.data() || {}), 'utf-8');
   console.log(`appState/main depois: ${mainBytesAfter} bytes (era ${mainBytesBefore}).`);
   console.log('Migração concluída.');
