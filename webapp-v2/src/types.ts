@@ -1440,6 +1440,10 @@ export interface WorkshopSettings {
     name: string;
     languageCode: string; // ex: "pt_BR"
     hasImageHeader: boolean;
+    // Nome da variável do corpo, quando o template usa variável NOMEADA (ex: "{{almofadas}}")
+    // em vez de posicional ("{{1}}") — YCloud permite as duas formas. Sem isso preenchido,
+    // o envio usa parâmetro posicional (compatível com templates feitos com "{{1}}").
+    bodyVariableName?: string;
     updatedAt: string;
     updatedBy?: string;
   };

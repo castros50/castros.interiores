@@ -231,6 +231,7 @@ export default function App() {
   const [whatsappTemplateNameInput, setWhatsappTemplateNameInput] = useState('');
   const [whatsappTemplateLanguageInput, setWhatsappTemplateLanguageInput] = useState('pt_BR');
   const [whatsappTemplateHasImageHeaderInput, setWhatsappTemplateHasImageHeaderInput] = useState(false);
+  const [whatsappTemplateBodyVariableNameInput, setWhatsappTemplateBodyVariableNameInput] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [lastSavedSuccessAt, setLastSavedSuccessAt] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -471,6 +472,7 @@ export default function App() {
           name: whatsappTemplateNameInput.trim(),
           languageCode: whatsappTemplateLanguageInput.trim() || 'pt_BR',
           hasImageHeader: whatsappTemplateHasImageHeaderInput,
+          bodyVariableName: whatsappTemplateBodyVariableNameInput.trim() || undefined,
           actorName: currentUser?.displayName || currentUser?.email || undefined,
         }),
       });
@@ -2942,6 +2944,9 @@ export default function App() {
                     <p className="text-emerald-800 bg-emerald-50 rounded px-2 py-1.5">
                       Configurado: "{settings.juliaWhatsappBroadcastTemplate.name}" ({settings.juliaWhatsappBroadcastTemplate.languageCode})
                       {settings.juliaWhatsappBroadcastTemplate.hasImageHeader ? ' · com cabeçalho de imagem' : ''}
+                      {settings.juliaWhatsappBroadcastTemplate.bodyVariableName
+                        ? ` · variável "{{${settings.juliaWhatsappBroadcastTemplate.bodyVariableName}}}"`
+                        : ' · variável posicional "{{1}}"'}
                     </p>
                   )}
                   <div className="flex flex-wrap items-end gap-2">
@@ -2962,6 +2967,16 @@ export default function App() {
                         value={whatsappTemplateLanguageInput}
                         onChange={(e) => setWhatsappTemplateLanguageInput(e.target.value)}
                         className="w-20 rounded border border-[#D6CFC5] px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[#57534E] mb-1">Nome da variável do corpo (se nomeada)</label>
+                      <input
+                        type="text"
+                        value={whatsappTemplateBodyVariableNameInput}
+                        onChange={(e) => setWhatsappTemplateBodyVariableNameInput(e.target.value)}
+                        placeholder="ex: almofadas (deixe em branco se for {{1}})"
+                        className="w-56 rounded border border-[#D6CFC5] px-2 py-1.5 text-xs"
                       />
                     </div>
                     <label className="flex items-center gap-1.5 text-[#57534E] pb-1.5">

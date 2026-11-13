@@ -2533,7 +2533,8 @@ async function sendWhatsAppTemplateMessage(
   templateName: string,
   languageCode: string,
   bodyText: string,
-  headerImageUrl?: string
+  headerImageUrl?: string,
+  bodyVariableName?: string
 ): Promise<{ ok: boolean; externalId?: string; errorMessage?: string }> {
   const apiKey = process.env.YCLOUD_API_KEY;
   const fromNumber = process.env.YCLOUD_WHATSAPP_FROM;
@@ -2551,9 +2552,15 @@ async function sendWhatsAppTemplateMessage(
       parameters: [{ type: 'image', image: { link: headerImageUrl } }],
     });
   }
+  // Templates com variável NOMEADA (ex: "{{almofadas}}") exigem parameter_name no
+  // parâmetro; templates com variável posicional ("{{1}}") não usam esse campo.
   components.push({
     type: 'body',
-    parameters: [{ type: 'text', text: bodyText }],
+    parameters: [
+      bodyVariableName
+        ? { type: 'text', parameter_name: bodyVariableName, text: bodyText }
+        : { type: 'text', text: bodyText },
+    ],
   });
   try {
     const resp = await fetch('https://api.ycloud.com/v2/whatsapp/messages/sendDirectly', {
@@ -3043,7 +3050,8 @@ async function executeBackgroundTask(
           template.name,
           template.languageCode || 'pt_BR',
           bodyText,
-          headerImageUrl
+          headerImageUrl,
+          template.bodyVariableName
         );
         if (result.ok) successCount++;
       }
@@ -8535,10 +8543,11 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
   // massa (Lista de Transmissão) — nunca aceita texto livre nesse fluxo; só o nome do
   // template, que precisa já existir aprovado no WhatsApp Business Manager/YCloud.
   app.put('/api/settings/julia-whatsapp-template', (req, res) => {
-    const { name, languageCode, hasImageHeader, actorName } = req.body as {
+    const { name, languageCode, hasImageHeader, bodyVariableName, actorName } = req.body as {
       name?: string;
       languageCode?: string;
       hasImageHeader?: boolean;
+      bodyVariableName?: string;
       actorName?: string;
     };
     if (!name || !name.trim()) {
@@ -8550,6 +8559,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       name: name.trim(),
       languageCode: (languageCode || 'pt_BR').trim(),
       hasImageHeader: Boolean(hasImageHeader),
+      bodyVariableName: bodyVariableName?.trim() || undefined,
       updatedAt: new Date().toISOString(),
       updatedBy: actorName,
     };
