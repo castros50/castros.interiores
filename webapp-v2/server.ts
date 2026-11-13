@@ -2648,6 +2648,14 @@ const inFlightGeminiRequests = new Set<string>();
 // backup que entra em ação na inicialização do servidor.
 const FIRESTORE_STORE_COLLECTION = 'appState';
 const FIRESTORE_STORE_DOC = 'main';
+// `juliaData` (biblioteca de fotos, campanhas) sozinha já passou perto do
+// limite de 1MB do documento único appState/main — qualquer gravação de
+// QUALQUER chave (settings, clients, backgroundTasks, o próprio log do
+// webhook do WhatsApp) sobrescrevia o documento inteiro junto, então uma
+// juliaData grande bastava para travar TODAS as outras gravações, inclusive
+// o WhatsApp. Por isso juliaData tem seu próprio documento, com seu próprio
+// orçamento de 1MB, independente do resto.
+const FIRESTORE_JULIA_DOC = 'juliaData';
 
 // Tamanho máximo de um documento do Firestore. Ultrapassar isso faz o .set()
 // abaixo ser rejeitado (erro "entity too large"), silenciosamente capturado
@@ -2678,7 +2686,6 @@ const FIRESTORE_MAIN_DOC_KEYS: Array<keyof PersistentStore> = [
   'nextSequence',
   'materials',
   'settings',
-  'juliaData',
   'officeData',
   'backgroundTasks',
   'clients',
@@ -2720,6 +2727,26 @@ function getFirestoreStoreSizeInfo(store: PersistentStore): {
     nearLimit: bytes > FIRESTORE_SIZE_WARNING_THRESHOLD,
     critical: bytes > FIRESTORE_SIZE_CRITICAL_THRESHOLD,
     keyBreakdown: getFirestoreMainDocKeyBreakdown(store),
+  };
+}
+
+// Mesmo limite/limiares do documento único, mas medindo só juliaData — agora
+// que tem seu próprio documento (appState/juliaData), com seu próprio
+// orçamento de 1MB, independente de appState/main.
+function getJuliaDataSizeInfo(store: PersistentStore): {
+  bytes: number;
+  limitBytes: number;
+  percentUsed: number;
+  nearLimit: boolean;
+  critical: boolean;
+} {
+  const bytes = Buffer.byteLength(JSON.stringify(store.juliaData ?? null), 'utf-8');
+  return {
+    bytes,
+    limitBytes: FIRESTORE_DOCUMENT_BYTE_LIMIT,
+    percentUsed: Math.round((bytes / FIRESTORE_DOCUMENT_BYTE_LIMIT) * 1000) / 10,
+    nearLimit: bytes > FIRESTORE_SIZE_WARNING_THRESHOLD,
+    critical: bytes > FIRESTORE_SIZE_CRITICAL_THRESHOLD,
   };
 }
 
@@ -2784,13 +2811,32 @@ async function persistStoreKeysTransactionally(
 
   const errors: string[] = [];
 
-  if (diff.changedTopLevelKeys.length > 0) {
+  // `juliaData` tem documento próprio (appState/juliaData) — nunca mais vai
+  // junto com o resto em appState/main (ver comentário acima de
+  // FIRESTORE_JULIA_DOC). Como esse documento só guarda juliaData, um
+  // sobrescrever simples (sem transação) é suficiente: não há outra chave
+  // para colidir.
+  if (diff.changedTopLevelKeys.includes('juliaData')) {
+    try {
+      await db
+        .collection(FIRESTORE_STORE_COLLECTION)
+        .doc(FIRESTORE_JULIA_DOC)
+        .set({ juliaData: store.juliaData, savedAt: new Date().toISOString() });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      console.error('[Firestore Sync] Falha ao sincronizar juliaData com appState/juliaData:', errorMessage);
+      errors.push(errorMessage);
+    }
+  }
+
+  const mainDocChangedKeys = diff.changedTopLevelKeys.filter((key) => key !== 'juliaData');
+  if (mainDocChangedKeys.length > 0) {
     const docRef = db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC);
     try {
       await db.runTransaction(async (tx) => {
         const snap = await tx.get(docRef);
         const fresh = (snap.exists ? snap.data() : {}) as Record<string, unknown>;
-        for (const key of diff.changedTopLevelKeys) {
+        for (const key of mainDocChangedKeys) {
           fresh[key] = (store as unknown as Record<string, unknown>)[key];
         }
         fresh.savedAt = new Date().toISOString();
@@ -3203,10 +3249,11 @@ async function restoreStoreFromFirestoreIfNeeded(): Promise<void> {
       return; // já existe um arquivo local — não sobrescreve com o backup
     }
     const doc = await db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC).get();
+    const juliaDoc = await db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_JULIA_DOC).get();
     const attendancesSnap = await db.collection(COLLECTION_ATTENDANCES).get();
     const agentChats = await readAllAgentChatsFromCollections();
 
-    if (!doc.exists && attendancesSnap.empty && Object.keys(agentChats).length === 0) {
+    if (!doc.exists && !juliaDoc.exists && attendancesSnap.empty && Object.keys(agentChats).length === 0) {
       console.log('[Firestore Sync] Nenhum backup encontrado no Firestore (nem no documento único, nem nas coleções) — iniciando com dados padrão.');
       return;
     }
@@ -3214,6 +3261,13 @@ async function restoreStoreFromFirestoreIfNeeded(): Promise<void> {
     const docData = doc.exists ? doc.data() : {};
     const { savedAt, attendances: _oldDocAttendances, agentChats: _oldDocAgentChats, ...storeData } =
       (docData || {}) as Record<string, unknown> & { savedAt?: string; attendances?: unknown; agentChats?: unknown };
+    // juliaData agora tem documento próprio (appState/juliaData) — prefere
+    // ele; só cai para o campo antigo dentro de appState/main se o
+    // documento novo ainda não existir (janela de transição antes da
+    // migração de limpeza rodar — ver DEPLOY_WHATSAPP_DURABILITY_FIX.md).
+    if (juliaDoc.exists) {
+      (storeData as Record<string, unknown>).juliaData = juliaDoc.data()?.juliaData;
+    }
     // `attendances`/`agentChats` do documento único são deliberadamente
     // ignorados aqui (nunca restaurados a partir deles) — desde a troca
     // para coleções, a fonte de verdade para essas duas chaves são
@@ -7361,7 +7415,11 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       // Acima do limite, o backup no Firestore (restaurado quando a instância
       // do Cloud Run sobe sem disco local) passa a falhar silenciosamente —
       // ver persistStoreKeysTransactionally(). nearLimit vira o aviso visível aqui.
+      // juliaData tem documento (e orçamento de 1MB) próprio desde a
+      // separação de appState/juliaData — reportado à parte, nunca mais
+      // somado ao de appState/main.
       firestoreBackup: getFirestoreStoreSizeInfo(store),
+      juliaDataBackup: getJuliaDataSizeInfo(store),
     });
   });
 

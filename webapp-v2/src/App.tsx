@@ -220,6 +220,7 @@ export default function App() {
       firestoreSyncError?: string;
     }>;
     firestoreBackup?: { bytes: number; limitBytes: number; percentUsed: number; nearLimit: boolean; critical: boolean };
+    juliaDataBackup?: { bytes: number; limitBytes: number; percentUsed: number; nearLimit: boolean; critical: boolean };
   } | null>(null);
   const [isVerifyingWhatsApp, setIsVerifyingWhatsApp] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -2710,6 +2711,30 @@ export default function App() {
                                 no log do servidor) e um redeploy ou reinício sem disco local perde os dados mais
                                 recentes. É necessário migrar para coleções separadas em breve.
                               </>
+                            ) : null}
+                          </p>
+                        </div>
+                      )}
+
+                      {whatsappDiagnostics.juliaDataBackup && (
+                        <div className="pt-2 border-t border-[#E5DEC9]">
+                          <p className="font-semibold text-[#181512] mb-1">Dados da Júlia no Firestore (documento próprio, separado do backup acima)</p>
+                          <p
+                            className={
+                              whatsappDiagnostics.juliaDataBackup.critical
+                                ? 'text-red-900 bg-red-100 border border-red-300 rounded px-2 py-1.5 font-semibold'
+                                : whatsappDiagnostics.juliaDataBackup.nearLimit
+                                ? 'text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1.5'
+                                : 'text-[#57534E]'
+                            }
+                          >
+                            {whatsappDiagnostics.juliaDataBackup.bytes.toLocaleString('pt-BR')} de{' '}
+                            {whatsappDiagnostics.juliaDataBackup.limitBytes.toLocaleString('pt-BR')} bytes usados (
+                            {whatsappDiagnostics.juliaDataBackup.percentUsed}% do limite por documento do Firestore)
+                            {whatsappDiagnostics.juliaDataBackup.critical ? (
+                              <> — CRÍTICO: a biblioteca/campanhas da Júlia por si só já está perto do limite de 1 documento do Firestore.</>
+                            ) : whatsappDiagnostics.juliaDataBackup.nearLimit ? (
+                              <> — próximo do limite deste documento.</>
                             ) : null}
                           </p>
                         </div>
