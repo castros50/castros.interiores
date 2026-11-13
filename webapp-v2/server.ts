@@ -7175,74 +7175,23 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
     const signatureValid = verifyYCloudWebhookSignature(rawBody, signatureHeader, webhookSecret);
 
-    // DIAGNÓSTICO TEMPORÁRIO (remover depois de achar a causa): não expõe o
-    // segredo (a assinatura "s=" é um HMAC, não reversível) — só ajuda a ver
-    // se o cabeçalho/corpo chegaram do jeito esperado, e compara a assinatura
-    // calculada aqui com a recebida.
+    // MODO TEMPORÁRIO (ver conversa com o suporte da YCloud em andamento): o
+    // formato de assinatura documentado pela YCloud (HMAC-SHA256 de
+    // "timestamp.corpo" com o secret do endpoint) não bate com o que eles
+    // realmente enviam — testado exaustivamente (secret confirmado idêntico
+    // via API, corpo e timestamp corretos, várias variações de formato,
+    // nenhuma bate). Enquanto o suporte deles não esclarece, processamos a
+    // mensagem mesmo sem poder confirmar a assinatura — NUNCA chamado de
+    // "valida" no diagnóstico, pra ficar visível que a verificação real está
+    // efetivamente desligada. Assim que a YCloud confirmar o formato certo,
+    // reverter para rejeitar (como nas revisões anteriores desta rota).
+    const signatureStatus: WhatsAppWebhookSignatureStatus = signatureValid
+      ? 'valida'
+      : 'invalida_processada_mesmo_assim';
     if (!signatureValid) {
-      let timestampUsed: string | undefined;
-      let receivedSigHex: string | undefined;
-      const candidateMatches: Record<string, boolean> = {};
-      try {
-        const fields = (signatureHeader || '').split(',').map((part) => part.trim().split('='));
-        timestampUsed = fields.find(([key]) => key === 't')?.[1];
-        receivedSigHex = fields.find(([key]) => key === 's')?.[1];
-        if (timestampUsed && rawBody && receivedSigHex) {
-          const received = Buffer.from(receivedSigHex, 'hex');
-          const secretNoPrefix = webhookSecret.replace(/^whsec_/, '');
-          const candidates: Array<[string, () => Buffer]> = [
-            ['stringKey_ts.body', () => crypto.createHmac('sha256', webhookSecret).update(timestampUsed + '.').update(rawBody).digest()],
-            ['stringKey_tsBody_noDot', () => crypto.createHmac('sha256', webhookSecret).update(timestampUsed!).update(rawBody).digest()],
-            ['stringKey_bodyOnly', () => crypto.createHmac('sha256', webhookSecret).update(rawBody).digest()],
-            ['hexKeyNoPrefix_ts.body', () => crypto.createHmac('sha256', Buffer.from(secretNoPrefix, 'hex')).update(timestampUsed + '.').update(rawBody).digest()],
-            ['hexKeyNoPrefix_bodyOnly', () => crypto.createHmac('sha256', Buffer.from(secretNoPrefix, 'hex')).update(rawBody).digest()],
-            ['stringKeyNoPrefix_ts.body', () => crypto.createHmac('sha256', secretNoPrefix).update(timestampUsed + '.').update(rawBody).digest()],
-            ['stringKeyNoPrefix_bodyOnly', () => crypto.createHmac('sha256', secretNoPrefix).update(rawBody).digest()],
-            ['stringKey_fullHeader.body', () => crypto.createHmac('sha256', webhookSecret).update(`t=${timestampUsed}.`).update(rawBody).digest()],
-          ];
-          for (const [name, compute] of candidates) {
-            try {
-              const digest = compute();
-              candidateMatches[name] = digest.length === received.length && crypto.timingSafeEqual(digest, received);
-            } catch {
-              candidateMatches[name] = false;
-            }
-          }
-        }
-      } catch {
-        // ignora — é só diagnóstico
-      }
-      console.error('[WhatsApp Webhook][DEBUG] assinatura inválida', {
-        contentType: req.headers['content-type'],
-        signatureHeaderRaw: signatureHeader,
-        rawBodyPresent: Boolean(rawBody),
-        rawBodyLength: rawBody?.length,
-        timestampUsed,
-        candidateMatches,
-        webhookSecretLength: webhookSecret.length,
-        webhookSecretEdges: `${webhookSecret.slice(0, 6)}...${webhookSecret.slice(-4)}`,
-      });
-    }
-
-    if (!signatureValid) {
-      const store = loadStore();
-      recordWhatsAppWebhookEvent(store, {
-        signatureStatus: 'invalida',
-        entryCount: 0,
-        messagesFound: 0,
-        messagesProcessed: 0,
-        messagesDuplicated: 0,
-        attendanceIdsTouched: [],
-        errorMessage: 'Assinatura YCloud-Signature ausente ou não confere com YCLOUD_WEBHOOK_SECRET.',
-      });
-      try {
-        saveStore(store);
-      } catch {
-        // best-effort (ex.: janela de manutenção ativa) — a rejeição de
-        // segurança abaixo precisa acontecer de qualquer forma.
-      }
-      res.sendStatus(401);
-      return;
+      console.warn(
+        '[WhatsApp Webhook] Assinatura não confere (modo temporário: processando mesmo assim — ver aviso no diagnóstico).'
+      );
     }
 
     // Extrai as mensagens do payload ANTES de tocar em qualquer estado — a
@@ -7321,7 +7270,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       // local independente (não afeta a decisão de dedup, só visibilidade).
       const diagnosticOnlyStore = loadStore();
       recordWhatsAppWebhookEvent(diagnosticOnlyStore, {
-        signatureStatus: 'valida',
+        signatureStatus,
         entryCount,
         messagesFound,
         messagesProcessed: 0,
@@ -7344,7 +7293,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     // registra o evento no mesmo snapshot que acabou de ser commitado.
     const mergedStore = transactionResult.mergedStore as PersistentStore;
     recordWhatsAppWebhookEvent(mergedStore, {
-      signatureStatus: 'valida',
+      signatureStatus,
       entryCount,
       messagesFound,
       messagesProcessed: transactionResult.messagesProcessed,

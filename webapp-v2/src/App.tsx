@@ -2649,6 +2649,8 @@ export default function App() {
                               <strong>
                                 {whatsappDiagnostics.lastEvent.signatureStatus === 'valida'
                                   ? 'válida'
+                                  : whatsappDiagnostics.lastEvent.signatureStatus === 'invalida_processada_mesmo_assim'
+                                  ? 'inválida — processada mesmo assim (modo temporário, ver suporte YCloud)'
                                   : whatsappDiagnostics.lastEvent.signatureStatus === 'invalida'
                                   ? 'inválida'
                                   : 'rejeitado — sem YCLOUD_WEBHOOK_SECRET'}

@@ -1288,7 +1288,16 @@ export interface IntegrationStatus {
 // Registro de cada chamada recebida no webhook do WhatsApp — nunca guarda token,
 // segredo ou o corpo bruto do evento, só o suficiente para diagnosticar sem expor
 // dado sensível: resultado da verificação de assinatura e o que foi (ou não) salvo.
-export type WhatsAppWebhookSignatureStatus = 'valida' | 'invalida' | 'rejeitado_sem_app_secret';
+// 'invalida_processada_mesmo_assim': modo temporário enquanto investigamos com a
+// YCloud por que a assinatura documentada não bate (ver server.ts) — processa a
+// mensagem mesmo sem poder confirmar a origem, em vez de recusar. Nunca
+// silenciado como 'valida', pra ficar visível no diagnóstico que a verificação
+// real está desligada.
+export type WhatsAppWebhookSignatureStatus =
+  | 'valida'
+  | 'invalida'
+  | 'invalida_processada_mesmo_assim'
+  | 'rejeitado_sem_app_secret';
 
 export interface WhatsAppWebhookLogEntry {
   id: string;
