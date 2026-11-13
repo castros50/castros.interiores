@@ -7180,17 +7180,34 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     // se o cabeçalho/corpo chegaram do jeito esperado, e compara a assinatura
     // calculada aqui com a recebida.
     if (!signatureValid) {
-      let recomputedHex: string | undefined;
       let timestampUsed: string | undefined;
+      let receivedSigHex: string | undefined;
+      const candidateMatches: Record<string, boolean> = {};
       try {
         const fields = (signatureHeader || '').split(',').map((part) => part.trim().split('='));
         timestampUsed = fields.find(([key]) => key === 't')?.[1];
-        if (timestampUsed && rawBody) {
-          recomputedHex = crypto
-            .createHmac('sha256', webhookSecret)
-            .update(timestampUsed + '.')
-            .update(rawBody)
-            .digest('hex');
+        receivedSigHex = fields.find(([key]) => key === 's')?.[1];
+        if (timestampUsed && rawBody && receivedSigHex) {
+          const received = Buffer.from(receivedSigHex, 'hex');
+          const secretNoPrefix = webhookSecret.replace(/^whsec_/, '');
+          const candidates: Array<[string, () => Buffer]> = [
+            ['stringKey_ts.body', () => crypto.createHmac('sha256', webhookSecret).update(timestampUsed + '.').update(rawBody).digest()],
+            ['stringKey_tsBody_noDot', () => crypto.createHmac('sha256', webhookSecret).update(timestampUsed!).update(rawBody).digest()],
+            ['stringKey_bodyOnly', () => crypto.createHmac('sha256', webhookSecret).update(rawBody).digest()],
+            ['hexKeyNoPrefix_ts.body', () => crypto.createHmac('sha256', Buffer.from(secretNoPrefix, 'hex')).update(timestampUsed + '.').update(rawBody).digest()],
+            ['hexKeyNoPrefix_bodyOnly', () => crypto.createHmac('sha256', Buffer.from(secretNoPrefix, 'hex')).update(rawBody).digest()],
+            ['stringKeyNoPrefix_ts.body', () => crypto.createHmac('sha256', secretNoPrefix).update(timestampUsed + '.').update(rawBody).digest()],
+            ['stringKeyNoPrefix_bodyOnly', () => crypto.createHmac('sha256', secretNoPrefix).update(rawBody).digest()],
+            ['stringKey_fullHeader.body', () => crypto.createHmac('sha256', webhookSecret).update(`t=${timestampUsed}.`).update(rawBody).digest()],
+          ];
+          for (const [name, compute] of candidates) {
+            try {
+              const digest = compute();
+              candidateMatches[name] = digest.length === received.length && crypto.timingSafeEqual(digest, received);
+            } catch {
+              candidateMatches[name] = false;
+            }
+          }
         }
       } catch {
         // ignora — é só diagnóstico
@@ -7200,9 +7217,8 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         signatureHeaderRaw: signatureHeader,
         rawBodyPresent: Boolean(rawBody),
         rawBodyLength: rawBody?.length,
-        rawBodyFull: rawBody ? rawBody.toString('utf8') : undefined,
         timestampUsed,
-        recomputedHex,
+        candidateMatches,
         webhookSecretLength: webhookSecret.length,
         webhookSecretEdges: `${webhookSecret.slice(0, 6)}...${webhookSecret.slice(-4)}`,
       });
