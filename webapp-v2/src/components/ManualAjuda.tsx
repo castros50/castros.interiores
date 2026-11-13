@@ -152,14 +152,20 @@ export const ManualAjuda: React.FC = () => {
             <li>A Júlia nunca inventa fotos — ela usa as fotos reais já cadastradas ou enviadas pelo celular.</li>
             <li>
               Ao final, na etapa de programação, você escolhe entre{' '}
-              <strong>"Planejar publicação"</strong> (modo manual) ou tentar o modo automático. O botão{' '}
-              <strong>Confirmar Envio Manual</strong> só aparece quando você mesmo já postou pelo seu
-              WhatsApp/Instagram e quer registrar isso — essa confirmação fica marcada como "envio manual",
-              nunca como publicação automática comprovada.
+              <strong>"Planejar publicação"</strong> (modo manual) ou <strong>"Agendar Publicação Automática"</strong>.
+              No Instagram, Facebook e na Lista de Transmissão do WhatsApp, o modo automático é real: com as
+              credenciais/template configurados (ver seção 13), a publicação sai de verdade no horário marcado,
+              sem precisar de nenhum clique. No "Status" do WhatsApp, o botão automático fica sempre desabilitado
+              — esse canal não tem API oficial de publicação, é sempre manual. O botão{' '}
+              <strong>Confirmar Envio Manual</strong> fica pra quando você mesmo já postou na mão e quer registrar
+              isso — essa confirmação fica marcada como "envio manual", nunca como publicação automática
+              comprovada.
             </li>
             <li>
               O status <strong>"Concluída"</strong> só aparece quando o próprio canal oficial confirmar a
-              publicação de verdade (ver seção 13) — nunca aparece por um clique humano.
+              publicação de verdade (ver seção 13) — nunca aparece por um clique humano. Se a publicação
+              automática falhar (credencial ausente, template não configurado, etc.), o item fica marcado{' '}
+              <strong>"Com Erro"</strong> com o motivo exato, nunca finge sucesso.
             </li>
             <li>
               No chat da Júlia (<strong>Conversar</strong>), pergunte sobre o status real de qualquer campanha —
@@ -502,6 +508,32 @@ export const ManualAjuda: React.FC = () => {
                 <code>YCLOUD_WEBHOOK_SECRET</code>, <code>YCLOUD_API_KEY</code> e{' '}
                 <code>YCLOUD_WHATSAPP_FROM</code>, além de cadastrar a URL pública{' '}
                 <code>/api/webhooks/whatsapp</code> como endpoint de webhook no console da YCloud.
+              </p>
+              <p className="text-[11px] text-amber-900 mt-2">
+                A chamada real de publicação no Instagram e no Facebook (Meta Graph API) também já está
+                implementada — exige <code>META_ACCESS_TOKEN</code> + <code>META_IG_BUSINESS_ACCOUNT_ID</code>{' '}
+                (Instagram) ou <code>META_PAGE_ID</code> (Facebook), além de <code>APP_URL</code> (endereço público
+                do app, usado pela Graph API pra buscar a imagem a publicar). Teste a conexão em Configurações →
+                "Integrações Oficiais (Meta Graph API)".
+              </p>
+            </div>
+            <div className="p-3 rounded-lg border border-amber-200 bg-amber-50">
+              <p className="text-xs font-bold text-amber-900">
+                1b. Disparo automático em massa pelo WhatsApp (Lista de Transmissão)
+              </p>
+              <p className="text-[11px] text-amber-900 mt-1">
+                Mandar marketing em massa fora da janela de 24h de conversa só é permitido pela política da Meta
+                usando um <strong>template de mensagem já aprovado</strong> — nunca texto livre (arriscaria o
+                bloqueio do número). Configure o nome do template aprovado em Configurações → "Template de
+                WhatsApp para Disparo Automático em Massa" antes de agendar uma campanha automática nesse canal;
+                sem isso, o disparo falha com um aviso claro, nunca manda texto livre no lugar. O disparo vai para
+                todos os clientes cadastrados no sistema — hoje não existe controle de opt-out/consentimento de
+                marketing.
+              </p>
+              <p className="text-[11px] text-amber-900 mt-2">
+                <strong>O "Status" do WhatsApp nunca pode ser automatizado</strong>, com nenhuma integração: não
+                existe endpoint de publicação de Status em nenhuma API oficial do WhatsApp. Esse canal fica sempre
+                em envio manual, mesmo com tudo o mais conectado.
               </p>
             </div>
             <div className="p-3 rounded-lg border border-amber-200 bg-amber-50">

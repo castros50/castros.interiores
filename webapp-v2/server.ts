@@ -2521,6 +2521,176 @@ async function sendWhatsAppMessage(
   }
 }
 
+// Envio de mensagem de TEMPLATE pré-aprovado pela Meta via YCloud — distinto de
+// sendWhatsAppMessage (texto livre, só usado dentro da janela de 24h de uma conversa
+// já aberta pelo cliente, como a Carla). Mandar marketing em massa fora dessa janela
+// só é permitido pela política da Meta usando um template aprovado; nunca usar texto
+// livre aqui. Formato idêntico ao da WhatsApp Cloud API oficial (a YCloud replica esse
+// contrato como BSP) — não testável neste sandbox (api.ycloud.com inacessível daqui);
+// precisa de validação com um template real já aprovado, direto em produção.
+async function sendWhatsAppTemplateMessage(
+  to: string,
+  templateName: string,
+  languageCode: string,
+  bodyText: string,
+  headerImageUrl?: string
+): Promise<{ ok: boolean; externalId?: string; errorMessage?: string }> {
+  const apiKey = process.env.YCLOUD_API_KEY;
+  const fromNumber = process.env.YCLOUD_WHATSAPP_FROM;
+  if (!apiKey || !fromNumber) {
+    return {
+      ok: false,
+      errorMessage:
+        'Integração do WhatsApp não configurada no ambiente (YCLOUD_API_KEY/YCLOUD_WHATSAPP_FROM ausentes).',
+    };
+  }
+  const components: Array<Record<string, unknown>> = [];
+  if (headerImageUrl) {
+    components.push({
+      type: 'header',
+      parameters: [{ type: 'image', image: { link: headerImageUrl } }],
+    });
+  }
+  components.push({
+    type: 'body',
+    parameters: [{ type: 'text', text: bodyText }],
+  });
+  try {
+    const resp = await fetch('https://api.ycloud.com/v2/whatsapp/messages/sendDirectly', {
+      method: 'POST',
+      headers: {
+        'X-API-Key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: fromNumber,
+        to: to.startsWith('+') ? to : `+${to.replace(/\D/g, '')}`,
+        type: 'template',
+        template: {
+          name: templateName,
+          language: { code: languageCode },
+          components,
+        },
+      }),
+    });
+    const data = (await resp.json()) as {
+      id?: string;
+      wamid?: string;
+      error?: { message?: string };
+    };
+    if (!resp.ok || data.error) {
+      return { ok: false, errorMessage: data.error?.message || `Falha ao enviar (HTTP ${resp.status}).` };
+    }
+    return { ok: true, externalId: data.wamid || data.id };
+  } catch (err) {
+    return { ok: false, errorMessage: err instanceof Error ? err.message : 'Falha de rede ao enviar mensagem.' };
+  }
+}
+
+// Endereço público do app para montar URLs de imagem que a Graph API consiga buscar
+// de fora — nunca derivado de uma requisição, pois tarefas em segundo plano não têm
+// uma. Sem isso configurado no ambiente, a publicação real falha honestamente.
+function getPublicBaseUrl(): string | null {
+  const url = process.env.APP_URL;
+  return url && url.trim() ? url.trim().replace(/\/$/, '') : null;
+}
+
+// Publica de verdade no Instagram (Feed ou Stories) via Meta Graph API — fluxo oficial
+// em 2 passos: cria o container de mídia, depois publica o container. META_ACCESS_TOKEN
+// e META_IG_BUSINESS_ACCOUNT_ID são as MESMAS variáveis já usadas por
+// checkIntegrationConnection('instagram') — nunca inventa nomes novos.
+async function publishToInstagram(
+  imagePublicUrl: string,
+  caption: string,
+  variant: 'feed' | 'stories'
+): Promise<{ ok: boolean; externalId?: string; errorMessage?: string }> {
+  const token = process.env.META_ACCESS_TOKEN;
+  const igBusinessId = process.env.META_IG_BUSINESS_ACCOUNT_ID;
+  if (!token || !igBusinessId) {
+    return {
+      ok: false,
+      errorMessage:
+        'Integração do Instagram não configurada no ambiente (META_ACCESS_TOKEN/META_IG_BUSINESS_ACCOUNT_ID ausentes).',
+    };
+  }
+  try {
+    const containerResp = await fetch(`https://graph.facebook.com/v20.0/${igBusinessId}/media`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_url: imagePublicUrl,
+        caption,
+        ...(variant === 'stories' ? { media_type: 'STORIES' } : {}),
+        access_token: token,
+      }),
+    });
+    const containerData = (await containerResp.json()) as { id?: string; error?: { message?: string } };
+    if (!containerResp.ok || containerData.error || !containerData.id) {
+      return {
+        ok: false,
+        errorMessage: containerData.error?.message || `Falha ao criar container de mídia (HTTP ${containerResp.status}).`,
+      };
+    }
+    const publishResp = await fetch(`https://graph.facebook.com/v20.0/${igBusinessId}/media_publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ creation_id: containerData.id, access_token: token }),
+    });
+    const publishData = (await publishResp.json()) as { id?: string; error?: { message?: string } };
+    if (!publishResp.ok || publishData.error || !publishData.id) {
+      return {
+        ok: false,
+        errorMessage: publishData.error?.message || `Falha ao publicar o container de mídia (HTTP ${publishResp.status}).`,
+      };
+    }
+    return { ok: true, externalId: publishData.id };
+  } catch (err) {
+    return { ok: false, errorMessage: err instanceof Error ? err.message : 'Falha de rede ao publicar no Instagram.' };
+  }
+}
+
+// Publica de verdade na Página do Facebook via Meta Graph API. META_ACCESS_TOKEN e
+// META_PAGE_ID são as MESMAS variáveis já usadas por checkIntegrationConnection('facebook').
+async function publishToFacebookPage(
+  imagePublicUrl: string,
+  caption: string
+): Promise<{ ok: boolean; externalId?: string; errorMessage?: string }> {
+  const token = process.env.META_ACCESS_TOKEN;
+  const pageId = process.env.META_PAGE_ID;
+  if (!token || !pageId) {
+    return {
+      ok: false,
+      errorMessage: 'Integração do Facebook não configurada no ambiente (META_ACCESS_TOKEN/META_PAGE_ID ausentes).',
+    };
+  }
+  try {
+    const resp = await fetch(`https://graph.facebook.com/v20.0/${pageId}/photos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: imagePublicUrl, caption, access_token: token }),
+    });
+    const data = (await resp.json()) as { id?: string; post_id?: string; error?: { message?: string } };
+    if (!resp.ok || data.error || !(data.post_id || data.id)) {
+      return { ok: false, errorMessage: data.error?.message || `Falha ao publicar (HTTP ${resp.status}).` };
+    }
+    return { ok: true, externalId: data.post_id || data.id };
+  } catch (err) {
+    return { ok: false, errorMessage: err instanceof Error ? err.message : 'Falha de rede ao publicar no Facebook.' };
+  }
+}
+
+// Lista real e deduplicada de telefones de clientes cadastrados — usada como
+// destinatários do disparo em massa via WhatsApp. Reaproveita store.clients (já
+// deduplicado por findClientByPhoneOrName em todo o resto do sistema); nunca monta
+// uma lista paralela. Não há hoje nenhum controle de opt-out/consentimento de
+// marketing — todos os clientes cadastrados recebem.
+function getBroadcastRecipientPhones(store: PersistentStore): string[] {
+  const phones = (store.clients || [])
+    .map((c) => normalizePhoneDigits(c.phone))
+    .filter((p) => p.length >= 10);
+  return Array.from(new Set(phones));
+}
+
 // Processa UMA mensagem inbound real do webhook do WhatsApp: identifica (ou
 // cria) o atendimento pelo telefone, nunca duplica a mesma mensagem em
 // reentregas do webhook (dedup por externalMessageId), identifica a campanha de
@@ -2753,20 +2923,142 @@ async function executeBackgroundTask(
       return result.message;
     }
     case 'publicar_campanha': {
-      const channel = task.channel || 'whatsapp';
-      const status = store.settings.integrations?.[channel];
-      if (!status || status.state !== 'conectado') {
-        throw new Error(
-          `Integração oficial do canal "${channel}" não está conectada. Publicação automática não pode ocorrer — envio manual necessário.`
-        );
+      const scheduleItemId = task.payload?.scheduleItemId as string | undefined;
+      const scheduleItem = scheduleItemId
+        ? store.juliaData?.campaigns.find((c) => c.id === scheduleItemId)
+        : undefined;
+      if (!scheduleItem) {
+        throw new Error('Item de agenda não encontrado — a campanha pode ter sido removida ou editada.');
       }
-      // Quando uma integração real estiver conectada, a chamada de publicação de
-      // fato (API oficial do canal) entra aqui. Hoje, sem nenhum canal conectado
-      // neste ambiente, este caminho nunca é alcançado — é código preparado, não
-      // uma automação ativa (ver seção de limitações na documentação da tarefa).
-      throw new Error(
-        'Publicação automática ainda não implementada para este canal — apenas a verificação de conexão está pronta. Use o envio manual.'
-      );
+      const project = scheduleItem.projectId
+        ? store.juliaData?.projects.find((p) => p.id === scheduleItem.projectId)
+        : undefined;
+      const now = new Date().toISOString();
+
+      // "Status" do WhatsApp nunca tem endpoint de publicação em nenhuma API oficial —
+      // não existe o que conectar aqui. Sempre manual, nunca uma tentativa real.
+      if (scheduleItem.channel === 'WhatsApp Status') {
+        scheduleItem.status = 'Com Erro';
+        scheduleItem.integrationNote =
+          'O Status do WhatsApp não tem endpoint de publicação em nenhuma API oficial — nenhuma integração consegue automatizar esse canal. Envio manual obrigatório.';
+        throw new Error(scheduleItem.integrationNote);
+      }
+
+      if (scheduleItem.channel === 'Instagram Feed' || scheduleItem.channel === 'Instagram Stories') {
+        const baseUrl = getPublicBaseUrl();
+        const photo = scheduleItem.photoId
+          ? store.juliaData?.photos.find((p) => p.id === scheduleItem.photoId)
+          : undefined;
+        if (!baseUrl) {
+          scheduleItem.integrationNote =
+            'APP_URL não configurado no ambiente — não é possível montar a URL pública da imagem para a Graph API.';
+          throw new Error(scheduleItem.integrationNote);
+        }
+        if (!photo) {
+          scheduleItem.integrationNote = 'Nenhuma foto real vinculada a este item da agenda — não é possível publicar sem imagem.';
+          throw new Error(scheduleItem.integrationNote);
+        }
+        const caption =
+          (scheduleItem.channel === 'Instagram Stories'
+            ? project?.socialMediaVersions?.instagramStories
+            : project?.socialMediaVersions?.instagramFeed) ||
+          project?.copyText ||
+          scheduleItem.captionPreview;
+        const result = await publishToInstagram(
+          `${baseUrl}${photo.imageUrl}`,
+          caption,
+          scheduleItem.channel === 'Instagram Stories' ? 'stories' : 'feed'
+        );
+        if (!result.ok) {
+          scheduleItem.status = 'Com Erro';
+          scheduleItem.integrationNote = result.errorMessage || 'Falha ao publicar no Instagram.';
+          throw new Error(scheduleItem.integrationNote);
+        }
+        scheduleItem.status = 'Concluída';
+        scheduleItem.externalConfirmation = {
+          confirmedAt: now,
+          externalId: result.externalId,
+          source: 'Meta Graph API (Instagram)',
+        };
+        scheduleItem.integrationNote = `Publicado com sucesso no Instagram (id: ${result.externalId || 'não informado'}).`;
+        return scheduleItem.integrationNote;
+      }
+
+      if (scheduleItem.channel === 'Facebook') {
+        const baseUrl = getPublicBaseUrl();
+        const photo = scheduleItem.photoId
+          ? store.juliaData?.photos.find((p) => p.id === scheduleItem.photoId)
+          : undefined;
+        if (!baseUrl) {
+          scheduleItem.integrationNote =
+            'APP_URL não configurado no ambiente — não é possível montar a URL pública da imagem para a Graph API.';
+          throw new Error(scheduleItem.integrationNote);
+        }
+        if (!photo) {
+          scheduleItem.integrationNote = 'Nenhuma foto real vinculada a este item da agenda — não é possível publicar sem imagem.';
+          throw new Error(scheduleItem.integrationNote);
+        }
+        const caption = project?.socialMediaVersions?.facebook || project?.copyText || scheduleItem.captionPreview;
+        const result = await publishToFacebookPage(`${baseUrl}${photo.imageUrl}`, caption);
+        if (!result.ok) {
+          scheduleItem.status = 'Com Erro';
+          scheduleItem.integrationNote = result.errorMessage || 'Falha ao publicar no Facebook.';
+          throw new Error(scheduleItem.integrationNote);
+        }
+        scheduleItem.status = 'Concluída';
+        scheduleItem.externalConfirmation = {
+          confirmedAt: now,
+          externalId: result.externalId,
+          source: 'Meta Graph API (Facebook)',
+        };
+        scheduleItem.integrationNote = `Publicado com sucesso no Facebook (id: ${result.externalId || 'não informado'}).`;
+        return scheduleItem.integrationNote;
+      }
+
+      // 'Lista de Transmissão WhatsApp': dispara o template aprovado, individualmente,
+      // pra cada cliente real cadastrado — nunca texto livre (violaria a política da
+      // Meta fora da janela de 24h de conversa).
+      const template = store.settings.juliaWhatsappBroadcastTemplate;
+      if (!template || !template.name) {
+        scheduleItem.integrationNote =
+          'Nenhum template de WhatsApp aprovado configurado em Configurações — configure o nome do template antes de agendar o disparo automático.';
+        throw new Error(scheduleItem.integrationNote);
+      }
+      const recipients = getBroadcastRecipientPhones(store);
+      if (recipients.length === 0) {
+        scheduleItem.integrationNote = 'Nenhum cliente cadastrado com telefone válido para o disparo.';
+        throw new Error(scheduleItem.integrationNote);
+      }
+      const bodyText = project?.socialMediaVersions?.whatsappMessage || project?.copyText || scheduleItem.captionPreview;
+      const baseUrl = getPublicBaseUrl();
+      const photo = scheduleItem.photoId
+        ? store.juliaData?.photos.find((p) => p.id === scheduleItem.photoId)
+        : undefined;
+      const headerImageUrl = template.hasImageHeader && baseUrl && photo ? `${baseUrl}${photo.imageUrl}` : undefined;
+
+      let successCount = 0;
+      for (const phone of recipients) {
+        const result = await sendWhatsAppTemplateMessage(
+          phone,
+          template.name,
+          template.languageCode || 'pt_BR',
+          bodyText,
+          headerImageUrl
+        );
+        if (result.ok) successCount++;
+      }
+
+      scheduleItem.integrationNote = `Disparo via template "${template.name}": ${successCount}/${recipients.length} destinatário(s) alcançado(s).`;
+      if (successCount === 0) {
+        scheduleItem.status = 'Com Erro';
+        throw new Error(scheduleItem.integrationNote);
+      }
+      scheduleItem.status = 'Concluída';
+      scheduleItem.externalConfirmation = {
+        confirmedAt: now,
+        source: 'YCloud (template WhatsApp)',
+      };
+      return scheduleItem.integrationNote;
     }
     case 'enviar_resposta_whatsapp': {
       const status = store.settings.integrations?.whatsapp;
@@ -7607,6 +7899,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
             channel,
             idempotencyKey: `julia-publicar-${camp.id}`,
             createdBy: (req.headers['x-station-name'] as string) || undefined,
+            payload: { scheduleItemId: camp.id },
           });
           return { ...camp, backgroundTaskId: task.id };
         }
@@ -8215,6 +8508,58 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     };
     saveStore(store);
     res.json({ ok: true, result: store.settings.integrations.whatsapp });
+  });
+
+  // Checagem viva (chama a Graph API de verdade) para Instagram/Facebook — mesmo
+  // padrão exato da rota de verificação do WhatsApp acima, só parametrizada por canal.
+  app.post('/api/integrations/:channel/verify-connection', async (req, res) => {
+    const { channel } = req.params as { channel: string };
+    if (channel !== 'instagram' && channel !== 'facebook') {
+      res.status(400).json({ error: 'Canal inválido. Use "instagram" ou "facebook".' });
+      return;
+    }
+    const store = loadStore();
+    const result = await checkIntegrationConnection(channel);
+    if (!store.settings.integrations) store.settings.integrations = {};
+    store.settings.integrations[channel] = {
+      state: result.state,
+      lastCheckedAt: new Date().toISOString(),
+      errorMessage: result.ok ? undefined : result.message,
+      accountLabel: result.accountLabel,
+    };
+    saveStore(store);
+    res.json({ ok: true, result: store.settings.integrations[channel] });
+  });
+
+  // Configura o template de WhatsApp aprovado pela Meta usado no disparo automático em
+  // massa (Lista de Transmissão) — nunca aceita texto livre nesse fluxo; só o nome do
+  // template, que precisa já existir aprovado no WhatsApp Business Manager/YCloud.
+  app.put('/api/settings/julia-whatsapp-template', (req, res) => {
+    const { name, languageCode, hasImageHeader, actorName } = req.body as {
+      name?: string;
+      languageCode?: string;
+      hasImageHeader?: boolean;
+      actorName?: string;
+    };
+    if (!name || !name.trim()) {
+      res.status(400).json({ error: 'Informe o nome do template aprovado pela Meta.' });
+      return;
+    }
+    const store = loadStore();
+    store.settings.juliaWhatsappBroadcastTemplate = {
+      name: name.trim(),
+      languageCode: (languageCode || 'pt_BR').trim(),
+      hasImageHeader: Boolean(hasImageHeader),
+      updatedAt: new Date().toISOString(),
+      updatedBy: actorName,
+    };
+    saveStore(store);
+    broadcastRealtimeEvent({
+      type: 'settings:updated',
+      timestamp: new Date().toISOString(),
+      settings: store.settings,
+    });
+    res.json({ ok: true, juliaWhatsappBroadcastTemplate: store.settings.juliaWhatsappBroadcastTemplate });
   });
 
   // Envio imediato pelo canal OFICIAL e integrado do WhatsApp — diferente do

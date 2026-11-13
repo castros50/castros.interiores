@@ -225,6 +225,12 @@ export default function App() {
     juliaDataBackup?: { bytes: number; limitBytes: number; percentUsed: number; nearLimit: boolean; critical: boolean };
   } | null>(null);
   const [isVerifyingWhatsApp, setIsVerifyingWhatsApp] = useState(false);
+  const [isVerifyingInstagram, setIsVerifyingInstagram] = useState(false);
+  const [isVerifyingFacebook, setIsVerifyingFacebook] = useState(false);
+  const [isSavingWhatsappTemplate, setIsSavingWhatsappTemplate] = useState(false);
+  const [whatsappTemplateNameInput, setWhatsappTemplateNameInput] = useState('');
+  const [whatsappTemplateLanguageInput, setWhatsappTemplateLanguageInput] = useState('pt_BR');
+  const [whatsappTemplateHasImageHeaderInput, setWhatsappTemplateHasImageHeaderInput] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSavedSuccessAt, setLastSavedSuccessAt] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -434,6 +440,49 @@ export default function App() {
       await fetchWhatsappDiagnostics();
     } finally {
       setIsVerifyingWhatsApp(false);
+    }
+  };
+
+  const handleVerifyIntegrationConnection = async (channel: 'instagram' | 'facebook') => {
+    const setVerifying = channel === 'instagram' ? setIsVerifyingInstagram : setIsVerifyingFacebook;
+    setVerifying(true);
+    try {
+      const res = await fetch(`/api/integrations/${channel}/verify-connection`, { method: 'POST' });
+      const data = await res.json();
+      if (data.ok && data.result) {
+        setSettings((prev) => ({
+          ...prev,
+          integrations: { ...prev.integrations, [channel]: data.result },
+        }));
+      }
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const handleSaveWhatsappBroadcastTemplate = async () => {
+    if (!whatsappTemplateNameInput.trim()) return;
+    setIsSavingWhatsappTemplate(true);
+    try {
+      const res = await fetch('/api/settings/julia-whatsapp-template', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: whatsappTemplateNameInput.trim(),
+          languageCode: whatsappTemplateLanguageInput.trim() || 'pt_BR',
+          hasImageHeader: whatsappTemplateHasImageHeaderInput,
+          actorName: currentUser?.displayName || currentUser?.email || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok && data.juliaWhatsappBroadcastTemplate) {
+        setSettings((prev) => ({
+          ...prev,
+          juliaWhatsappBroadcastTemplate: data.juliaWhatsappBroadcastTemplate,
+        }));
+      }
+    } finally {
+      setIsSavingWhatsappTemplate(false);
     }
   };
 
@@ -2836,6 +2885,102 @@ export default function App() {
                       )}
                     </>
                   )}
+                </div>
+
+                {/* Integrações oficiais Instagram/Facebook — mesma lógica honesta do WhatsApp
+                    acima: "Conectado" só depois de uma verificação real contra a Graph API. */}
+                <div className="p-4 rounded-xl bg-[#F9F6F0] border border-[#E5DEC9] space-y-3 text-xs">
+                  <h3 className="font-bold text-[#181512]">Integrações Oficiais (Meta Graph API)</h3>
+                  <p className="text-[#57534E]">
+                    Publicação automática real no Instagram e Facebook exige <code className="font-mono">META_ACCESS_TOKEN</code> +{' '}
+                    <code className="font-mono">META_IG_BUSINESS_ACCOUNT_ID</code> (Instagram) ou{' '}
+                    <code className="font-mono">META_PAGE_ID</code> (Facebook) configurados no servidor, além de{' '}
+                    <code className="font-mono">APP_URL</code> (endereço público do app, usado pra Graph API buscar a imagem).
+                  </p>
+                  {(['instagram', 'facebook'] as const).map((channel) => {
+                    const status = settings.integrations?.[channel];
+                    const isVerifying = channel === 'instagram' ? isVerifyingInstagram : isVerifyingFacebook;
+                    return (
+                      <div key={channel} className="flex items-center justify-between flex-wrap gap-2 pt-2 border-t border-[#E5DEC9] first:border-t-0 first:pt-0">
+                        <div className="flex items-center gap-2">
+                          {status?.state === 'conectado' ? (
+                            <Check className="w-4 h-4 text-emerald-700" />
+                          ) : (
+                            <AlertTriangle className="w-4 h-4 text-amber-700" />
+                          )}
+                          <span className="font-semibold text-[#181512] capitalize">{channel}</span>
+                          <span className="text-[#6B6257]">
+                            {status?.state === 'conectado'
+                              ? `Conectado${status.accountLabel ? ` (${status.accountLabel})` : ''}`
+                              : status?.errorMessage || 'Não verificado ainda'}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleVerifyIntegrationConnection(channel)}
+                          disabled={isVerifying}
+                          className="px-2.5 py-1.5 rounded border border-[#9A7138] text-[#9A7138] text-[10px] font-semibold hover:bg-[#9A7138]/10 disabled:opacity-50"
+                        >
+                          {isVerifying ? 'Verificando...' : 'Verificar conexão agora'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Template de WhatsApp aprovado pela Meta — único jeito compatível com a
+                    política da Meta de mandar marketing em massa fora da janela de 24h de
+                    conversa. Sem isso configurado, o disparo automático da Lista de
+                    Transmissão falha honestamente em vez de mandar texto livre. */}
+                <div className="p-4 rounded-xl bg-[#F9F6F0] border border-[#E5DEC9] space-y-3 text-xs">
+                  <h3 className="font-bold text-[#181512]">Template de WhatsApp para Disparo Automático em Massa</h3>
+                  <p className="text-[#57534E]">
+                    Precisa já existir, aprovado pela Meta, no WhatsApp Business Manager/YCloud. Usado só pela Júlia ao agendar
+                    uma campanha automática no canal "Lista de Transmissão WhatsApp" — nunca texto livre nesse disparo.
+                  </p>
+                  {settings.juliaWhatsappBroadcastTemplate && (
+                    <p className="text-emerald-800 bg-emerald-50 rounded px-2 py-1.5">
+                      Configurado: "{settings.juliaWhatsappBroadcastTemplate.name}" ({settings.juliaWhatsappBroadcastTemplate.languageCode})
+                      {settings.juliaWhatsappBroadcastTemplate.hasImageHeader ? ' · com cabeçalho de imagem' : ''}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div>
+                      <label className="block text-[#57534E] mb-1">Nome do template aprovado</label>
+                      <input
+                        type="text"
+                        value={whatsappTemplateNameInput}
+                        onChange={(e) => setWhatsappTemplateNameInput(e.target.value)}
+                        placeholder={settings.juliaWhatsappBroadcastTemplate?.name || 'ex: promocao_castros'}
+                        className="rounded border border-[#D6CFC5] px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[#57534E] mb-1">Idioma</label>
+                      <input
+                        type="text"
+                        value={whatsappTemplateLanguageInput}
+                        onChange={(e) => setWhatsappTemplateLanguageInput(e.target.value)}
+                        className="w-20 rounded border border-[#D6CFC5] px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                    <label className="flex items-center gap-1.5 text-[#57534E] pb-1.5">
+                      <input
+                        type="checkbox"
+                        checked={whatsappTemplateHasImageHeaderInput}
+                        onChange={(e) => setWhatsappTemplateHasImageHeaderInput(e.target.checked)}
+                      />
+                      Tem cabeçalho de imagem
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleSaveWhatsappBroadcastTemplate}
+                      disabled={isSavingWhatsappTemplate || !whatsappTemplateNameInput.trim()}
+                      className="px-3 py-1.5 rounded bg-[#181512] hover:bg-[#2E2722] disabled:opacity-50 text-white text-[10px] font-semibold"
+                    >
+                      {isSavingWhatsappTemplate ? 'Salvando...' : 'Salvar Template'}
+                    </button>
+                  </div>
                 </div>
 
                 <form onSubmit={handleSaveSettings} className="space-y-4 max-w-2xl">

@@ -2763,7 +2763,13 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
     let integrationNote = 'Publicação planejada. Envio manual necessário.';
 
     if (mode === 'automatica') {
-      if (
+      if (channel === 'WhatsApp Status') {
+        // "Status" do WhatsApp nunca tem endpoint de publicação em nenhuma API oficial —
+        // diferente dos outros canais, aqui não existe o que conectar. Sempre manual.
+        finalStatus = 'Planejada';
+        integrationNote =
+          'Publicação planejada. Envio manual obrigatório — o Status do WhatsApp não tem endpoint de publicação em nenhuma API oficial.';
+      } else if (
         channelIntegration.connected &&
         channelIntegration.autoPublishSupported
       ) {
@@ -5678,15 +5684,18 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                       Opção 2 — Agendar Publicação Automática
                     </div>
                     <p className="text-[11px] text-[#57534E]">
-                      Disponível somente quando houver integração oficial ativa e autorizada. Sem integração configurada, registrará como planejada para envio manual.
+                      {activeProject.scheduleChannel === 'WhatsApp Status'
+                        ? 'O Status do WhatsApp não tem endpoint de publicação em nenhuma API oficial — este canal é sempre manual, nenhuma integração consegue automatizá-lo.'
+                        : 'Disponível somente quando houver integração oficial ativa e autorizada. Sem integração configurada, registrará como planejada para envio manual.'}
                     </p>
                   </div>
                   <button
                     type="button"
+                    disabled={activeProject.scheduleChannel === 'WhatsApp Status'}
                     onClick={() =>
                       handleCreateScheduleEntry('automatica', true)
                     }
-                    className="w-full py-2.5 px-4 rounded-lg bg-[#FAF8F5] hover:bg-[#F3EFE6] border border-[#D6CFC5] text-[#181512] text-xs font-semibold flex items-center justify-center gap-2"
+                    className="w-full py-2.5 px-4 rounded-lg bg-[#FAF8F5] hover:bg-[#F3EFE6] border border-[#D6CFC5] text-[#181512] text-xs font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Calendar className="w-4 h-4 text-[#9A7138]" />
                     <span>
@@ -6549,8 +6558,14 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                 </button>
                 <button
                   type="button"
+                  disabled={newCampChannel === 'WhatsApp Status'}
                   onClick={() => handleCreateScheduleEntry('automatica', false)}
-                  className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] bg-white hover:bg-[#F3EFE6] text-[#181512] text-xs font-semibold flex items-center gap-1.5"
+                  title={
+                    newCampChannel === 'WhatsApp Status'
+                      ? 'O Status do WhatsApp não tem endpoint de publicação em nenhuma API oficial — sempre manual.'
+                      : undefined
+                  }
+                  className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] bg-white hover:bg-[#F3EFE6] text-[#181512] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <Calendar className="w-3.5 h-3.5 text-[#9A7138]" />
                   <span>Agendar Publicação Automática</span>

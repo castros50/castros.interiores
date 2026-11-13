@@ -1432,6 +1432,17 @@ export interface WorkshopSettings {
     instagram?: IntegrationStatus;
     facebook?: IntegrationStatus;
   };
+  // Template de mensagem aprovado pela Meta, usado pra disparo automático em massa
+  // (Lista de Transmissão) — mandar texto livre de marketing fora da janela de 24h
+  // violaria a política da Meta. Sem isso configurado, o disparo automático falha
+  // honestamente pedindo a configuração, nunca manda texto livre no lugar.
+  juliaWhatsappBroadcastTemplate?: {
+    name: string;
+    languageCode: string; // ex: "pt_BR"
+    hasImageHeader: boolean;
+    updatedAt: string;
+    updatedBy?: string;
+  };
   // Controles globais de automação (pausar/retomar sem reenviar tarefas concluídas)
   automationPaused?: boolean;
   automationPausedAt?: string;
