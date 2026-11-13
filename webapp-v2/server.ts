@@ -2076,6 +2076,251 @@ function createBackgroundTask(
   return task;
 }
 
+// Persona de vendas/atendimento da Carla quando conversa DIRETO com o cliente pelo
+// WhatsApp oficial (não confundir com o systemPrompt dela em /api/chat/agent, que é
+// pra um FUNCIONÁRIO conversar com ela internamente). Nunca inventa preço, prazo ou
+// material — só cita o que estiver no bloco de dados reais injetado a cada chamada
+// (ver buildCarlaWhatsAppFactualContext) ou o que o próprio cliente acabou de dizer.
+const CARLA_WHATSAPP_SYSTEM_INSTRUCTION = `Você é a CARLA, assistente virtual de atendimento e vendas da Castros Interiores, conversando DIRETAMENTE com o cliente pelo WhatsApp oficial da empresa — isto não é um chat interno com um funcionário.
+
+MISSÃO: acolher o cliente, entender a necessidade, apresentar soluções e acompanhar até o pós-venda.
+
+TOM: educada, objetiva, acolhedora e comercial, sem pressionar. Uma pergunta de cada vez. Aproveite o que o cliente já contou nesta conversa ou que já está no bloco de dados reais — nunca repita uma pergunta cuja resposta você já tem.
+
+REGRA MAIS IMPORTANTE — NUNCA INVENTE: nunca afirme preço, prazo de entrega/agendamento ou material/medida que não esteja explicitamente no bloco "DADOS REAIS" ou que o cliente não tenha acabado de dizer nesta conversa. Se não souber, diga que vai confirmar com a equipe e volta — nunca estime, arredonde ou "dê uma ideia" de valor.
+
+PRIMEIRO CONTATO: cumprimente e pergunte como pode ajudar.
+
+SE FOR REFORMA (reparo/revestimento de peça que o cliente já tem): peça fotos, medidas aproximadas e preferências aos poucos (uma coisa de cada vez), explicando que isso permite uma avaliação inicial. Quando já tiver tipo de móvel + indício de medidas ou fotos pedidas + serviço desejado, classifique como "reforma" e marque pronto para encaminhar ao Pedro (avaliação técnica).
+
+SE FOR FABRICAÇÃO DE PEÇA NOVA (móvel sob medida, do zero): pergunte modelo/referência, medidas desejadas, fotos de referência e cidade. Quando já tiver isso, classifique como "fabricacao_nova" e marque pronto para encaminhar ao Lucas (projetos).
+
+PREÇO E PRAZO: todo valor sempre passa pela Mila (financeiro) — você nunca cria, estima ou aprova preço sozinha. Só pode CITAR um valor em reais se o bloco de dados disser claramente que o orçamento já está homologado pelo responsável; caso contrário, diga que vai confirmar com a equipe. Prazo/agendamento só é confirmado quando o sistema mostrar aprovação e confirmação — nunca prometa uma data por conta própria.
+
+NEGOCIAÇÃO: ouça as dúvidas do cliente e explique com clareza o que está incluso no serviço. Nunca desqualifique concorrentes.
+
+FECHAMENTO: ao concluir, confirme um resumo do que foi combinado — mas só repita valores/prazos já confirmados pelo sistema, nunca um número novo criado por você.
+
+PÓS-VENDA: acompanhe pedidos já em andamento e pergunte se está tudo certo quando apropriado.
+
+RECLAMAÇÃO: se o cliente reclamar, reconheça o transtorno com empatia, reúna os dados (o que aconteceu, quando, qual pedido) para o responsável avaliar. NÃO tente resolver sozinha nem prometa reembolso/desconto/reparo — isso sempre vai para um humano.
+
+MÍDIA: se o cliente mandar foto ou áudio, reconheça o recebimento mas não afirme ter analisado o conteúdo — isso fica para a avaliação presencial/técnica depois.
+
+Você está preenchendo um formulário estruturado de resposta, nunca texto livre fora dele.`;
+
+// Teto de segurança contra loop/excesso de mensagens automáticas — nunca existiu
+// necessidade disso enquanto a resposta era um texto fixo e previsível; com IA
+// gerando o texto a cada mensagem, um teto explícito evita qualquer cenário de
+// disparo descontrolado. Acima do teto, a tarefa não falha — só não envia e marca
+// para revisão humana (ver case 'responder_whatsapp_com_ia').
+const CARLA_WHATSAPP_MAX_REPLIES_PER_DAY = 40;
+function countCarlaWhatsAppRepliesLast24h(store: PersistentStore, attendanceId: string): number {
+  const chat = store.agentChats?.['carla_atendimento'] || [];
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  return chat.filter(
+    (m) =>
+      m.attendanceId === attendanceId &&
+      m.sender === 'agent' &&
+      m.externalChannel === 'whatsapp' &&
+      new Date(m.timestamp).getTime() >= cutoff
+  ).length;
+}
+
+// Bloco de dados reais injetado a cada chamada — mesmo papel do factualContext já
+// usado em /api/chat/agent (ver DADOS DE ATENDIMENTO (CARLA) ali), mas focado só no
+// que um cliente pelo WhatsApp precisa: o que já foi coletado (pra Carla não repetir
+// pergunta) e se existe preço/prazo HOMOLOGADO que ela pode citar sem inventar nada.
+// Mesma porta de segurança já usada pelas rotas de negociação (bloqueiam sem
+// homologação da Mila) — só retorna um valor quando está de verdade confirmado
+// pelo responsável, nunca um preço sugerido/calculado/provisório.
+function getConfirmedPriceCents(attendance: AttendanceRecord): number | null {
+  const isFab = attendance.orderType === 'Fabricação' || attendance.requestType === 'fabricacao_nova';
+  return isFab
+    ? attendance.financialData?.confirmedByResponsible
+      ? attendance.financialData.approvedSellingPriceCents
+      : null
+    : attendance.budget?.confirmedByResponsible
+    ? attendance.budget.sellingPriceCents
+    : null;
+}
+
+function buildCarlaWhatsAppFactualContext(store: PersistentStore, attendance: AttendanceRecord): string {
+  const confirmedPriceCents = getConfirmedPriceCents(attendance);
+  const priceLine =
+    confirmedPriceCents != null
+      ? `R$ ${(confirmedPriceCents / 100).toFixed(2)} (HOMOLOGADO pelo responsável — pode ser citado ao cliente)`
+      : 'Nenhum preço homologado ainda — NÃO cite nenhum valor em reais; diga que vai confirmar com a equipe.';
+  const openComplaints = (attendance.complaints || []).filter((c) => c.status !== 'resolvida');
+  const known = (value: string | undefined, placeholder = 'A definir') =>
+    value && value !== placeholder ? value : 'ainda não informado pelo cliente';
+
+  return `DADOS REAIS JÁ CADASTRADOS PARA ESTE CLIENTE (${attendance.attendanceNumber}):
+- Nome: ${attendance.clientName || 'não informado ainda'}
+- Classificação já identificada: ${attendance.requestType || 'ainda não classificada — pergunte se é reforma ou peça nova'}
+- Tipo de móvel: ${known(attendance.furnitureType)}
+- Quantidade: ${known(attendance.piecesCount)}
+- Medidas informadas pelo cliente: ${known(attendance.approxMeasurements)}
+- Serviço desejado: ${attendance.desiredService || 'ainda não informado'}
+- Preferência de tecido/conforto: ${known(attendance.fabricAndComfortPreference, 'não informado')}
+- Defeitos relatados: ${attendance.reportedDefects || 'ainda não informado'}
+- Cidade/bairro: ${attendance.city || attendance.neighborhood || 'ainda não informado'}
+- Mesa/status atual do pedido: ${attendance.currentDesk || 'carla_atendimento'} / ${attendance.deskStatus || 'em_andamento'}
+- Preço: ${priceLine}
+- Reclamações abertas: ${openComplaints.length === 0 ? 'nenhuma' : openComplaints.map((c) => `"${c.description}"`).join(' | ')}
+`;
+}
+
+// Transcript simples em texto único — mesmo padrão já usado por TODOS os outros
+// agentes deste projeto (Júlia, chat genérico de mesa, ver server.ts:8605-8608 e
+// 8762-8765); generateContentWithRetryAndFallback não aceita messages multi-turno
+// nativos, então não há ganho em desenhar algo diferente só pra Carla aqui.
+function buildCarlaWhatsAppHistoryTranscript(store: PersistentStore, attendanceId: string): string {
+  const chat = (store.agentChats?.['carla_atendimento'] || []).filter(
+    (m) => m.attendanceId === attendanceId && m.externalChannel === 'whatsapp'
+  );
+  const recent = chat.slice(-20);
+  if (recent.length === 0) return 'Início da conversa — esta é a primeira mensagem do cliente.';
+  return recent.map((m) => `${m.sender === 'user' ? 'Cliente' : 'Carla'}: ${m.text}`).join('\n');
+}
+
+const CARLA_WHATSAPP_RESPONSE_SCHEMA: AiSchema = {
+  type: Type.OBJECT,
+  properties: {
+    replyText: {
+      type: Type.STRING,
+      description: 'Mensagem a enviar ao cliente agora, em português brasileiro, pronta para WhatsApp.',
+    },
+    requestTypeDetected: {
+      type: Type.STRING,
+      description: 'reforma | fabricacao_nova | indefinido — classificação do pedido até agora.',
+    },
+    extractedFields: {
+      type: Type.OBJECT,
+      description:
+        'Só os campos que o CLIENTE disse nesta troca — nunca invente um valor que ele não disse.',
+      properties: {
+        furnitureType: { type: Type.STRING },
+        piecesCount: { type: Type.STRING },
+        approxMeasurements: { type: Type.STRING },
+        desiredService: { type: Type.STRING },
+        fabricAndComfortPreference: { type: Type.STRING },
+        reportedDefects: { type: Type.STRING },
+        previousReforms: { type: Type.STRING },
+        usageTime: { type: Type.STRING },
+        city: { type: Type.STRING },
+      },
+    },
+    readyForHandoff: {
+      type: Type.BOOLEAN,
+      description: 'Verdadeiro só quando já há informação suficiente pra encaminhar à mesa técnica.',
+    },
+    handoffSummary: {
+      type: Type.STRING,
+      description: 'Resumo do que foi coletado — obrigatório quando readyForHandoff é verdadeiro.',
+    },
+    pendingItemsForHandoff: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: 'O que ainda falta confirmar, mesmo encaminhando.',
+    },
+    complaintDetected: {
+      type: Type.BOOLEAN,
+      description: 'Verdadeiro se o cliente está reclamando de algo (pedido, prazo, qualidade, etc.).',
+    },
+  },
+  required: ['replyText', 'requestTypeDetected', 'readyForHandoff', 'complaintDetected'],
+};
+
+// Nunca confia cegamente no JSON do modelo — mesmo padrão de correção server-side já
+// usado em ANALYST_SYSTEM_INSTRUCTION (ver validação de origin/severity perto da
+// linha 5713): qualquer campo inválido/ausente vira um estado seguro, nunca o que o
+// modelo mandou sem checar. A trava de preço é reforço NOVO desta funcionalidade —
+// diferente do chat interno, aqui ninguém revisa antes de sair pro cliente.
+const CURRENCY_MENTION_PATTERN = /r\$\s?\d|\d+[.,]?\d*\s?reais\b/i;
+function validateAndCoerceCarlaWhatsAppOutput(
+  parsed: {
+    replyText?: string;
+    requestTypeDetected?: string;
+    extractedFields?: Record<string, unknown>;
+    readyForHandoff?: boolean;
+    handoffSummary?: string;
+    pendingItemsForHandoff?: string[];
+    complaintDetected?: boolean;
+  },
+  hasConfirmedPrice: boolean
+): {
+  replyText: string;
+  requestTypeDetected: 'reforma' | 'fabricacao_nova' | 'indefinido';
+  extractedFields: Partial<
+    Pick<
+      AttendanceRecord,
+      | 'furnitureType'
+      | 'piecesCount'
+      | 'approxMeasurements'
+      | 'desiredService'
+      | 'fabricAndComfortPreference'
+      | 'reportedDefects'
+      | 'previousReforms'
+      | 'usageTime'
+      | 'city'
+    >
+  >;
+  readyForHandoff: boolean;
+  handoffSummary: string;
+  pendingItemsForHandoff: string[];
+  complaintDetected: boolean;
+  priceOverrideApplied: boolean;
+} {
+  const validRequestTypes = ['reforma', 'fabricacao_nova', 'indefinido'];
+  const requestTypeDetected = validRequestTypes.includes(parsed.requestTypeDetected || '')
+    ? (parsed.requestTypeDetected as 'reforma' | 'fabricacao_nova' | 'indefinido')
+    : 'indefinido';
+
+  const allowedKeys = [
+    'furnitureType',
+    'piecesCount',
+    'approxMeasurements',
+    'desiredService',
+    'fabricAndComfortPreference',
+    'reportedDefects',
+    'previousReforms',
+    'usageTime',
+    'city',
+  ] as const;
+  const extractedFields: Record<string, string> = {};
+  if (parsed.extractedFields && typeof parsed.extractedFields === 'object') {
+    for (const key of allowedKeys) {
+      const value = (parsed.extractedFields as Record<string, unknown>)[key];
+      if (typeof value === 'string' && value.trim()) extractedFields[key] = value.trim();
+    }
+  }
+
+  // Não dá pra encaminhar sem saber se é reforma ou fabricação nova.
+  const readyForHandoff = Boolean(parsed.readyForHandoff) && requestTypeDetected !== 'indefinido';
+
+  let replyText = typeof parsed.replyText === 'string' && parsed.replyText.trim() ? parsed.replyText.trim() : '';
+  let priceOverrideApplied = false;
+  if (!replyText || (CURRENCY_MENTION_PATTERN.test(replyText) && !hasConfirmedPrice)) {
+    priceOverrideApplied = Boolean(replyText) && !hasConfirmedPrice;
+    replyText =
+      'Obrigada por avisar! Vou confirmar essa informação com nossa equipe e te retorno em breve. Enquanto isso, pode me contar mais sobre o que você precisa?';
+  }
+
+  return {
+    replyText,
+    requestTypeDetected,
+    extractedFields,
+    readyForHandoff,
+    handoffSummary: readyForHandoff && parsed.handoffSummary ? parsed.handoffSummary : '',
+    pendingItemsForHandoff: Array.isArray(parsed.pendingItemsForHandoff)
+      ? parsed.pendingItemsForHandoff.filter((p): p is string => typeof p === 'string')
+      : [],
+    complaintDetected: Boolean(parsed.complaintDetected),
+    priceOverrideApplied,
+  };
+}
+
 // Verifica uma integração oficial real (Meta Graph API) usando apenas credenciais
 // vindas de variáveis de ambiente do servidor — nunca solicitadas pelo chat nem
 // expostas ao navegador. Sem as variáveis configuradas, o resultado honesto é
@@ -2333,9 +2578,14 @@ function handleInboundWhatsAppMessage(
       currentStep: 1,
       clientName: value.contacts?.[0]?.profile?.name || 'Cliente via WhatsApp',
       clientPhone: fromPhone,
-      furnitureType: 'Sofá',
-      piecesCount: '1 unidade',
-      approxMeasurements: 'A validar na oficina',
+      // Neutro de propósito — a Carla ainda não conversou com o cliente pra saber
+      // tipo de móvel/quantidade/medidas; assumir "Sofá"/"1 unidade" antes da
+      // triagem induziria quem olhasse o atendimento a achar que já é dado
+      // confirmado. Ela preenche de verdade via extractedFields (ver
+      // executeBackgroundTask, case 'responder_whatsapp_com_ia').
+      furnitureType: 'A definir',
+      piecesCount: 'A definir',
+      approxMeasurements: 'A definir',
       usageTime: '',
       reportedDefects: '',
       desiredService: '',
@@ -2442,17 +2692,22 @@ function handleInboundWhatsAppMessage(
   const autoReply = store.settings.carlaAutoReply;
   const isPaused = autoReply?.pausedConversationIds?.includes(attendance.id);
   if (autoReply?.enabled && !isPaused) {
+    // Payload mínimo de propósito — o contexto completo (conversa, dados já
+    // coletados, se há preço homologado) é recarregado FRESCO na hora de
+    // executar (ver executeBackgroundTask, case 'responder_whatsapp_com_ia'),
+    // nunca congelado aqui no momento do webhook.
     createBackgroundTask(store, {
-      type: 'enviar_resposta_whatsapp',
+      type: 'responder_whatsapp_com_ia',
       agentId: 'carla_atendimento',
-      action: `Responder mensagem de ${attendance.clientName} via WhatsApp`,
+      action: `Responder mensagem de ${attendance.clientName} via WhatsApp (com IA)`,
       authorization: 'Resposta automática autorizada em Configurações > Atendimento automático da Carla',
       scheduledFor: new Date().toISOString(),
       relatedOrderId: attendance.id,
       idempotencyKey: `wa-reply-${externalMessageId}`,
       payload: {
         to: fromPhone,
-        text: 'Olá! Sou a Carla, assistente virtual da Castros Interiores. Recebi sua mensagem e já vou te ajudar — só um instante.',
+        attendanceId: attendance.id,
+        inboundText: text,
       },
     });
   }
@@ -2543,6 +2798,137 @@ async function executeBackgroundTask(
         });
       }
       return `Mensagem enviada ao canal oficial do WhatsApp (id externo: ${result.externalId || 'não informado'}).`;
+    }
+    case 'responder_whatsapp_com_ia': {
+      const status = store.settings.integrations?.whatsapp;
+      if (!status || status.state !== 'conectado') {
+        throw new Error(
+          'Integração oficial do WhatsApp não está conectada. Não é possível enviar resposta automática — use o compartilhamento manual.'
+        );
+      }
+      // Defesa em profundidade: as configurações podem ter mudado entre o
+      // momento em que o webhook enfileirou esta tarefa e agora.
+      const autoReply = store.settings.carlaAutoReply;
+      const attendanceId = (task.payload?.attendanceId as string) || task.relatedOrderId || '';
+      const to = (task.payload?.to as string) || '';
+      const inboundText = (task.payload?.inboundText as string) || '';
+      if (!attendanceId || !to) {
+        throw new Error('Tarefa sem atendimento/telefone de destino — não há o que responder.');
+      }
+      if (!autoReply?.enabled || autoReply.pausedConversationIds?.includes(attendanceId)) {
+        return 'Resposta automática desligada ou conversa pausada para atendimento humano desde que esta tarefa foi criada — nada enviado.';
+      }
+
+      const attendance = store.attendances.find((a) => a.id === attendanceId);
+      if (!attendance) {
+        throw new Error(`Atendimento ${attendanceId} não encontrado — não há o que responder.`);
+      }
+
+      const repliesLast24h = countCarlaWhatsAppRepliesLast24h(store, attendanceId);
+      if (repliesLast24h >= CARLA_WHATSAPP_MAX_REPLIES_PER_DAY) {
+        attendance.notes = `${attendance.notes ? attendance.notes + '\n' : ''}[${new Date().toISOString()}] Resposta automática via WhatsApp pulada: limite de ${CARLA_WHATSAPP_MAX_REPLIES_PER_DAY} mensagens/24h atingido — revisão humana necessária.`;
+        return `Limite de ${CARLA_WHATSAPP_MAX_REPLIES_PER_DAY} respostas automáticas em 24h atingido para este atendimento — nada enviado, sinalizado para revisão humana.`;
+      }
+
+      const factualContext = buildCarlaWhatsAppFactualContext(store, attendance);
+      const historyTranscript = buildCarlaWhatsAppHistoryTranscript(store, attendanceId);
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
+
+      const { response } = await generateContentWithRetryAndFallback({
+        preferredModel,
+        parts: [
+          {
+            text: `${factualContext}\n\nHISTÓRICO DA CONVERSA COM ESTE CLIENTE PELO WHATSAPP:\n${historyTranscript}\n\nMENSAGEM MAIS RECENTE DO CLIENTE:\n"${inboundText}"`,
+          },
+        ],
+        systemInstruction: CARLA_WHATSAPP_SYSTEM_INSTRUCTION,
+        responseSchema: convertSchemaToJsonSchema(CARLA_WHATSAPP_RESPONSE_SCHEMA),
+        lockKey: `carla-wa-${attendanceId}`,
+      });
+
+      const parsed = JSON.parse(response.text || '{}');
+      const hasConfirmedPrice = getConfirmedPriceCents(attendance) != null;
+      const coerced = validateAndCoerceCarlaWhatsAppOutput(parsed, hasConfirmedPrice);
+
+      // 1. Aplica só os campos que o cliente de fato disse — ação de baixo risco,
+      //    é a mesma coisa que o atendimento manual registraria.
+      const now = new Date().toISOString();
+      let anyFieldApplied = false;
+      for (const [key, value] of Object.entries(coerced.extractedFields)) {
+        (attendance as unknown as Record<string, unknown>)[key] = value;
+        anyFieldApplied = true;
+      }
+      if (coerced.requestTypeDetected !== 'indefinido' && attendance.requestType !== coerced.requestTypeDetected) {
+        attendance.requestType = coerced.requestTypeDetected;
+        anyFieldApplied = true;
+      }
+      if (anyFieldApplied) {
+        attendance.updatedAt = now;
+        attendance.auditHistory.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: now,
+          actor: 'Carla (IA — WhatsApp)',
+          stage: 'Atendimento',
+          action: 'Dados atualizados a partir da conversa no WhatsApp',
+          details: `Campos preenchidos a partir do que o cliente relatou: ${Object.keys(coerced.extractedFields).join(', ') || 'classificação do pedido'}.`,
+        });
+      }
+
+      // 2. Encaminha sozinha pra mesa técnica quando a triagem está completa —
+      //    só reatribui mesa/status (createOrderHandoff), nunca compromisso
+      //    financeiro algum.
+      if (coerced.readyForHandoff && attendance.currentDesk === 'carla_atendimento') {
+        const toDesk: DepartmentId = coerced.requestTypeDetected === 'fabricacao_nova' ? 'lucas_projetos' : 'pedro_avaliacao';
+        createOrderHandoff(store, attendance, {
+          fromDesk: 'carla_atendimento',
+          toDesk,
+          reason: 'Encaminhamento automático pela Carla (IA) após coleta inicial via WhatsApp',
+          completedSummary: coerced.handoffSummary || 'Triagem inicial concluída via WhatsApp.',
+          pendingItems: coerced.pendingItemsForHandoff,
+          nextActionExpected: toDesk === 'lucas_projetos' ? 'Elaborar projeto de fabricação nova.' : 'Avaliação técnica da peça para reforma.',
+        });
+      }
+
+      // 3. Reclamação detectada: Carla para de responder sozinha nesta conversa
+      //    — reaproveita o mesmo campo que já existe pra um humano assumir.
+      if (coerced.complaintDetected) {
+        if (!autoReply.pausedConversationIds) autoReply.pausedConversationIds = [];
+        if (!autoReply.pausedConversationIds.includes(attendanceId)) {
+          autoReply.pausedConversationIds.push(attendanceId);
+        }
+        if (!attendance.complaints) attendance.complaints = [];
+        attendance.complaints.push({
+          id: `cmp-${Date.now()}`,
+          createdAt: now,
+          description: inboundText || 'Reclamação identificada pela Carla durante conversa no WhatsApp.',
+          urgency: 'normal',
+          status: 'aberta',
+        });
+      }
+
+      // 4. Envia a resposta já validada (nunca o texto cru do modelo sem passar
+      //    pela trava de preço acima) pelo mesmo caminho de sempre.
+      const result = await sendWhatsAppMessage(to, coerced.replyText);
+      if (!result.ok) throw new Error(result.errorMessage || 'Falha ao enviar mensagem.');
+
+      if (!store.agentChats) store.agentChats = {};
+      if (!store.agentChats['carla_atendimento']) store.agentChats['carla_atendimento'] = [];
+      store.agentChats['carla_atendimento'].push({
+        id: `cmsg-wa-${Date.now()}`,
+        deskId: 'carla_atendimento',
+        sender: 'agent',
+        agentName: 'Carla',
+        text: coerced.replyText,
+        modality: 'texto',
+        timestamp: now,
+        attendanceId,
+        externalChannel: 'whatsapp',
+        externalMessageId: result.externalId,
+      });
+
+      return `Resposta da Carla (IA) enviada ao WhatsApp (id externo: ${result.externalId || 'não informado'})${
+        coerced.priceOverrideApplied ? ' — ATENÇÃO: o texto original do modelo citava valor sem orçamento homologado; substituído pelo fallback seguro.' : ''
+      }.`;
     }
     case 'iniciar_campanha_paga': {
       const proposalId = task.payload?.paidAdProposalId as string | undefined;

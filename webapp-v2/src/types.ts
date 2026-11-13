@@ -1222,6 +1222,7 @@ export interface AgentChatMessage {
 export type BackgroundTaskType =
   | 'publicar_campanha'
   | 'enviar_resposta_whatsapp'
+  | 'responder_whatsapp_com_ia'
   | 'verificar_integracao'
   | 'iniciar_campanha_paga';
 

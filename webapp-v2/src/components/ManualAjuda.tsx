@@ -324,13 +324,18 @@ export const ManualAjuda: React.FC = () => {
               </tr>
               <tr className="bg-white">
                 <td className="py-2 px-3 align-top">
-                  Registrar uma mensagem recebida pelo canal oficial do WhatsApp (quando conectado) e vincular ao
-                  atendimento certo.
+                  Registrar uma mensagem recebida pelo canal oficial do WhatsApp (quando conectado), vincular ao
+                  atendimento certo e — com "Resposta Automática da Carla" ligada no painel de Helena — responder
+                  de verdade com uma IA que conversa com o cliente, coleta tipo de móvel/medidas/preferências aos
+                  poucos e encaminha sozinha para a mesa do Pedro (reforma) ou do Lucas (fabricação nova) quando a
+                  triagem estiver completa.
                 </td>
                 <td className="py-2 px-3 align-top">
-                  Responder automaticamente ao cliente — só acontece se você ligar "Resposta Automática da
-                  Carla" no painel de Helena, e nunca enquanto a conversa estiver pausada para atendimento
-                  humano.
+                  Citar qualquer preço em reais sem o orçamento já homologado pelo responsável (a mensagem é
+                  descartada e trocada por um texto seguro quando isso acontece), confirmar prazo/agendamento sem
+                  aprovação no sistema, ou criar/aprovar orçamento sozinha — isso continua 100% humano, sempre.
+                  Também nunca responde enquanto a conversa estiver pausada para atendimento humano, e se pausa
+                  sozinha quando detecta uma reclamação (um humano precisa assumir a partir daí).
                 </td>
               </tr>
               <tr className="bg-white">
