@@ -96,6 +96,19 @@ export interface DefectFinding {
   updatedAt?: string;
 }
 
+// Identificação descritiva do modelo/configuração a partir das fotos — separada
+// dos achados de defeito (DefectFinding), que são por área. Reaproveita o mesmo
+// enum InformationOrigin: nunca afirmar configuração/formato sem marcar a
+// origem real da informação (observado na foto vs. relatado vs. suspeita).
+export interface FurnitureModelIdentification {
+  configuration: string; // ex: "sofá retrátil 3 lugares, módulo chaise"
+  seatsCount: string;
+  armsShape: string;
+  backrestShape: string;
+  baseAndFeetShape: string;
+  origin: InformationOrigin;
+}
+
 export type ReuseClassification =
   | 'Candidato a reaproveitamento, sujeito à inspeção'
   | 'Recuperável com reparo, sujeito à inspeção'
@@ -149,6 +162,28 @@ export interface FoamWorkshopInspection {
 
 export type ProposalTier = 'ESSENCIAL' | 'RECOMENDADA' | 'COMPLETA';
 
+// Decisão aprovada por componente dentro de uma proposta — aditivo. Uma proposta
+// sem nenhuma dessas decisões continua funcionando exatamente como hoje (listas
+// genéricas de material em services/materialsTo*).
+export type ReformComponentDecisionKey =
+  | 'tecido_revestimento'
+  | 'espuma'
+  | 'costuras'
+  | 'capitone'
+  | 'botoes'
+  | 'ziper'
+  | 'manta'
+  | 'tnt'
+  | 'reaproveitamento';
+
+export interface ReformComponentDecision {
+  key: ReformComponentDecisionKey;
+  decision: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  notes?: string;
+}
+
 export interface ReformProposal {
   tier: ProposalTier;
   title: string;
@@ -160,6 +195,14 @@ export interface ReformProposal {
   materialsToReplace: string[];
   pendingItems: string[];
   benefitsAndLimitations: string;
+  // Decisões por componente + trava de aprovação — depois de approved=true, uma
+  // nova análise de reaproveitamento não pode mais sobrescrever este objeto sem
+  // antes arquivá-lo em AttendanceRecord.proposalRevisions (ver server.ts,
+  // POST /api/ai/analyze-reuse).
+  componentDecisions?: ReformComponentDecision[];
+  approved?: boolean;
+  approvedBy?: string;
+  approvedAt?: string;
 }
 
 export type BudgetLineCategory =
@@ -274,6 +317,11 @@ export interface StageStalenessFlags {
   proposalNeedsReview: boolean;
   opinionNeedsReview: boolean;
   staleReason?: string;
+  // Verdadeiro quando o custo de um material mudou (recalculate-budgets) depois
+  // do orçamento/lista de materiais já terem sido aprovados — exige nova
+  // conferência do responsável antes de seguir. Opcional: nunca precisa ser
+  // escrito nos literais antigos de `staleness` espalhados pelo server.ts.
+  budgetOrMaterialsNeedsReview?: boolean;
 }
 
 // Classificação inicial feita pela Carla no atendimento — mais ampla que orderType
@@ -916,6 +964,9 @@ export interface AttendanceRecord {
   requestedAdditionalPhotos: string[];
   aiPreliminarySummary: string;
   lastAiAnalysisAt?: string;
+  // Identificação de modelo/configuração, populada pela mesma análise de fotos
+  // que gera defectFindings (ver server.ts, /api/ai/analyze-defects).
+  furnitureModelIdentification?: FurnitureModelIdentification;
 
   // 4 (Fluxo). Revisão do Responsável
   reviewCompleted: boolean;
@@ -932,12 +983,18 @@ export interface AttendanceRecord {
   // 9. Propostas de Reforma
   proposals: ReformProposal[];
   selectedProposalTier: ProposalTier;
+  // Snapshot do array `proposals` inteiro, arquivado antes de uma sobrescrita que
+  // substituiria uma proposta já aprovada (ver server.ts, /api/ai/analyze-reuse).
+  proposalRevisions?: ReformProposal[][];
 
   // 10. Orçamento
   budget: BudgetData;
 
   // 10b. Lista de Materiais da Reforma (Catálogo de Tapeçaria)
   materialsLists?: ReformMaterialsList[]; // revisões acumuladas; a última é a vigente
+
+  // 10c. Pedidos de Compra formais enviados à Ana (acumulados, nunca sobrescritos)
+  purchaseRequests?: PurchaseRequestPackage[];
 
   // 11. Parecer
   opinion: FeasibilityOpinion;
@@ -1151,6 +1208,43 @@ export interface ReformMaterialsList {
   preparedAt: string;
   updatedAt: string;
   notes?: string;
+}
+
+// Pedido de compra formal do Pedro pra Ana — aditivo, nunca substitui a lista de
+// materiais em si. visualBoardPending fica sempre true: a prancha visual anotada
+// (fora de escopo por agora) ainda não existe de verdade no sistema.
+export interface PurchaseRequestPackage {
+  id: string;
+  createdAt: string;
+  createdBy?: string;
+  attendanceId: string;
+  attendanceNumber: string;
+  clientName: string;
+  furnitureType: string;
+  proposalTier: ProposalTier;
+  materialsListId: string;
+  materialsListRevision: number;
+  items: Array<{
+    component: string;
+    materialName: string;
+    specification?: string;
+    unit: string;
+    purchaseQuantity: number | null;
+    quantityStatus: ReformMaterialQuantityStatus;
+  }>;
+  technicalSummarySnapshot: Pick<FeasibilityOpinion, 'conclusion' | 'structureStateSummary' | 'damageExtentSummary' | 'reasons'>;
+  visualReferencePhotoIds: string[];
+  visualBoardPending: true;
+  pendingQuantities: string[];
+  sourcingNotes: string;
+  status: 'aguardando_cotacao' | 'cotado' | 'cancelado';
+  quote?: {
+    quotedAt: string;
+    quotedBy: string;
+    totalCostCents: number;
+    lineCostsCents: Record<string, number>;
+    notes?: string;
+  };
 }
 
 export type DepartmentId =

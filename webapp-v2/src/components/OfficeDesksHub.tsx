@@ -100,6 +100,10 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   const [transferVersion, setTransferVersion] = useState('v1.0');
   const [isTransferring, setIsTransferring] = useState(false);
 
+  // Painel da Ana: cotação de Pedidos de Compra pendentes
+  const [purchaseQuoteDrafts, setPurchaseQuoteDrafts] = useState<Record<string, Record<string, string>>>({});
+  const [isSubmittingQuoteId, setIsSubmittingQuoteId] = useState<string | null>(null);
+
   // Modal de Novo Pedido Compartilhado
   const [newOrderModalOpen, setNewOrderModalOpen] = useState(false);
   const [newOrderType, setNewOrderType] = useState<OrderType>('Fabricação');
@@ -279,6 +283,52 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
     } catch (err) {
       console.error('Erro ao classificar pedido:', err);
       alert('Erro ao classificar pedido.');
+    }
+  };
+
+  // Ana devolve a cotação de um Pedido de Compra do Pedro
+  const handleSubmitPurchaseQuote = async (order: AttendanceRecord, requestId: string) => {
+    const draft = purchaseQuoteDrafts[requestId] || {};
+    const purchaseRequest = (order.purchaseRequests || []).find((pr) => pr.id === requestId);
+    if (!purchaseRequest) return;
+
+    const lineCostsCents: Record<string, number> = {};
+    let totalCostCents = 0;
+    for (const item of purchaseRequest.items) {
+      const raw = draft[item.component];
+      const val = parseFloat((raw || '').replace(',', '.'));
+      if (!raw || Number.isNaN(val)) {
+        alert(`Informe o custo cotado do item "${item.component}" antes de enviar.`);
+        return;
+      }
+      const cents = Math.round(val * 100);
+      lineCostsCents[item.component] = cents;
+      totalCostCents += cents;
+    }
+
+    setIsSubmittingQuoteId(requestId);
+    try {
+      const res = await fetch(`/api/attendances/${order.id}/purchase-requests/${requestId}/quote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ totalCostCents, lineCostsCents }),
+      });
+      const data = await res.json();
+      if (data.ok && data.attendance) {
+        onUpdateAttendance(data.attendance);
+        setPurchaseQuoteDrafts((prev) => {
+          const next = { ...prev };
+          delete next[requestId];
+          return next;
+        });
+      } else {
+        alert(data.error || 'Erro ao devolver a cotação.');
+      }
+    } catch (err) {
+      console.error('Erro ao devolver cotação:', err);
+      alert('Erro ao devolver a cotação.');
+    } finally {
+      setIsSubmittingQuoteId(null);
     }
   };
 
@@ -1010,6 +1060,95 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                   )}
                 </div>
               </div>
+
+              {/* Pedidos de Compra do Pedro pendentes de cotação (Mesa da Ana) */}
+              {selectedDeskId === 'ana_compras' && (
+                <div className="space-y-3">
+                  <h4 className="font-bold text-xs uppercase tracking-wider text-[#181512]">
+                    Pedidos de Compra deste Atendimento
+                  </h4>
+                  {(activeOrder.purchaseRequests || []).length === 0 ? (
+                    <p className="text-xs text-[#6B6257] italic">
+                      Nenhum pedido de compra enviado pelo Pedro para este atendimento ainda.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {activeOrder.purchaseRequests!.slice().reverse().map((pr) => (
+                        <div
+                          key={pr.id}
+                          className="p-3.5 rounded-xl border border-[#E5DEC9] bg-[#FAF8F5] text-xs space-y-2"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono text-[#57534E]">{pr.id}</span>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                pr.status === 'cotado'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : pr.status === 'cancelado'
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}
+                            >
+                              {pr.status.replace(/_/g, ' ')}
+                            </span>
+                          </div>
+                          <p className="text-[#57534E]">Notas do Pedro: {pr.sourcingNotes}</p>
+                          {pr.pendingQuantities.length > 0 && (
+                            <p className="text-amber-800">
+                              Quantidades pendentes: {pr.pendingQuantities.join(' • ')}
+                            </p>
+                          )}
+                          <p className="text-[#44403C] italic">
+                            Prancha visual anotada: ainda não disponível (fora de escopo).
+                          </p>
+
+                          {pr.status === 'cotado' ? (
+                            <p className="text-emerald-800 font-semibold">
+                              Cotado em {formatCurrencyBRL(pr.quote!.totalCostCents)} por {pr.quote!.quotedBy} em{' '}
+                              {new Date(pr.quote!.quotedAt).toLocaleString('pt-BR')}.
+                            </p>
+                          ) : (
+                            <div className="space-y-1.5 pt-1">
+                              {pr.items.map((item) => (
+                                <div key={item.component} className="flex items-center gap-2">
+                                  <label className="flex-1 text-[11px] text-[#44403C]">
+                                    {item.component} — {item.materialName} ({item.unit})
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    placeholder="R$"
+                                    value={purchaseQuoteDrafts[pr.id]?.[item.component] ?? ''}
+                                    onChange={(e) =>
+                                      setPurchaseQuoteDrafts((prev) => ({
+                                        ...prev,
+                                        [pr.id]: {
+                                          ...(prev[pr.id] || {}),
+                                          [item.component]: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    className="w-20 text-right rounded border border-[#D6CFC5] px-2 py-1 text-[11px]"
+                                  />
+                                </div>
+                              ))}
+                              <button
+                                type="button"
+                                disabled={isSubmittingQuoteId === pr.id}
+                                onClick={() => handleSubmitPurchaseQuote(activeOrder, pr.id)}
+                                className="w-full py-1.5 rounded-lg bg-[#1F5E3B] hover:bg-[#184B2F] disabled:opacity-50 text-white text-xs font-semibold"
+                              >
+                                {isSubmittingQuoteId === pr.id ? 'Enviando...' : 'Devolver Cotação ao Pedro'}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Histórico de Transferências do Pedido */}
               <div className="space-y-3">

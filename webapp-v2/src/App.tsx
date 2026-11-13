@@ -35,6 +35,8 @@ import {
   JuliaDepartmentData,
   DepartmentId,
   ClientRecord,
+  ProposalTier,
+  ReformComponentDecisionKey,
 } from './types';
 import {
   auth,
@@ -229,6 +231,7 @@ export default function App() {
   const [isAnalyzingDefects, setIsAnalyzingDefects] = useState(false);
   const [isAnalyzingReuse, setIsAnalyzingReuse] = useState(false);
   const [isPreparingMaterialsList, setIsPreparingMaterialsList] = useState(false);
+  const [isSendingPurchaseRequest, setIsSendingPurchaseRequest] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [portraitUploadTarget, setPortraitUploadTarget] = useState<DepartmentId | 'office-cover' | null>(null);
   const [isUploadingPortrait, setIsUploadingPortrait] = useState(false);
@@ -1110,6 +1113,74 @@ export default function App() {
     }
   };
 
+  const handleApproveProposal = async (
+    tier: ProposalTier,
+    componentDecisions: Array<{ key: ReformComponentDecisionKey; decision: string }>
+  ) => {
+    if (!activeAttendance) return;
+    setAiError(null);
+    try {
+      const res = await fetch(
+        `/api/attendances/${activeAttendance.id}/proposals/${tier}/approve`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            componentDecisions,
+            actorName: currentUser?.displayName || currentUser?.email || undefined,
+          }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.attendance) {
+        throw new Error(data.error || 'Não foi possível aprovar a proposta.');
+      }
+      if (currentUser && currentUser.emailVerified) {
+        await syncAttendanceToFirestore(data.attendance, true);
+      }
+      setAttendances((prev) =>
+        prev.map((a) => (a.id === data.attendance.id ? data.attendance : a))
+      );
+      setLastSavedSuccessAt(new Date().toLocaleTimeString('pt-BR'));
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Erro ao aprovar a proposta.');
+    }
+  };
+
+  const handleSendPurchaseRequest = async (sourcingNotes: string) => {
+    if (!activeAttendance || isSendingPurchaseRequest) return;
+    setIsSendingPurchaseRequest(true);
+    setAiError(null);
+    try {
+      const res = await fetch(
+        `/api/attendances/${activeAttendance.id}/purchase-requests`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sourcingNotes,
+            actorName: currentUser?.displayName || currentUser?.email || undefined,
+          }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.attendance) {
+        throw new Error(data.error || 'Não foi possível enviar o pedido de compra.');
+      }
+      if (currentUser && currentUser.emailVerified) {
+        await syncAttendanceToFirestore(data.attendance, true);
+      }
+      setAttendances((prev) =>
+        prev.map((a) => (a.id === data.attendance.id ? data.attendance : a))
+      );
+      setLastSavedSuccessAt(new Date().toLocaleTimeString('pt-BR'));
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Erro ao enviar o pedido de compra.');
+    } finally {
+      setIsSendingPurchaseRequest(false);
+    }
+  };
+
   const handleDeleteAttendance = async (id: string) => {
     try {
       await fetch(`/api/attendances/${id}`, {
@@ -1985,6 +2056,9 @@ export default function App() {
                           currentUser?.displayName || currentUser?.email || undefined
                         );
                       }}
+                      onApproveProposal={handleApproveProposal}
+                      onSendPurchaseRequest={handleSendPurchaseRequest}
+                      isSendingPurchaseRequest={isSendingPurchaseRequest}
                     />
                   )
                 ) : (
@@ -2288,6 +2362,9 @@ export default function App() {
                             currentUser?.displayName || currentUser?.email || undefined
                           );
                         }}
+                        onApproveProposal={handleApproveProposal}
+                        onSendPurchaseRequest={handleSendPurchaseRequest}
+                        isSendingPurchaseRequest={isSendingPurchaseRequest}
                       />
                     );
                   }

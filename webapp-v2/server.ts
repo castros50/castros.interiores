@@ -106,6 +106,8 @@ import type {
   WeeklyActionPlanItem,
   AssemblyManual,
   ReformMaterialsList,
+  PurchaseRequestPackage,
+  ReformComponentDecisionKey,
   ReformMaterialListItem,
   ReformMaterialComponentStatus,
   ProposalTier,
@@ -4562,7 +4564,8 @@ REGRAS OBRIGATÓRIAS E INEGOCIÁVEIS:
    - "Percintas, molas e sustentação"
    - "Ferragens"
    - "Mecanismos retráteis ou reclináveis"
-   - "Forro inferior e acabamentos"`;
+   - "Forro inferior e acabamentos"
+10. Além das áreas acima, identifique a configuração/modelo do móvel (ex: número de lugares, formato de braços e encosto, tipo de base/pés) sempre que as fotos permitirem, usando a mesma marcação de origem desta seção 1 — "Observado na foto" apenas para o que é visivelmente verificável, "Relatado pelo cliente" para o que o cliente informou, "Suspeita a confirmar" quando não houver certeza, nunca inventando configuração não verificável.`;
 
 // Leitura de ficha de verificação fotografada/digitalizada (preenchida à mão ou
 // digitalmente) — mesmo princípio de honestidade do ANALYST_SYSTEM_INSTRUCTION acima,
@@ -5492,6 +5495,27 @@ async function startServer() {
 
         if (changed) {
           recalculatedCount++;
+          let reviewNote = '';
+          if (att.budget?.confirmedByResponsible) {
+            att.budget.confirmedByResponsible = false;
+            att.staleness = {
+              ...att.staleness,
+              budgetOrMaterialsNeedsReview: true,
+            };
+            reviewNote += ' A aprovação do orçamento foi desfeita e precisa ser conferida novamente pelo responsável.';
+          }
+          if (Array.isArray(att.materialsLists) && att.materialsLists.length > 0) {
+            const lastList = att.materialsLists[att.materialsLists.length - 1];
+            if (lastList.status === 'Lista aprovada') {
+              lastList.status = 'Lista em preparação';
+              lastList.updatedAt = now;
+              att.staleness = {
+                ...att.staleness,
+                budgetOrMaterialsNeedsReview: true,
+              };
+              reviewNote += ' A lista de materiais aprovada voltou para "em preparação" e precisa ser revisada.';
+            }
+          }
           att.auditHistory = [
             ...(att.auditHistory || []),
             {
@@ -5500,7 +5524,7 @@ async function startServer() {
               actor: 'Mesa de Compras / Supervisão',
               stage: 'Recálculo Orçamentário',
               action: 'Orçamento recalculado com preços atuais do catálogo',
-              details: `Valores unitários sincronizados com tabela de matérias-primas vigente.`,
+              details: `Valores unitários sincronizados com tabela de matérias-primas vigente.${reviewNote}`,
             },
           ];
           att.updatedAt = now;
@@ -5516,6 +5540,75 @@ async function startServer() {
     } catch (err) {
       console.error('Erro ao recalcular orçamentos:', err);
       res.status(500).json({ error: 'Erro ao recalcular orçamentos.' });
+    }
+  });
+
+  // Aprova as decisões por componente de uma proposta de reforma (precisa já ser a
+  // proposta selecionada). Depois de aprovada, uma nova análise de reaproveitamento
+  // nunca sobrescreve este objeto sem arquivá-lo primeiro (ver /api/ai/analyze-reuse).
+  app.post('/api/attendances/:id/proposals/:tier/approve', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, tier } = req.params;
+      const { componentDecisions, actorName } = req.body as {
+        componentDecisions?: Array<{ key: ReformComponentDecisionKey; decision: string; notes?: string }>;
+        actorName?: string;
+      };
+
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+      if (attendance.selectedProposalTier !== tier) {
+        res.status(400).json({
+          error: `A proposta ${tier} não é a proposta atualmente selecionada (${attendance.selectedProposalTier}). Selecione-a antes de aprovar.`,
+        });
+        return;
+      }
+      const proposal = attendance.proposals.find((p) => p.tier === tier);
+      if (!proposal) {
+        res.status(404).json({ error: 'Proposta não encontrada entre as propostas geradas.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const actor = actorName || attendance.reviewerName || 'Pedro (Avaliação Técnica)';
+
+      if (Array.isArray(componentDecisions) && componentDecisions.length > 0) {
+        proposal.componentDecisions = componentDecisions.map((cd) => ({
+          key: cd.key,
+          decision: cd.decision,
+          decidedBy: actor,
+          decidedAt: now,
+          notes: cd.notes,
+        }));
+      }
+      proposal.approved = true;
+      proposal.approvedBy = actor;
+      proposal.approvedAt = now;
+
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor,
+        stage: 'Propostas de Reforma',
+        action: `Proposta ${tier} aprovada com decisões por componente`,
+        details: `${(proposal.componentDecisions || []).length} decisão(ões) por componente registrada(s).`,
+      });
+      attendance.updatedAt = now;
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+      res.json({ ok: true, proposal, attendance });
+    } catch (err) {
+      console.error('Erro ao aprovar proposta:', err);
+      res.status(500).json({ error: 'Erro ao aprovar proposta.' });
     }
   });
 
@@ -5645,6 +5738,185 @@ async function startServer() {
   // Edição manual dos itens da lista (inclusão, exclusão, ajuste) usa a rota genérica
   // PUT /api/attendances/:id já existente (mesmo caminho usado para os itens do orçamento),
   // já que materialsLists é apenas mais um campo do registro do atendimento.
+
+  // Pedro envia um pedido de compra formal e estruturado para a Ana (Compras & Suprimentos),
+  // a partir da lista de materiais vigente — nunca monta um pacote vazio ou inventado.
+  app.post('/api/attendances/:id/purchase-requests', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const { sourcingNotes, actorName } = req.body as { sourcingNotes?: string; actorName?: string };
+
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+      if (!sourcingNotes || !sourcingNotes.trim()) {
+        res.status(400).json({
+          error: 'Informe as notas de abastecimento (onde comprar, urgência, restrições) antes de enviar o pedido.',
+        });
+        return;
+      }
+      const existingLists = attendance.materialsLists || [];
+      const latestList = existingLists[existingLists.length - 1];
+      if (!latestList || latestList.items.length === 0) {
+        res.status(400).json({
+          error: 'Nenhuma lista de materiais preparada ainda. Prepare a lista de materiais antes de enviar o pedido de compra.',
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const actor = actorName || attendance.reviewerName || 'Pedro (Avaliação Técnica)';
+      const pendingQuantities = latestList.items
+        .filter((it) => it.quantityStatus !== 'Confirmada')
+        .map((it) => `${it.component} (${it.materialName}): ${it.quantityStatus}`);
+
+      const purchaseRequest: PurchaseRequestPackage = {
+        id: `pr-${Date.now()}`,
+        createdAt: now,
+        createdBy: actor,
+        attendanceId: attendance.id,
+        attendanceNumber: attendance.attendanceNumber,
+        clientName: attendance.clientName,
+        furnitureType: attendance.furnitureType,
+        proposalTier: latestList.proposalTier,
+        materialsListId: latestList.id,
+        materialsListRevision: latestList.revision,
+        items: latestList.items.map((it) => ({
+          component: it.component,
+          materialName: it.materialName,
+          specification: it.specification,
+          unit: it.purchaseUnit || it.unit,
+          purchaseQuantity: it.purchaseQuantity,
+          quantityStatus: it.quantityStatus,
+        })),
+        technicalSummarySnapshot: {
+          conclusion: attendance.opinion.conclusion,
+          structureStateSummary: attendance.opinion.structureStateSummary,
+          damageExtentSummary: attendance.opinion.damageExtentSummary,
+          reasons: attendance.opinion.reasons,
+        },
+        visualReferencePhotoIds: attendance.photos.map((p) => p.id),
+        visualBoardPending: true,
+        pendingQuantities,
+        sourcingNotes: sourcingNotes.trim(),
+        status: 'aguardando_cotacao',
+      };
+
+      attendance.purchaseRequests = [...(attendance.purchaseRequests || []), purchaseRequest];
+
+      const { handoff, alreadyTransferred } = createOrderHandoff(store, attendance, {
+        fromDesk: 'pedro_avaliacao',
+        toDesk: 'ana_compras',
+        reason: `Pedido de compra ${purchaseRequest.id} para a lista de materiais ${latestList.listCode}.`,
+        completedSummary: `Lista de materiais ${latestList.listCode} (rev. ${latestList.revision}) preparada com ${latestList.items.length} item(ns).`,
+        pendingItems: pendingQuantities,
+        nextActionExpected: 'Cotar os itens do pedido de compra e devolver o preço total ao Pedro.',
+      });
+
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor,
+        stage: 'Pedido de Compra',
+        action: 'Pedido de compra enviado para Ana (Compras & Suprimentos)',
+        details: `Pedido ${purchaseRequest.id} com ${purchaseRequest.items.length} item(ns) da lista ${latestList.listCode}.`,
+      });
+      attendance.updatedAt = now;
+
+      saveStore(store);
+      if (!alreadyTransferred) {
+        broadcastRealtimeEvent({
+          type: 'attendance:updated',
+          timestamp: now,
+          sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+          attendance,
+        });
+      }
+      res.json({ ok: true, purchaseRequest, handoff, attendance });
+    } catch (err) {
+      console.error('Erro ao enviar pedido de compra:', err);
+      res.status(500).json({ error: 'Erro ao enviar pedido de compra.' });
+    }
+  });
+
+  // Ana devolve a cotação real (consultada do catálogo, nunca estimada aqui) e o pedido
+  // volta para o Pedro, fechando o loop entre avaliação e compras.
+  app.post('/api/attendances/:id/purchase-requests/:requestId/quote', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id, requestId } = req.params;
+      const { totalCostCents, lineCostsCents, notes, actorName } = req.body as {
+        totalCostCents?: number;
+        lineCostsCents?: Record<string, number>;
+        notes?: string;
+        actorName?: string;
+      };
+
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Atendimento não encontrado.' });
+        return;
+      }
+      const purchaseRequest = (attendance.purchaseRequests || []).find((pr) => pr.id === requestId);
+      if (!purchaseRequest) {
+        res.status(404).json({ error: 'Pedido de compra não encontrado.' });
+        return;
+      }
+      if (typeof totalCostCents !== 'number' || !lineCostsCents || Object.keys(lineCostsCents).length === 0) {
+        res.status(400).json({
+          error: 'Informe o custo total e o custo de cada item cotado antes de devolver a cotação.',
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const actor = actorName || 'Ana (Compras & Suprimentos)';
+
+      purchaseRequest.quote = {
+        quotedAt: now,
+        quotedBy: actor,
+        totalCostCents,
+        lineCostsCents,
+        notes,
+      };
+      purchaseRequest.status = 'cotado';
+
+      const { handoff, alreadyTransferred } = createOrderHandoff(store, attendance, {
+        fromDesk: 'ana_compras',
+        toDesk: 'pedro_avaliacao',
+        reason: `Cotação do pedido de compra ${purchaseRequest.id} concluída.`,
+        completedSummary: `Pedido ${purchaseRequest.id} cotado em R$ ${(totalCostCents / 100).toFixed(2)}.`,
+        nextActionExpected: 'Conferir a cotação e seguir com a aprovação do orçamento/lista de materiais.',
+      });
+
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor,
+        stage: 'Pedido de Compra',
+        action: 'Cotação devolvida ao Pedro',
+        details: `Pedido ${purchaseRequest.id} cotado em R$ ${(totalCostCents / 100).toFixed(2)}.`,
+      });
+      attendance.updatedAt = now;
+
+      saveStore(store);
+      if (!alreadyTransferred) {
+        broadcastRealtimeEvent({
+          type: 'attendance:updated',
+          timestamp: now,
+          sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+          attendance,
+        });
+      }
+      res.json({ ok: true, purchaseRequest, handoff, attendance });
+    } catch (err) {
+      console.error('Erro ao devolver cotação do pedido de compra:', err);
+      res.status(500).json({ error: 'Erro ao devolver cotação do pedido de compra.' });
+    }
+  });
 
   // Mesa do Tapeceiro Técnico — prepara o plano técnico a partir da avaliação revisada do
   // Pedro (Reforma) ou da ficha técnica revisada do Lucas (Fabricação). Sem IA: deriva
@@ -6064,6 +6336,26 @@ Para cada área:
               description:
                 'Fotos específicas necessárias para completar a avaliação visual.',
             },
+            furnitureModelIdentification: {
+              type: Type.OBJECT,
+              description: 'Identificação descritiva da configuração/modelo do móvel a partir das fotos.',
+              properties: {
+                configuration: {
+                  type: Type.STRING,
+                  description: 'Ex: "sofá retrátil 3 lugares, módulo chaise". "A confirmar" se não verificável.',
+                },
+                seatsCount: { type: Type.STRING, description: 'Número de lugares/assentos, ou "A confirmar".' },
+                armsShape: { type: Type.STRING, description: 'Formato dos braços, ou "A confirmar".' },
+                backrestShape: { type: Type.STRING, description: 'Formato do encosto, ou "A confirmar".' },
+                baseAndFeetShape: { type: Type.STRING, description: 'Formato da base e pés, ou "A confirmar".' },
+                origin: {
+                  type: Type.STRING,
+                  description:
+                    'Valores aceitos: "Observado na foto", "Relatado pelo cliente", "Suspeita a confirmar", "Confirmado pela oficina", "Não avaliável".',
+                },
+              },
+              required: ['configuration', 'seatsCount', 'armsShape', 'backrestShape', 'baseAndFeetShape', 'origin'],
+            },
           },
           required: [
             'leftRightReference',
@@ -6071,6 +6363,7 @@ Para cada área:
             'findings',
             'analysisLimitations',
             'requestedAdditionalPhotos',
+            'furnitureModelIdentification',
           ],
         },
       });
@@ -6094,6 +6387,14 @@ Para cada área:
         }>;
         analysisLimitations: string[];
         requestedAdditionalPhotos: string[];
+        furnitureModelIdentification?: {
+          configuration: string;
+          seatsCount: string;
+          armsShape: string;
+          backrestShape: string;
+          baseAndFeetShape: string;
+          origin: string;
+        };
       };
 
       const validOrigins = [
@@ -6147,6 +6448,19 @@ Para cada área:
           reviewStatus: 'Preliminar',
         };
       });
+
+      const modelIdentificationRaw = parsed.furnitureModelIdentification;
+      const modelIdentificationOrigin = modelIdentificationRaw && validOrigins.includes(modelIdentificationRaw.origin)
+        ? (modelIdentificationRaw.origin as InformationOrigin)
+        : 'Suspeita a confirmar';
+      attendance.furnitureModelIdentification = {
+        configuration: modelIdentificationRaw?.configuration || 'A confirmar na oficina',
+        seatsCount: modelIdentificationRaw?.seatsCount || 'A confirmar na oficina',
+        armsShape: modelIdentificationRaw?.armsShape || 'A confirmar na oficina',
+        backrestShape: modelIdentificationRaw?.backrestShape || 'A confirmar na oficina',
+        baseAndFeetShape: modelIdentificationRaw?.baseAndFeetShape || 'A confirmar na oficina',
+        origin: modelIdentificationOrigin,
+      };
 
       const now = new Date().toISOString();
       attendance.leftRightReference =
@@ -6527,6 +6841,24 @@ TAREFA (SEGUNDA AVALIAÇÃO — REAPROVEITAMENTO, PROPOSTAS E PARECER PRELIMINAR
       attendance.reuseItems = completeReuseItems;
       attendance.materialConsumptionAndReworkAnalysis =
         parsed.materialConsumptionAndReworkAnalysis || '';
+
+      // Trava de aprovação: se a proposta atualmente selecionada já foi aprovada
+      // (decisões por componente confirmadas), a nova análise nunca a sobrescreve
+      // silenciosamente — o array inteiro é arquivado antes da substituição.
+      const approvedProposal = attendance.proposals.find(
+        (p) => p.tier === attendance.selectedProposalTier && p.approved === true
+      );
+      if (approvedProposal && attendance.proposals.length > 0) {
+        attendance.proposalRevisions = [...(attendance.proposalRevisions || []), attendance.proposals];
+        attendance.auditHistory.unshift({
+          id: `log-${Date.now()}`,
+          timestamp: now,
+          actor: 'Sistema',
+          stage: 'Propostas de Reforma',
+          action: 'Propostas anteriores arquivadas antes de nova análise',
+          details: `A proposta ${approvedProposal.tier} já estava aprovada. As propostas anteriores foram preservadas em proposalRevisions antes da nova análise de reaproveitamento.`,
+        });
+      }
       attendance.proposals = parsed.proposals || [];
       attendance.opinion = {
         ...attendance.opinion,
@@ -6981,7 +7313,7 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
       const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const attendance = attendanceId
         ? store.attendances.find((a) => a.id === attendanceId)
-        : store.attendances[0];
+        : undefined;
 
       const parts: Array<
         | { text: string }
@@ -8772,7 +9104,7 @@ Regra: Nunca invente medida, encaixe, furação ou especificação estrutural a 
         relevantOrder = store.attendances.find((a) => a.id === orderId || a.attendanceNumber === orderId);
       }
       if (!relevantOrder && store.attendances.length > 0) {
-        relevantOrder = store.attendances.find((a) => a.currentDesk === deskId) || store.attendances[0];
+        relevantOrder = store.attendances.find((a) => a.currentDesk === deskId);
       }
 
       let relevantCampaign: JuliaSmartAdProject | undefined;

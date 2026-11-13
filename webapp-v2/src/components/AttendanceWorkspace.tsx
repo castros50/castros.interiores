@@ -44,6 +44,7 @@ import {
   ReformMaterialComponentStatus,
   ReformMaterialQuantityStatus,
   ReformMaterialPriceStatus,
+  ReformComponentDecisionKey,
 } from '../types';
 import {
   calculateBudgetSummary,
@@ -82,7 +83,37 @@ interface AttendanceWorkspaceProps {
   onGenerateInternalPdf: () => Promise<void>;
   onGenerateClientPdf: () => Promise<void>;
   onGenerateShoppingListPdf: () => Promise<void>;
+  onApproveProposal: (
+    tier: ProposalTier,
+    componentDecisions: Array<{ key: ReformComponentDecisionKey; decision: string }>
+  ) => Promise<void>;
+  onSendPurchaseRequest: (sourcingNotes: string) => Promise<void>;
+  isSendingPurchaseRequest: boolean;
 }
+
+const COMPONENT_DECISION_KEYS: ReformComponentDecisionKey[] = [
+  'tecido_revestimento',
+  'espuma',
+  'costuras',
+  'capitone',
+  'botoes',
+  'ziper',
+  'manta',
+  'tnt',
+  'reaproveitamento',
+];
+
+const COMPONENT_DECISION_LABELS: Record<ReformComponentDecisionKey, string> = {
+  tecido_revestimento: 'Tecido/Revestimento',
+  espuma: 'Espuma',
+  costuras: 'Costuras',
+  capitone: 'Capitonê',
+  botoes: 'Botões',
+  ziper: 'Zíper',
+  manta: 'Manta',
+  tnt: 'TNT',
+  reaproveitamento: 'Reaproveitamento',
+};
 
 const WORKFLOW_STEPS = [
   { id: 1, label: '01. Cadastro' },
@@ -150,6 +181,9 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
   onGenerateInternalPdf,
   onGenerateClientPdf,
   onGenerateShoppingListPdf,
+  onApproveProposal,
+  onSendPurchaseRequest,
+  isSendingPurchaseRequest,
 }) => {
   const [showAllStepsMode, setShowAllStepsMode] = useState(false);
   const [selectedPhotoCategory, setSelectedPhotoCategory] = useState<PhotoCategory>('Frente');
@@ -169,6 +203,23 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
   const [newHiddenDesc, setNewHiddenDesc] = useState('');
   const [newHiddenServices, setNewHiddenServices] = useState('');
   const [newHiddenPriceReais, setNewHiddenPriceReais] = useState('');
+
+  // Decisões por componente da proposta selecionada, pendentes de aprovação
+  const [componentDecisionDrafts, setComponentDecisionDrafts] = useState<
+    Record<ReformComponentDecisionKey, string>
+  >({
+    tecido_revestimento: '',
+    espuma: '',
+    costuras: '',
+    capitone: '',
+    botoes: '',
+    ziper: '',
+    manta: '',
+    tnt: '',
+    reaproveitamento: '',
+  });
+  const [isApprovingProposal, setIsApprovingProposal] = useState(false);
+  const [purchaseRequestNotes, setPurchaseRequestNotes] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mobileCameraInputRef = useRef<HTMLInputElement | null>(null);
@@ -2398,6 +2449,69 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
                         ? 'Proposta Selecionada para o Cliente'
                         : 'Selecionar esta Proposta'}
                     </button>
+
+                    {isSelected && (
+                      <div className="mt-3 pt-3 border-t border-[#E5DEC9] space-y-2">
+                        {prop.approved ? (
+                          <p className="text-xs text-emerald-800 bg-emerald-50 rounded-lg p-2">
+                            Decisões aprovadas por {prop.approvedBy} em{' '}
+                            {prop.approvedAt ? new Date(prop.approvedAt).toLocaleString('pt-BR') : ''}.
+                            {(prop.componentDecisions || []).length > 0 && (
+                              <span className="block mt-1 text-[#1C1917]">
+                                {prop.componentDecisions!
+                                  .map((cd) => `${COMPONENT_DECISION_LABELS[cd.key]}: ${cd.decision}`)
+                                  .join(' • ')}
+                              </span>
+                            )}
+                          </p>
+                        ) : (
+                          <>
+                            <p className="text-[11px] text-[#6B6257]">
+                              Decisão por componente (opcional, preencha o que já foi decidido):
+                            </p>
+                            <div className="grid grid-cols-1 gap-1.5">
+                              {COMPONENT_DECISION_KEYS.map((key) => (
+                                <div key={key} className="flex items-center gap-2">
+                                  <label className="w-32 text-[11px] text-[#44403C] shrink-0">
+                                    {COMPONENT_DECISION_LABELS[key]}
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={componentDecisionDrafts[key]}
+                                    onChange={(e) =>
+                                      setComponentDecisionDrafts((prev) => ({
+                                        ...prev,
+                                        [key]: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="Ex: manter"
+                                    className="flex-1 rounded border border-[#E5DEC9] px-2 py-1 text-[11px]"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            <button
+                              type="button"
+                              disabled={isApprovingProposal}
+                              onClick={async () => {
+                                setIsApprovingProposal(true);
+                                try {
+                                  const filled = COMPONENT_DECISION_KEYS.filter(
+                                    (key) => componentDecisionDrafts[key].trim()
+                                  ).map((key) => ({ key, decision: componentDecisionDrafts[key].trim() }));
+                                  await onApproveProposal(prop.tier, filled);
+                                } finally {
+                                  setIsApprovingProposal(false);
+                                }
+                              }}
+                              className="w-full py-1.5 rounded-lg bg-[#9A7138] hover:bg-[#86602E] disabled:opacity-50 text-white text-xs font-semibold"
+                            >
+                              {isApprovingProposal ? 'Aprovando...' : 'Aprovar Decisões desta Proposta'}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -2973,14 +3087,54 @@ export const AttendanceWorkspace: React.FC<AttendanceWorkspaceProps> = ({
                     />
                     Lista Aprovada pelo Responsável
                   </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={onGenerateShoppingListPdf}
+                      className="px-4 py-2 rounded-lg border border-[#D6CFC5] text-xs font-semibold text-[#1C1917] flex items-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Imprimir Lista de Compras (PDF A4)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-[#EFECE6] space-y-2">
+                  <p className="text-xs font-semibold text-[#1C1917]">
+                    Enviar Pedido de Compra para Ana (Compras &amp; Suprimentos)
+                  </p>
+                  <textarea
+                    value={purchaseRequestNotes}
+                    onChange={(e) => setPurchaseRequestNotes(e.target.value)}
+                    placeholder="Notas de abastecimento: onde comprar, urgência, restrições..."
+                    rows={2}
+                    className="w-full rounded border border-[#D6CFC5] px-3 py-1.5 text-xs"
+                  />
                   <button
                     type="button"
-                    onClick={onGenerateShoppingListPdf}
-                    className="px-4 py-2 rounded-lg border border-[#D6CFC5] text-xs font-semibold text-[#1C1917] flex items-center gap-1.5"
+                    disabled={isSendingPurchaseRequest || !purchaseRequestNotes.trim()}
+                    onClick={async () => {
+                      await onSendPurchaseRequest(purchaseRequestNotes.trim());
+                      setPurchaseRequestNotes('');
+                    }}
+                    className="px-4 py-2 rounded-lg bg-[#181512] hover:bg-[#2E2722] disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5"
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    Imprimir Lista de Compras (PDF A4)
+                    {isSendingPurchaseRequest ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-3.5 h-3.5" />
+                    )}
+                    Enviar Pedido de Compra
                   </button>
+                  {(attendance.purchaseRequests || []).length > 0 && (
+                    <ul className="text-[11px] text-[#6B6257] space-y-1">
+                      {attendance.purchaseRequests!.slice().reverse().map((pr) => (
+                        <li key={pr.id}>
+                          {pr.id} · {pr.status === 'aguardando_cotacao' ? 'Aguardando cotação' : pr.status === 'cotado' ? `Cotado: R$ ${(pr.quote!.totalCostCents / 100).toFixed(2)}` : 'Cancelado'} · {pr.items.length} item(ns)
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               </>
             )}
