@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { getApps, initializeApp, applicationDefault } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 // Migrado de @google/genai (Gemini) para a API da Anthropic (Claude) — ver getAnthropicApiKey()
 // e generateContentWithRetryAndFallback() abaixo. O objeto Type abaixo reproduz os mesmos nomes
@@ -7155,6 +7155,66 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     const store = loadStore();
     const outcomes = await processDueBackgroundTasks(store);
     res.json({ ok: true, processed: outcomes.length, outcomes });
+  });
+
+  // Correção pontual e idempotente: appState/main passou do limite de 1MB do
+  // Firestore (quase todo o excesso era o campo juliaData), travando toda
+  // gravação nova — incluindo o webhook do WhatsApp. server.ts já não lê/
+  // escreve mais juliaData nesse documento único (ver FIRESTORE_JULIA_DOC),
+  // mas o campo antigo precisa ser removido explicitamente para o documento
+  // voltar a caber no limite. Roda direto no servidor (credenciais do
+  // próprio Cloud Run, já comprovadamente funcionando) em vez de depender de
+  // login/ADC fora daqui. Protegida pelo mesmo segredo do Scheduler — não
+  // precisa de outro. Rodar de novo depois de já ter rodado é inofensivo
+  // (não acha mais o campo, não faz nada).
+  app.post('/api/admin/migrate-julia-data-to-own-doc', async (req, res) => {
+    const expectedSecret = process.env.BACKGROUND_TASKS_SECRET;
+    if (!expectedSecret) {
+      res.status(503).json({ error: 'BACKGROUND_TASKS_SECRET não configurado.' });
+      return;
+    }
+    if (req.headers['x-tasks-secret'] !== expectedSecret) {
+      res.status(403).json({ error: 'Segredo inválido.' });
+      return;
+    }
+    try {
+      const mainRef = db.collection(FIRESTORE_STORE_COLLECTION).doc(FIRESTORE_STORE_DOC);
+      const mainSnap = await mainRef.get();
+      if (!mainSnap.exists) {
+        res.json({ ok: true, action: 'nenhum_documento', message: 'appState/main não existe.' });
+        return;
+      }
+      const mainData = mainSnap.data() || {};
+      const mainBytesBefore = Buffer.byteLength(JSON.stringify(mainData), 'utf-8');
+      if (!('juliaData' in mainData)) {
+        res.json({
+          ok: true,
+          action: 'ja_migrado',
+          mainBytesBefore,
+          message: 'appState/main já não tem o campo juliaData.',
+        });
+        return;
+      }
+      const juliaData = (mainData as Record<string, unknown>).juliaData;
+      const juliaBytes = Buffer.byteLength(JSON.stringify(juliaData ?? null), 'utf-8');
+      await db
+        .collection(FIRESTORE_STORE_COLLECTION)
+        .doc(FIRESTORE_JULIA_DOC)
+        .set({ juliaData, savedAt: new Date().toISOString() });
+      await mainRef.update({ juliaData: FieldValue.delete() });
+      const mainSnapAfter = await mainRef.get();
+      const mainBytesAfter = Buffer.byteLength(JSON.stringify(mainSnapAfter.data() || {}), 'utf-8');
+      res.json({
+        ok: true,
+        action: 'migrado',
+        juliaBytes,
+        mainBytesBefore,
+        mainBytesAfter,
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ ok: false, error: errorMessage });
+    }
   });
 
   // --------------------------------------------------------------------------
