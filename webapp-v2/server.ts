@@ -2593,22 +2593,12 @@ async function sendWhatsAppTemplateMessage(
     };
     if (!resp.ok || data.error) {
       // A mensagem curta da Meta/YCloud (ex.: "(#100) Invalid parameter") quase nunca diz o
-      // motivo real — o detalhe de verdade costuma vir em error_data.details/error_subcode.
-      // Nunca descarta isso: se nada estruturado vier, despeja a resposta bruta inteira pra
-      // nunca perder a única pista disponível de diagnóstico.
-      const err = data.error;
-      const parts = [
-        err?.message,
-        err?.error_data?.details,
-        err?.error_subcode ? `subcode ${err.error_subcode}` : undefined,
-        err?.fbtrace_id ? `fbtrace_id ${err.fbtrace_id}` : undefined,
-      ].filter(Boolean);
+      // motivo real sozinha — sempre anexa a resposta bruta inteira (HTTP status incluso)
+      // pra nunca perder a única pista disponível de diagnóstico, mesmo quando "parece"
+      // que já tem uma mensagem.
       return {
         ok: false,
-        errorMessage:
-          parts.length > 0
-            ? parts.join(' — ')
-            : `Falha ao enviar (HTTP ${resp.status}). Resposta bruta: ${JSON.stringify(data)}`,
+        errorMessage: `HTTP ${resp.status} — resposta bruta da YCloud: ${JSON.stringify(data)}`,
       };
     }
     return { ok: true, externalId: data.wamid || data.id };
