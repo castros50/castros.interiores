@@ -8572,6 +8572,57 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     res.json({ ok: true, juliaWhatsappBroadcastTemplate: store.settings.juliaWhatsappBroadcastTemplate });
   });
 
+  // Testa o template de disparo em massa num ÚNICO telefone escolhido — nunca mexe em
+  // store.clients, nunca cria campanha nem BackgroundTask. Existe só pra validar que o
+  // template aprovado/variável/cabeçalho de imagem realmente funcionam antes de mandar
+  // pra base inteira de clientes reais.
+  app.post('/api/julia/test-whatsapp-template', async (req, res) => {
+    try {
+      const { phone, testBodyText } = req.body as { phone?: string; testBodyText?: string };
+      if (!phone || !phone.trim()) {
+        res.status(400).json({ error: 'Informe o telefone de teste (com DDD/DDI).' });
+        return;
+      }
+      const store = loadStore();
+      const template = store.settings.juliaWhatsappBroadcastTemplate;
+      if (!template || !template.name) {
+        res.status(400).json({
+          error: 'Nenhum template configurado em Configurações — salve o template antes de testar.',
+        });
+        return;
+      }
+      let headerImageUrl: string | undefined;
+      if (template.hasImageHeader) {
+        const baseUrl = getPublicBaseUrl();
+        const testPhoto = store.juliaData?.photos?.[0];
+        if (!baseUrl || !testPhoto) {
+          res.status(400).json({
+            error:
+              'Template exige cabeçalho de imagem, mas falta APP_URL configurado no ambiente ou nenhuma foto disponível na biblioteca da Júlia para o teste.',
+          });
+          return;
+        }
+        headerImageUrl = `${baseUrl}${testPhoto.imageUrl}`;
+      }
+      const result = await sendWhatsAppTemplateMessage(
+        phone.trim(),
+        template.name,
+        template.languageCode || 'pt_BR',
+        testBodyText?.trim() || 'Este é um teste do template de disparo automático da Castros Interiores.',
+        headerImageUrl,
+        template.bodyVariableName
+      );
+      if (!result.ok) {
+        res.status(502).json({ error: result.errorMessage || 'Falha ao enviar o teste.' });
+        return;
+      }
+      res.json({ ok: true, externalId: result.externalId });
+    } catch (err) {
+      console.error('Erro ao testar template de WhatsApp:', err);
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Erro ao testar template.' });
+    }
+  });
+
   // Envio imediato pelo canal OFICIAL e integrado do WhatsApp — diferente do
   // link manual wa.me (que só abre o WhatsApp do atendente para ele mandar com
   // a própria mão). Só funciona quando a integração estiver realmente conectada;

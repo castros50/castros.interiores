@@ -232,6 +232,11 @@ export default function App() {
   const [whatsappTemplateLanguageInput, setWhatsappTemplateLanguageInput] = useState('pt_BR');
   const [whatsappTemplateHasImageHeaderInput, setWhatsappTemplateHasImageHeaderInput] = useState(false);
   const [whatsappTemplateBodyVariableNameInput, setWhatsappTemplateBodyVariableNameInput] = useState('');
+  const [testTemplatePhoneInput, setTestTemplatePhoneInput] = useState('');
+  const [isTestingWhatsappTemplate, setIsTestingWhatsappTemplate] = useState(false);
+  const [testWhatsappTemplateResult, setTestWhatsappTemplateResult] = useState<
+    { ok: true; externalId?: string } | { ok: false; error: string } | null
+  >(null);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSavedSuccessAt, setLastSavedSuccessAt] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -485,6 +490,32 @@ export default function App() {
       }
     } finally {
       setIsSavingWhatsappTemplate(false);
+    }
+  };
+
+  const handleTestWhatsappTemplate = async () => {
+    if (!testTemplatePhoneInput.trim()) return;
+    setIsTestingWhatsappTemplate(true);
+    setTestWhatsappTemplateResult(null);
+    try {
+      const res = await fetch('/api/julia/test-whatsapp-template', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: testTemplatePhoneInput.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setTestWhatsappTemplateResult({ ok: true, externalId: data.externalId });
+      } else {
+        setTestWhatsappTemplateResult({ ok: false, error: data.error || 'Falha ao enviar o teste.' });
+      }
+    } catch (err) {
+      setTestWhatsappTemplateResult({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Erro de rede ao enviar o teste.',
+      });
+    } finally {
+      setIsTestingWhatsappTemplate(false);
     }
   };
 
@@ -2995,6 +3026,47 @@ export default function App() {
                     >
                       {isSavingWhatsappTemplate ? 'Salvando...' : 'Salvar Template'}
                     </button>
+                  </div>
+
+                  {/* Teste controlado — manda o template real pra UM único telefone escolhido,
+                      sem tocar na lista de clientes nem criar campanha de verdade. */}
+                  <div className="pt-2 border-t border-[#E5DEC9] space-y-2">
+                    <p className="text-[#57534E]">
+                      Testar o template num único número antes de disparar pra todos os clientes:
+                    </p>
+                    <div className="flex flex-wrap items-end gap-2">
+                      <div>
+                        <label className="block text-[#57534E] mb-1">Telefone de teste (com DDI/DDD)</label>
+                        <input
+                          type="text"
+                          value={testTemplatePhoneInput}
+                          onChange={(e) => setTestTemplatePhoneInput(e.target.value)}
+                          placeholder="ex: +5591999999999"
+                          className="w-48 rounded border border-[#D6CFC5] px-2 py-1.5 text-xs"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleTestWhatsappTemplate}
+                        disabled={isTestingWhatsappTemplate || !testTemplatePhoneInput.trim() || !settings.juliaWhatsappBroadcastTemplate}
+                        className="px-3 py-1.5 rounded bg-[#9A7138] hover:bg-[#845E2B] disabled:opacity-50 text-white text-[10px] font-semibold"
+                      >
+                        {isTestingWhatsappTemplate ? 'Enviando...' : 'Enviar Teste'}
+                      </button>
+                    </div>
+                    {testWhatsappTemplateResult && (
+                      <p
+                        className={
+                          testWhatsappTemplateResult.ok
+                            ? 'text-emerald-800 bg-emerald-50 rounded px-2 py-1.5'
+                            : 'text-red-800 bg-red-50 rounded px-2 py-1.5'
+                        }
+                      >
+                        {testWhatsappTemplateResult.ok
+                          ? `Enviado com sucesso (id: ${testWhatsappTemplateResult.externalId || 'não informado'}). Confira no WhatsApp do número de teste.`
+                          : `Falha: ${testWhatsappTemplateResult.error}`}
+                      </p>
+                    )}
                   </div>
                 </div>
 
