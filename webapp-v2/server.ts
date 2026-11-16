@@ -7849,11 +7849,10 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
 
   app.get('/api/julia/integrations-status', (_req, res) => {
     const hasInstagramApi = Boolean(
-      process.env.INSTAGRAM_GRAPH_ACCESS_TOKEN &&
-        process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID
+      process.env.META_ACCESS_TOKEN && process.env.META_IG_BUSINESS_ACCOUNT_ID
     );
     const hasFacebookApi = Boolean(
-      process.env.FACEBOOK_PAGE_ACCESS_TOKEN && process.env.FACEBOOK_PAGE_ID
+      process.env.META_ACCESS_TOKEN && process.env.META_PAGE_ID
     );
     // A variável real usada para enviar/verificar o WhatsApp é YCLOUD_API_KEY +
     // YCLOUD_WHATSAPP_FROM (ver sendWhatsAppMessage/checkYCloudWhatsAppConnection
