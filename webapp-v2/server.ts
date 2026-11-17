@@ -101,6 +101,7 @@ import type {
   JuliaSocialMediaVersions,
   AgentChatMessage,
   AgentActionProposal,
+  JuliaVoiceTextMessage,
   FinancialTransaction,
   BusinessStrategyRecommendation,
   WeeklyActionPlanItem,
@@ -9272,6 +9273,216 @@ Lembre-se: NUNCA mencione avaliação técnica de defeitos, problemas estruturai
     }
   });
 
+  // Nomes e personas das 9 mesas de agente — ponto único reaproveitado pelo chat
+  // genérico (/api/chat/agent), pela execução de ação (/api/chat/execute-action)
+  // e pelo encaminhamento automático de mensagem entre agentes (agentRelay).
+  const DESK_AGENT_META: Record<
+    DepartmentId,
+    { name: string; title: string; systemPrompt: string }
+  > = {
+    carla_atendimento: {
+      name: 'Carla',
+      title: 'Carla (Atendimento ao Cliente)',
+      systemPrompt: `Você é a CARLA, responsável pelo Atendimento ao Cliente na Castros Interiores.
+Missão: Acolhimento cordial, triagem de pedidos, coleta de dados do cliente, histórico de contato, dúvidas sobre prazos e comunicados via WhatsApp.
+Responda com base nos clientes e pedidos reais do sistema. Nunca invente dados que não existam.`,
+    },
+    pedro_avaliacao: {
+      name: 'Pedro',
+      title: 'Pedro (Avaliação Técnica de Reforma)',
+      systemPrompt: `Você é o PEDRO, analista técnico sênior de avaliação de reformas da Castros Interiores.
+Missão: Examinar as 11 áreas do estofado, identificar defeitos visíveis vs suspeitas, avaliar reaproveitamento de componentes e estruturar propostas de reforma.
+Regra: NUNCA afirme que a estrutura interna está íntegra sem abertura na oficina. Apenas observe fotos e fatos reais.`,
+    },
+    lucas_projetos: {
+      name: 'Lucas',
+      title: 'Lucas (Projetos & Fabricação Nova)',
+      systemPrompt: `Você é o LUCAS, engenheiro e projetista de estofados novos sob medida da Castros Interiores.
+Missão: Elaborar projetos novos nas 8 etapas de fabricação (briefing, referências, modelo, revisão do responsável, plano de corte/materiais, custos, aprovação e manual de montagem).
+Regra: NUNCA confunda fabricação nova com reforma. Não fale de defeitos ou reaproveitamento; detalhe medidas em mm, tecidos com margem de perda e componentes novos.`,
+    },
+    ana_compras: {
+      name: 'Ana',
+      title: 'Ana (Compras & Suprimentos)',
+      systemPrompt: `Você é a ANA, coordenadora de Compras, Catálogo e Suprimentos da Castros Interiores.
+Missão: Gerenciar o catálogo de matérias-primas nas 9 categorias (espumas, tecidos, madeira, percintas/molas, grampos, colas, mantas, pés/ferragens, outros), conferir estoques, fornecedores e identificar orçamentos incompletos sem preço cadastrado.
+Regra: NUNCA invente preços ou assuma custo zero para matérias-primas faltantes. Aponte com precisão o que falta cotar.`,
+    },
+    mila_financeiro: {
+      name: 'Mila',
+      title: 'Mila (Administração Financeira)',
+      systemPrompt: `Você é a MILA, diretora de Administração Financeira da Castros Interiores.
+Missão: Gerenciar o financeiro geral da fábrica (entradas, saídas, contas, reserva do Edson) e o financeiro de cada pedido (formação de preços, custos diretos, mão de obra, rateio de despesas fixas, impostos, pagamentos e parcelas).
+Regra: NUNCA misture custos diretos com despesas de oficina. Sempre apresente cálculos claros em Reais (R$) sem arredondar arbitrariamente. Distinga sempre valores já REALIZADOS (recebidos/pagos de fato) de valores apenas PREVISTOS ou de orçamento aprovado — orçamento aprovado nunca é dinheiro recebido. Você pode sugerir lançamentos, retiradas ou transferências, mas NUNCA os confirma ou registra sozinha: toda movimentação real exige a confirmação explícita do responsável pelos próprios botões da mesa, nunca pela conversa.`,
+    },
+    castro_estrategia: {
+      name: 'Roberto Castro',
+      title: 'Castro (Estratégia & Organização do Negócio)',
+      systemPrompt: `Você é o ROBERTO CASTRO, gestor de Estratégia e Planejamento da Castros Interiores.
+Missão: Coordenar a capacidade produtiva da oficina (base de 80 horas/semana), identificar gargalos de produção, balancear pedidos de reforma vs fabricação nova, definir planos de ação semanais e orientar o crescimento rentável do negócio.`,
+    },
+    julia_marketing: {
+      name: 'Júlia',
+      title: 'Júlia (Marketing & Divulgação)',
+      systemPrompt: JULIA_MARKETING_SYSTEM_INSTRUCTION,
+    },
+    supervisora_geral: {
+      name: 'Helena',
+      title: 'Helena (Supervisora Geral — Mesa 8)',
+      systemPrompt: `Você é a HELENA, Supervisora Geral da Central de Agentes da Castros Interiores (Mesa 8).
+Missão: Governança transversal de toda a operação. Você acompanha o trâmite de pedidos entre todas as mesas, prazos de entrega, estoques críticos de materiais, campanhas de divulgação e atua na homologação de decisões técnicas e orçamentárias.
+Regra: Forneça diagnósticos objetivos baseados estritamente nos dados reais da oficina. Quando uma intervenção for necessária, proponha uma ação formal estruturada com confirmação.`,
+    },
+    tapeceiro_tecnico: {
+      name: 'Tapeceiro Técnico',
+      title: 'Tapeceiro Técnico (Planejamento de Produção e Materiais — Mesa 9)',
+      systemPrompt: `Você é o TAPECEIRO TÉCNICO da Castros Interiores (Mesa 9), responsável por transformar a avaliação revisada do Pedro (reforma) ou a ficha técnica revisada do Lucas (fabricação) em lista técnica de peças, cálculo de materiais e instruções de montagem.
+Regra: Nunca invente medida, encaixe, furação ou especificação estrutural a partir de foto. Diferencie dimensão acabada de dimensão de corte. Quantidade ou preço desconhecidos ficam pendentes, nunca zero ou estimativa apresentada como definitiva.`,
+    },
+  };
+
+  // Tipos de ação de rotina que a Helena (supervisora_geral) pode aprovar sozinha,
+  // sem clique humano: nenhum envolve dinheiro, compra ou homologação de qualidade
+  // técnica. approve_budget, approve_technical e request_quotation ficam de fora de
+  // propósito — continuam exigindo confirmação humana real, de qualquer mesa.
+  const HELENA_AUTO_APPROVABLE_TYPES: ReadonlyArray<AgentActionProposal['type']> = [
+    'transfer_order',
+    'send_reminder',
+    'update_status',
+  ];
+
+  // Executa de verdade uma proposta de ação (transferência, homologação, aviso
+  // formal, etc.) contra os dados reais. Reaproveitada tanto pela confirmação
+  // humana via botão (/api/chat/execute-action) quanto pela aprovação automática
+  // da Helena para os tipos de rotina sem dinheiro envolvido — a lógica de efeito
+  // real é idêntica; o que muda é só quem autorizou.
+  function executeActionProposal(
+    store: PersistentStore,
+    deskId: DepartmentId,
+    proposal: AgentActionProposal,
+    executor: string
+  ): AttendanceRecord | undefined {
+    const now = new Date().toISOString();
+    let affectedOrder: AttendanceRecord | undefined;
+
+    if (proposal.type === 'transfer_order' && proposal.targetAttendanceId && proposal.targetDesk) {
+      const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
+      if (order) {
+        const from = order.currentDesk || deskId;
+        const to = proposal.targetDesk;
+        order.currentDesk = to;
+        order.deskStatus = 'transferido';
+        order.updatedAt = now;
+        if (!order.handoffHistory) order.handoffHistory = [];
+        order.handoffHistory.unshift({
+          id: `hnd-${Date.now()}`,
+          orderId: order.id,
+          orderNumber: order.attendanceNumber,
+          fromDesk: from,
+          toDesk: to,
+          timestamp: now,
+          reason: proposal.description || 'Transferência solicitada pelo agente',
+          pendingItems: [],
+          documentVersion: order.manufacturingData?.version || 'v1.0',
+          status: 'pendente_aceite',
+        });
+        order.auditHistory.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: now,
+          actor: executor,
+          stage: 'Transferência Homologada',
+          action: `Pedido transferido de ${from} para ${to}`,
+          details: proposal.description,
+        });
+        affectedOrder = order;
+      }
+    } else if (proposal.type === 'approve_technical' && proposal.targetAttendanceId) {
+      const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
+      if (order) {
+        order.reviewCompleted = true;
+        order.deskStatus = 'concluido_mesa';
+        order.updatedAt = now;
+        order.auditHistory.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: now,
+          actor: executor,
+          stage: 'Homologação Técnica',
+          action: 'Vistoria e ficha técnica homologadas',
+          details: proposal.description,
+        });
+        affectedOrder = order;
+      }
+    } else if (proposal.type === 'approve_budget' && proposal.targetAttendanceId) {
+      const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
+      if (order) {
+        if (order.financialData) {
+          order.financialData.confirmedByResponsible = true;
+          if (proposal.payload?.approvedPriceCents) {
+            order.financialData.approvedSellingPriceCents = proposal.payload.approvedPriceCents;
+          }
+        }
+        if (order.budget) {
+          order.budget.confirmedByResponsible = true;
+          order.budget.responsibleName = executor;
+        }
+        order.deskStatus = 'concluido_mesa';
+        order.updatedAt = now;
+        order.auditHistory.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: now,
+          actor: executor,
+          stage: 'Homologação Orçamentária',
+          action: 'Orçamento e formação de preço aprovados',
+          details: proposal.description,
+        });
+        affectedOrder = order;
+      }
+    } else if (proposal.type === 'send_reminder' && proposal.targetAttendanceId) {
+      const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
+      if (order) {
+        order.auditHistory.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: now,
+          actor: `${executor} (via Mesa Supervisora)`,
+          stage: 'Aviso Formal',
+          action: proposal.title || 'Aviso formal registrado',
+          details: proposal.description,
+        });
+        affectedOrder = order;
+      }
+    } else if (proposal.type === 'update_status' && proposal.targetAttendanceId) {
+      const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
+      if (order && proposal.payload?.deskStatus) {
+        order.deskStatus = proposal.payload.deskStatus;
+        order.updatedAt = now;
+        order.auditHistory.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: now,
+          actor: executor,
+          stage: `Mesa ${deskId}`,
+          action: `Status alterado para: ${proposal.payload.deskStatus}`,
+          details: proposal.description,
+        });
+        affectedOrder = order;
+      }
+    }
+
+    proposal.confirmed = true;
+    proposal.executedAt = now;
+    proposal.executedBy = executor;
+
+    if (affectedOrder) {
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceStationName: `Mesa ${deskId}`,
+        attendance: affectedOrder,
+      });
+    }
+
+    return affectedOrder;
+  }
+
   // Execute Confirmed Agent Action Proposal
   app.post('/api/chat/execute-action', (req, res) => {
     try {
@@ -9305,134 +9516,17 @@ Lembre-se: NUNCA mencione avaliação técnica de defeitos, problemas estruturai
         return;
       }
 
-      const now = new Date().toISOString();
       const executor = actorName || 'Responsável Operacional';
-
-      let affectedOrder: AttendanceRecord | undefined;
-
-      if (proposal.type === 'transfer_order' && proposal.targetAttendanceId && proposal.targetDesk) {
-        const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
-        if (order) {
-          const from = order.currentDesk || deskId;
-          const to = proposal.targetDesk;
-          order.currentDesk = to;
-          order.deskStatus = 'transferido';
-          order.updatedAt = now;
-          if (!order.handoffHistory) order.handoffHistory = [];
-          order.handoffHistory.unshift({
-            id: `hnd-${Date.now()}`,
-            orderId: order.id,
-            orderNumber: order.attendanceNumber,
-            fromDesk: from,
-            toDesk: to,
-            timestamp: now,
-            reason: proposal.description || 'Transferência solicitada pelo agente',
-            pendingItems: [],
-            documentVersion: order.manufacturingData?.version || 'v1.0',
-            status: 'pendente_aceite',
-          });
-          order.auditHistory.unshift({
-            id: `aud-${Date.now()}`,
-            timestamp: now,
-            actor: executor,
-            stage: 'Transferência Homologada',
-            action: `Pedido transferido de ${from} para ${to}`,
-            details: proposal.description,
-          });
-          affectedOrder = order;
-        }
-      } else if (proposal.type === 'approve_technical' && proposal.targetAttendanceId) {
-        const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
-        if (order) {
-          order.reviewCompleted = true;
-          order.deskStatus = 'concluido_mesa';
-          order.updatedAt = now;
-          order.auditHistory.unshift({
-            id: `aud-${Date.now()}`,
-            timestamp: now,
-            actor: executor,
-            stage: 'Homologação Técnica',
-            action: 'Vistoria e ficha técnica homologadas',
-            details: proposal.description,
-          });
-          affectedOrder = order;
-        }
-      } else if (proposal.type === 'approve_budget' && proposal.targetAttendanceId) {
-        const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
-        if (order) {
-          if (order.financialData) {
-            order.financialData.confirmedByResponsible = true;
-            if (proposal.payload?.approvedPriceCents) {
-              order.financialData.approvedSellingPriceCents = proposal.payload.approvedPriceCents;
-            }
-          }
-          if (order.budget) {
-            order.budget.confirmedByResponsible = true;
-            order.budget.responsibleName = executor;
-          }
-          order.deskStatus = 'concluido_mesa';
-          order.updatedAt = now;
-          order.auditHistory.unshift({
-            id: `aud-${Date.now()}`,
-            timestamp: now,
-            actor: executor,
-            stage: 'Homologação Orçamentária',
-            action: 'Orçamento e formação de preço aprovados',
-            details: proposal.description,
-          });
-          affectedOrder = order;
-        }
-      } else if (proposal.type === 'send_reminder' && proposal.targetAttendanceId) {
-        const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
-        if (order) {
-          order.auditHistory.unshift({
-            id: `aud-${Date.now()}`,
-            timestamp: now,
-            actor: `${executor} (via Mesa Supervisora)`,
-            stage: 'Aviso Formal',
-            action: proposal.title || 'Aviso formal registrado',
-            details: proposal.description,
-          });
-          affectedOrder = order;
-        }
-      } else if (proposal.type === 'update_status' && proposal.targetAttendanceId) {
-        const order = store.attendances.find((a) => a.id === proposal.targetAttendanceId);
-        if (order && proposal.payload?.deskStatus) {
-          order.deskStatus = proposal.payload.deskStatus;
-          order.updatedAt = now;
-          order.auditHistory.unshift({
-            id: `aud-${Date.now()}`,
-            timestamp: now,
-            actor: executor,
-            stage: `Mesa ${deskId}`,
-            action: `Status alterado para: ${proposal.payload.deskStatus}`,
-            details: proposal.description,
-          });
-          affectedOrder = order;
-        }
-      }
-
-      proposal.confirmed = true;
-      proposal.executedAt = now;
-      proposal.executedBy = executor;
+      const affectedOrder = executeActionProposal(store, deskId, proposal, executor);
 
       msg.actionExecuted = {
         type: proposal.type,
         details: proposal.description,
-        executedAt: now,
+        executedAt: proposal.executedAt!,
         executedBy: executor,
       };
 
       saveStore(store);
-
-      if (affectedOrder) {
-        broadcastRealtimeEvent({
-          type: 'attendance:updated',
-          timestamp: now,
-          sourceStationName: `Mesa ${deskId}`,
-          attendance: affectedOrder,
-        });
-      }
 
       res.json({
         ok: true,
@@ -9446,101 +9540,33 @@ Lembre-se: NUNCA mencione avaliação técnica de defeitos, problemas estruturai
     }
   });
 
-  // Universal Voice & Text Chat Endpoint for All 8 Desks
-  app.post('/api/chat/agent', async (req, res) => {
-    try {
-      const store = loadStore();
-      const {
-        deskId,
-        userText,
-        modality = 'texto',
-        orderId,
-        projectId,
-        materialId,
-      } = req.body as {
-        deskId: DepartmentId;
-        userText: string;
-        modality?: 'voz' | 'texto';
-        orderId?: string;
-        projectId?: string;
-        materialId?: string;
-      };
+  // Lógica completa de um turno de chat com uma das 8 mesas genéricas (contexto
+  // factual real, chamada à IA, proposta de ação, encaminhamento automático pra
+  // outro agente). Extraída pra função pra poder ser chamada tanto pela rota
+  // humana (/api/chat/agent) quanto pela entrega de um agentRelay — sem isso, a
+  // mensagem de um agente pra outro nunca chegaria de verdade na conversa alvo.
+  async function runDeskAgentTurn(
+    store: PersistentStore,
+    params: {
+      deskId: DepartmentId;
+      userText: string;
+      modality: 'voz' | 'texto';
+      orderId?: string;
+      projectId?: string;
+      incomingSender?: { agentName: string; fromAgentDeskId: DepartmentId };
+    }
+  ): Promise<{
+    agentMessageObj: AgentChatMessage;
+    actionProposal?: AgentActionProposal;
+    agentRelay?: { targetDeskId: DepartmentId; message: string };
+  }> {
+    const { deskId, userText, modality, orderId, projectId, incomingSender } = params;
 
-      if (!userText || !userText.trim()) {
-        res.status(400).json({ error: 'Mensagem vazia informada.' });
-        return;
-      }
+    if (!store.agentChats) store.agentChats = {};
+    if (!store.agentChats[deskId]) store.agentChats[deskId] = [];
 
-      if (!store.agentChats) store.agentChats = {};
-      if (!store.agentChats[deskId]) store.agentChats[deskId] = [];
-
-      const deskMetaMap: Record<
-        DepartmentId,
-        { name: string; title: string; systemPrompt: string }
-      > = {
-        carla_atendimento: {
-          name: 'Carla',
-          title: 'Carla (Atendimento ao Cliente)',
-          systemPrompt: `Você é a CARLA, responsável pelo Atendimento ao Cliente na Castros Interiores.
-Missão: Acolhimento cordial, triagem de pedidos, coleta de dados do cliente, histórico de contato, dúvidas sobre prazos e comunicados via WhatsApp.
-Responda com base nos clientes e pedidos reais do sistema. Nunca invente dados que não existam.`,
-        },
-        pedro_avaliacao: {
-          name: 'Pedro',
-          title: 'Pedro (Avaliação Técnica de Reforma)',
-          systemPrompt: `Você é o PEDRO, analista técnico sênior de avaliação de reformas da Castros Interiores.
-Missão: Examinar as 11 áreas do estofado, identificar defeitos visíveis vs suspeitas, avaliar reaproveitamento de componentes e estruturar propostas de reforma.
-Regra: NUNCA afirme que a estrutura interna está íntegra sem abertura na oficina. Apenas observe fotos e fatos reais.`,
-        },
-        lucas_projetos: {
-          name: 'Lucas',
-          title: 'Lucas (Projetos & Fabricação Nova)',
-          systemPrompt: `Você é o LUCAS, engenheiro e projetista de estofados novos sob medida da Castros Interiores.
-Missão: Elaborar projetos novos nas 8 etapas de fabricação (briefing, referências, modelo, revisão do responsável, plano de corte/materiais, custos, aprovação e manual de montagem).
-Regra: NUNCA confunda fabricação nova com reforma. Não fale de defeitos ou reaproveitamento; detalhe medidas em mm, tecidos com margem de perda e componentes novos.`,
-        },
-        ana_compras: {
-          name: 'Ana',
-          title: 'Ana (Compras & Suprimentos)',
-          systemPrompt: `Você é a ANA, coordenadora de Compras, Catálogo e Suprimentos da Castros Interiores.
-Missão: Gerenciar o catálogo de matérias-primas nas 9 categorias (espumas, tecidos, madeira, percintas/molas, grampos, colas, mantas, pés/ferragens, outros), conferir estoques, fornecedores e identificar orçamentos incompletos sem preço cadastrado.
-Regra: NUNCA invente preços ou assuma custo zero para matérias-primas faltantes. Aponte com precisão o que falta cotar.`,
-        },
-        mila_financeiro: {
-          name: 'Mila',
-          title: 'Mila (Administração Financeira)',
-          systemPrompt: `Você é a MILA, diretora de Administração Financeira da Castros Interiores.
-Missão: Gerenciar o financeiro geral da fábrica (entradas, saídas, contas, reserva do Edson) e o financeiro de cada pedido (formação de preços, custos diretos, mão de obra, rateio de despesas fixas, impostos, pagamentos e parcelas).
-Regra: NUNCA misture custos diretos com despesas de oficina. Sempre apresente cálculos claros em Reais (R$) sem arredondar arbitrariamente. Distinga sempre valores já REALIZADOS (recebidos/pagos de fato) de valores apenas PREVISTOS ou de orçamento aprovado — orçamento aprovado nunca é dinheiro recebido. Você pode sugerir lançamentos, retiradas ou transferências, mas NUNCA os confirma ou registra sozinha: toda movimentação real exige a confirmação explícita do responsável pelos próprios botões da mesa, nunca pela conversa.`,
-        },
-        castro_estrategia: {
-          name: 'Roberto Castro',
-          title: 'Castro (Estratégia & Organização do Negócio)',
-          systemPrompt: `Você é o ROBERTO CASTRO, gestor de Estratégia e Planejamento da Castros Interiores.
-Missão: Coordenar a capacidade produtiva da oficina (base de 80 horas/semana), identificar gargalos de produção, balancear pedidos de reforma vs fabricação nova, definir planos de ação semanais e orientar o crescimento rentável do negócio.`,
-        },
-        julia_marketing: {
-          name: 'Júlia',
-          title: 'Júlia (Marketing & Divulgação)',
-          systemPrompt: JULIA_MARKETING_SYSTEM_INSTRUCTION,
-        },
-        supervisora_geral: {
-          name: 'Helena',
-          title: 'Helena (Supervisora Geral — Mesa 8)',
-          systemPrompt: `Você é a HELENA, Supervisora Geral da Central de Agentes da Castros Interiores (Mesa 8).
-Missão: Governança transversal de toda a operação. Você acompanha o trâmite de pedidos entre todas as mesas, prazos de entrega, estoques críticos de materiais, campanhas de divulgação e atua na homologação de decisões técnicas e orçamentárias.
-Regra: Forneça diagnósticos objetivos baseados estritamente nos dados reais da oficina. Quando uma intervenção for necessária, proponha uma ação formal estruturada com confirmação.`,
-        },
-        tapeceiro_tecnico: {
-          name: 'Tapeceiro Técnico',
-          title: 'Tapeceiro Técnico (Planejamento de Produção e Materiais — Mesa 9)',
-          systemPrompt: `Você é o TAPECEIRO TÉCNICO da Castros Interiores (Mesa 9), responsável por transformar a avaliação revisada do Pedro (reforma) ou a ficha técnica revisada do Lucas (fabricação) em lista técnica de peças, cálculo de materiais e instruções de montagem.
-Regra: Nunca invente medida, encaixe, furação ou especificação estrutural a partir de foto. Diferencie dimensão acabada de dimensão de corte. Quantidade ou preço desconhecidos ficam pendentes, nunca zero ou estimativa apresentada como definitiva.`,
-        },
-      };
-
-      const meta = deskMetaMap[deskId] || deskMetaMap.carla_atendimento;
-      const now = new Date().toISOString();
+    const meta = DESK_AGENT_META[deskId] || DESK_AGENT_META.carla_atendimento;
+    const now = new Date().toISOString();
 
       // Montar contexto factual rico do banco de dados real
       let relevantOrder: AttendanceRecord | undefined;
@@ -9769,17 +9795,30 @@ PANORAMA GERAL DA EMPRESA (CASTROS INTERIORES):
         .map((m) => `${m.sender === 'user' ? 'Operador' : m.agentName}: ${m.text}`)
         .join('\n');
 
-      const userMessageObj: AgentChatMessage = {
-        id: `cmsg-u-${Date.now()}`,
-        deskId,
-        sender: 'user',
-        agentName: 'Operador',
-        text: userText.trim(),
-        modality,
-        timestamp: now,
-        attendanceId: relevantOrder?.id,
-        campaignId: relevantCampaign?.id,
-      };
+      const userMessageObj: AgentChatMessage = incomingSender
+        ? {
+            id: `cmsg-u-${Date.now()}`,
+            deskId,
+            sender: 'agent_relay',
+            agentName: incomingSender.agentName,
+            fromAgentDeskId: incomingSender.fromAgentDeskId,
+            text: userText.trim(),
+            modality,
+            timestamp: now,
+            attendanceId: relevantOrder?.id,
+            campaignId: relevantCampaign?.id,
+          }
+        : {
+            id: `cmsg-u-${Date.now()}`,
+            deskId,
+            sender: 'user',
+            agentName: 'Operador',
+            text: userText.trim(),
+            modality,
+            timestamp: now,
+            attendanceId: relevantOrder?.id,
+            campaignId: relevantCampaign?.id,
+          };
       store.agentChats[deskId].push(userMessageObj);
 
       const promptDirective = `
@@ -9788,14 +9827,19 @@ ${factualContext}
 HISTÓRICO RECENTE DA CONVERSA NESTA MESA:
 ${recentChat || 'Início da conversa.'}
 
-MENSAGEM DO OPERADOR (${modality === 'voz' ? 'Falada por Voz' : 'Digitada em Texto'}):
+${
+  incomingSender
+    ? `MENSAGEM RECEBIDA AUTOMATICAMENTE DE OUTRO AGENTE (${incomingSender.agentName}):`
+    : `MENSAGEM DO OPERADOR (${modality === 'voz' ? 'Falada por Voz' : 'Digitada em Texto'}):`
+}
 "${userText.trim()}"
 
 DIRETRIZES DE RESPOSTA:
 1. Responda em português brasileiro de forma factual, clara e profissional como ${meta.title}.
 2. Se o usuário perguntar algo sobre um pedido, material ou campanha e a informação não estiver cadastrada, informe claramente que o dado não foi encontrado no sistema e indique onde cadastrar. NÃO invente informações.
 3. Se o usuário estiver na mesa da Júlia e disser "avalie esta campanha", avalie a campanha ativa acima com base em clareza, gancho de atenção, adequação ao público e proposta de valor. Se nenhuma campanha existir, solicite que ele cadastre uma campanha ou forneça o tema.
-4. Se o usuário solicitar uma alteração ou ação operacional (ex: transferir pedido, aprovar orçamento, enviar aviso formal, alterar status), monte uma proposta estruturada (actionProposal) para que o operador confirme no botão antes de executar. NUNCA execute compras ou transferências sem confirmação expressa.`;
+4. Se o usuário solicitar uma alteração ou ação operacional (ex: transferir pedido, aprovar orçamento, enviar aviso formal, alterar status), monte uma proposta estruturada (actionProposal) para que o operador confirme no botão antes de executar. NUNCA execute compras ou transferências sem confirmação expressa.
+5. Se precisar comunicar algo relevante a outra mesa/agente (ex.: avisar a Júlia sobre uma decisão, pedir à Ana para cotar um material, informar a Helena sobre um atraso), preencha hasAgentRelay e agentRelay com o texto da mensagem e a mesa de destino — ela é entregue automaticamente, sem precisar de confirmação, por ser só uma comunicação entre agentes, nunca uma ação com dinheiro ou efeito irreversível. Nunca faça isso para responder a uma mensagem que você mesma recebeu de outro agente (evita ficarem se respondendo em loop).`;
 
       parts.push({ text: promptDirective });
 
@@ -9829,6 +9873,21 @@ DIRETRIZES DE RESPOSTA:
                 targetAttendanceId: { type: Type.STRING },
               },
             },
+            hasAgentRelay: {
+              type: Type.BOOLEAN,
+              description: 'Verdadeiro se quiser enviar uma mensagem automática para outro agente/mesa.',
+            },
+            agentRelay: {
+              type: Type.OBJECT,
+              properties: {
+                targetDeskId: {
+                  type: Type.STRING,
+                  description:
+                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | julia_marketing | supervisora_geral | tapeceiro_tecnico',
+                },
+                message: { type: Type.STRING },
+              },
+            },
           },
           required: ['replyText', 'hasActionProposal'],
         },
@@ -9854,6 +9913,39 @@ DIRETRIZES DE RESPOSTA:
           requiresConfirmation: true,
           confirmed: false,
         };
+
+        // A Helena aprova sozinha só os tipos de rotina sem dinheiro envolvido
+        // (ver HELENA_AUTO_APPROVABLE_TYPES) — approve_budget, approve_technical e
+        // request_quotation continuam exigindo clique humano real, de qualquer mesa.
+        if (
+          deskId === 'supervisora_geral' &&
+          HELENA_AUTO_APPROVABLE_TYPES.includes(actionProposal.type)
+        ) {
+          executeActionProposal(
+            store,
+            deskId,
+            actionProposal,
+            'Helena (Supervisora Geral) — aprovação automática'
+          );
+          actionProposal.autoApprovedByAgent = true;
+        }
+      }
+
+      let agentRelay: { targetDeskId: DepartmentId; message: string } | undefined;
+      // Só processa relay em turnos iniciados por humano — a resposta automática de
+      // um relay nunca dispara outro relay, pra nunca entrar em loop entre agentes.
+      if (
+        !incomingSender &&
+        parsed.hasAgentRelay &&
+        parsed.agentRelay?.targetDeskId &&
+        parsed.agentRelay?.message &&
+        parsed.agentRelay.targetDeskId !== deskId &&
+        DESK_AGENT_META[parsed.agentRelay.targetDeskId as DepartmentId]
+      ) {
+        agentRelay = {
+          targetDeskId: parsed.agentRelay.targetDeskId as DepartmentId,
+          message: String(parsed.agentRelay.message),
+        };
       }
 
       const agentMessageObj: AgentChatMessage = {
@@ -9870,6 +9962,70 @@ DIRETRIZES DE RESPOSTA:
       };
 
       store.agentChats[deskId].push(agentMessageObj);
+
+      return { agentMessageObj, actionProposal, agentRelay };
+  }
+
+  // Universal Voice & Text Chat Endpoint for All 8 Desks
+  app.post('/api/chat/agent', async (req, res) => {
+    try {
+      const store = loadStore();
+      const {
+        deskId,
+        userText,
+        modality = 'texto',
+        orderId,
+        projectId,
+      } = req.body as {
+        deskId: DepartmentId;
+        userText: string;
+        modality?: 'voz' | 'texto';
+        orderId?: string;
+        projectId?: string;
+      };
+
+      if (!userText || !userText.trim()) {
+        res.status(400).json({ error: 'Mensagem vazia informada.' });
+        return;
+      }
+
+      const { agentMessageObj, actionProposal, agentRelay } = await runDeskAgentTurn(store, {
+        deskId,
+        userText,
+        modality,
+        orderId,
+        projectId,
+      });
+
+      let relayDelivery: { toDeskId: DepartmentId; toAgentName: string; replyText: string } | undefined;
+      if (agentRelay) {
+        const fromMeta = DESK_AGENT_META[deskId];
+        if (agentRelay.targetDeskId === 'julia_marketing') {
+          const juliaResult = await runJuliaAgentTurn(store, {
+            text: agentRelay.message,
+            modality: 'texto',
+            incomingSender: { agentName: fromMeta.name, fromAgentDeskId: deskId },
+          });
+          relayDelivery = {
+            toDeskId: 'julia_marketing',
+            toAgentName: 'Júlia',
+            replyText: juliaResult.juliaMsg.text,
+          };
+        } else {
+          const targetResult = await runDeskAgentTurn(store, {
+            deskId: agentRelay.targetDeskId,
+            userText: agentRelay.message,
+            modality: 'texto',
+            incomingSender: { agentName: fromMeta.name, fromAgentDeskId: deskId },
+          });
+          relayDelivery = {
+            toDeskId: agentRelay.targetDeskId,
+            toAgentName: targetResult.agentMessageObj.agentName,
+            replyText: targetResult.agentMessageObj.text,
+          };
+        }
+      }
+
       saveStore(store);
 
       res.json({
@@ -9877,6 +10033,7 @@ DIRETRIZES DE RESPOSTA:
         message: agentMessageObj,
         replyText: agentMessageObj.text,
         actionProposal,
+        relayDelivery,
       });
     } catch (err) {
       console.error('Erro no processamento do chat do agente:', err);
@@ -9889,41 +10046,53 @@ DIRETRIZES DE RESPOSTA:
     }
   });
 
-  // Voice & Text Chat with Persistent History for Júlia (Compatible & Enhanced)
-  app.post('/api/julia/chat', async (req, res) => {
-    try {
-      const store = loadStore();
-      if (!store.juliaData) {
-        store.juliaData = getDefaultJuliaData();
-      }
-      const {
-        text,
-        modality = 'texto',
-        projectId,
-      } = req.body as {
-        text: string;
-        modality?: 'voz' | 'texto';
-        projectId?: string;
-      };
+  // Lógica completa de um turno de chat com a Júlia (contexto factual, chamada à
+  // IA, encaminhamento automático). Extraída pra ser chamada tanto pela rota
+  // humana (/api/julia/chat) quanto pela entrega de um agentRelay vindo de outra
+  // mesa (ex.: Helena avisando a Júlia de algo).
+  async function runJuliaAgentTurn(
+    store: PersistentStore,
+    params: {
+      text: string;
+      modality: 'voz' | 'texto';
+      projectId?: string;
+      incomingSender?: { agentName: string; fromAgentDeskId: DepartmentId };
+    }
+  ): Promise<{
+    juliaMsg: JuliaVoiceTextMessage;
+    agentRelay?: { targetDeskId: DepartmentId; message: string };
+  }> {
+    const { text, modality, projectId, incomingSender } = params;
+    if (!store.juliaData) {
+      store.juliaData = getDefaultJuliaData();
+    }
 
-      if (!text || !text.trim()) {
-        res.status(400).json({ error: 'Mensagem vazia.' });
-        return;
-      }
-
-      const userMsg = {
-        id: `jmsg-u-${Date.now()}`,
-        sender: 'operador' as const,
-        modality: modality || 'texto',
-        text: text.trim(),
-        timestamp: new Date().toISOString(),
-      };
+      const userMsg: JuliaVoiceTextMessage = incomingSender
+        ? {
+            id: `jmsg-u-${Date.now()}`,
+            sender: 'agent_relay',
+            fromAgentName: incomingSender.agentName,
+            fromAgentDeskId: incomingSender.fromAgentDeskId,
+            modality: modality || 'texto',
+            text: text.trim(),
+            timestamp: new Date().toISOString(),
+          }
+        : {
+            id: `jmsg-u-${Date.now()}`,
+            sender: 'operador',
+            modality: modality || 'texto',
+            text: text.trim(),
+            timestamp: new Date().toISOString(),
+          };
       store.juliaData.chatHistory.push(userMsg);
 
       const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const recentHistory = store.juliaData.chatHistory
         .slice(-10)
-        .map((m) => `${m.sender === 'operador' ? 'Operador' : 'Júlia'} (${m.modality}): ${m.text}`)
+        .map(
+          (m) =>
+            `${m.sender === 'operador' ? 'Operador' : m.sender === 'agent_relay' ? m.fromAgentName || 'Outro agente' : 'Júlia'} (${m.modality}): ${m.text}`
+        )
         .join('\n');
 
       const activeProj =
@@ -9977,13 +10146,18 @@ ${campaignDetails}
 HISTÓRICO RECENTE DA CONVERSA:
 ${recentHistory}
 
-NOVA MENSAGEM DO OPERADOR (${modality === 'voz' ? 'Falada por Voz' : 'Digitada em Texto'}):
+${
+  incomingSender
+    ? `MENSAGEM RECEBIDA AUTOMATICAMENTE DE OUTRO AGENTE (${incomingSender.agentName}):`
+    : `NOVA MENSAGEM DO OPERADOR (${modality === 'voz' ? 'Falada por Voz' : 'Digitada em Texto'}):`
+}
 "${text.trim()}"
 
 INSTRUÇÕES ESPECIAIS:
 - Se o operador pedir "avalie esta campanha", forneça um parecer publicitário aprofundado e construtivo sobre o título, o texto, o público e o apelo visual da campanha acima.
 - Responda como a Júlia (Marketing, Publicidade e Divulgação da Castros Interiores) de forma prestativa, criativa e acolhedora.
-- NUNCA mencione avaliação técnica de defeitos estruturais, madeiramento de oficina ou custos internos de produção.`,
+- NUNCA mencione avaliação técnica de defeitos estruturais, madeiramento de oficina ou custos internos de produção.
+- Se precisar comunicar algo relevante a outra mesa/agente (ex.: pedir pra Ana cotar um material pra uma campanha, avisar a Helena sobre uma decisão), preencha hasAgentRelay e agentRelay com o texto da mensagem e a mesa de destino — ela é entregue automaticamente, sem precisar de confirmação, por ser só comunicação entre agentes. Nunca faça isso para responder a uma mensagem que você mesma recebeu de outro agente.`,
       });
 
       const { response, usedModel } = await generateContentWithRetryAndFallback({
@@ -9997,6 +10171,21 @@ INSTRUÇÕES ESPECIAIS:
               type: Type.STRING,
               description: 'Resposta da Júlia em português brasileiro, natural para ser lida e falada em voz alta.',
             },
+            hasAgentRelay: {
+              type: Type.BOOLEAN,
+              description: 'Verdadeiro se quiser enviar uma mensagem automática para outro agente/mesa.',
+            },
+            agentRelay: {
+              type: Type.OBJECT,
+              properties: {
+                targetDeskId: {
+                  type: Type.STRING,
+                  description:
+                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | supervisora_geral | tapeceiro_tecnico',
+                },
+                message: { type: Type.STRING },
+              },
+            },
           },
           required: ['replyText'],
         },
@@ -10007,16 +10196,31 @@ INSTRUÇÕES ESPECIAIS:
         parsed.replyText ||
         'Perfeito! Registrei sua orientação aqui no departamento de Marketing, Publicidade e Divulgação.';
 
-      const juliaMsg = {
+      const juliaMsg: JuliaVoiceTextMessage = {
         id: `jmsg-j-${Date.now()}`,
-        sender: 'julia' as const,
+        sender: 'julia',
         modality: modality || 'texto',
         text: replyText,
         timestamp: new Date().toISOString(),
       };
       store.juliaData.chatHistory.push(juliaMsg);
 
-      saveStore(store);
+      let agentRelay: { targetDeskId: DepartmentId; message: string } | undefined;
+      // Mesma trava anti-loop do chat genérico: só relay em turno humano.
+      if (
+        !incomingSender &&
+        parsed.hasAgentRelay &&
+        parsed.agentRelay?.targetDeskId &&
+        parsed.agentRelay?.message &&
+        parsed.agentRelay.targetDeskId !== 'julia_marketing' &&
+        DESK_AGENT_META[parsed.agentRelay.targetDeskId as DepartmentId]
+      ) {
+        agentRelay = {
+          targetDeskId: parsed.agentRelay.targetDeskId as DepartmentId,
+          message: String(parsed.agentRelay.message),
+        };
+      }
+
       broadcastRealtimeEvent({
         type: 'julia:updated',
         timestamp: new Date().toISOString(),
@@ -10024,10 +10228,55 @@ INSTRUÇÕES ESPECIAIS:
         juliaData: store.juliaData,
       });
 
+      return { juliaMsg, agentRelay };
+  }
+
+  // Voice & Text Chat with Persistent History for Júlia (Compatible & Enhanced)
+  app.post('/api/julia/chat', async (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.juliaData) {
+        store.juliaData = getDefaultJuliaData();
+      }
+      const {
+        text,
+        modality = 'texto',
+        projectId,
+      } = req.body as {
+        text: string;
+        modality?: 'voz' | 'texto';
+        projectId?: string;
+      };
+
+      if (!text || !text.trim()) {
+        res.status(400).json({ error: 'Mensagem vazia.' });
+        return;
+      }
+
+      const { juliaMsg, agentRelay } = await runJuliaAgentTurn(store, { text, modality, projectId });
+
+      let relayDelivery: { toDeskId: DepartmentId; toAgentName: string; replyText: string } | undefined;
+      if (agentRelay) {
+        const targetResult = await runDeskAgentTurn(store, {
+          deskId: agentRelay.targetDeskId,
+          userText: agentRelay.message,
+          modality: 'texto',
+          incomingSender: { agentName: 'Júlia', fromAgentDeskId: 'julia_marketing' },
+        });
+        relayDelivery = {
+          toDeskId: agentRelay.targetDeskId,
+          toAgentName: targetResult.agentMessageObj.agentName,
+          replyText: targetResult.agentMessageObj.text,
+        };
+      }
+
+      saveStore(store);
+
       res.json({
         ok: true,
         reply: juliaMsg,
         juliaData: store.juliaData,
+        relayDelivery,
       });
     } catch (error) {
       console.error('Erro no chat de voz/texto da Júlia:', error);

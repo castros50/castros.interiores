@@ -2972,6 +2972,15 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
       }
       setJuliaData(data.juliaData);
       if (!textToSend) setChatInput(''); // Limpa o rascunho apenas após confirmação de sucesso
+      if (data.relayDelivery) {
+        const preview =
+          data.relayDelivery.replyText.length > 140
+            ? `${data.relayDelivery.replyText.slice(0, 140)}…`
+            : data.relayDelivery.replyText;
+        showTemporaryNotice(
+          `📨 Mensagem encaminhada automaticamente para ${data.relayDelivery.toAgentName} — ela respondeu: "${preview}"`
+        );
+      }
       if (voiceSpeakEnabled && data.reply?.text) {
         speakTextInPortuguese(data.reply.text);
       }
@@ -6380,7 +6389,12 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                 >
                   <div className="flex items-center justify-between text-[10px] opacity-75">
                     <span className="font-semibold">
-                      {msg.sender === 'operador' ? 'Você' : 'Júlia Marketing'} ·{' '}
+                      {msg.sender === 'operador'
+                        ? 'Você'
+                        : msg.sender === 'agent_relay'
+                        ? msg.fromAgentName || 'Outro agente'
+                        : 'Júlia Marketing'}{' '}
+                      ·{' '}
                       {msg.modality === 'voz' ? 'Voz' : 'Texto'}
                     </span>
                     <div className="flex items-center gap-2">

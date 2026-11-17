@@ -57,6 +57,7 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
   const [statusState, setStatusState] = useState<'idle' | 'enviando' | 'processando' | 'concluido' | 'falha'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastFailedMessage, setLastFailedMessage] = useState<{ text: string; modality: 'texto' | 'voz' } | null>(null);
+  const [relayNotice, setRelayNotice] = useState<string | null>(null);
 
   // Voz & Áudio
   const [voiceMode, setVoiceMode] = useState<'revisar' | 'conversa'>('revisar');
@@ -515,6 +516,17 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
 
       setMessages((prev) => [...prev, agentMsg]);
       setStatusState('concluido');
+
+      if (data.relayDelivery) {
+        const preview =
+          data.relayDelivery.replyText.length > 140
+            ? `${data.relayDelivery.replyText.slice(0, 140)}…`
+            : data.relayDelivery.replyText;
+        setRelayNotice(
+          `📨 Mensagem encaminhada automaticamente para ${data.relayDelivery.toAgentName} — ela respondeu: "${preview}"`
+        );
+        setTimeout(() => setRelayNotice(null), 9000);
+      }
 
       // Se síntese habilitada, ler resposta em voz alta
       if (voiceSpeechEnabled && agentMsg.text) {
@@ -1064,6 +1076,13 @@ export const AgentVoiceTextChat: React.FC<AgentVoiceTextChatProps> = ({
               </button>
               <span className="text-[11px] text-red-700">Seu texto foi preservado e nenhuma tarefa foi duplicada.</span>
             </div>
+          </div>
+        )}
+
+        {/* Aviso de encaminhamento automático para outro agente */}
+        {relayNotice && (
+          <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900">
+            {relayNotice}
           </div>
         )}
 

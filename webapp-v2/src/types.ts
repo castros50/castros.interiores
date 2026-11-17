@@ -1284,12 +1284,16 @@ export interface AgentActionProposal {
   confirmed?: boolean;
   executedAt?: string;
   executedBy?: string;
+  // Verdadeiro só quando a Helena (supervisora_geral) aprovou sozinha uma ação de
+  // rotina sem dinheiro envolvido (ver allowlist em server.ts) — nunca confundir
+  // com confirmed=true por clique humano real em executedBy.
+  autoApprovedByAgent?: boolean;
 }
 
 export interface AgentChatMessage {
   id: string;
   deskId: DepartmentId;
-  sender: 'user' | 'agent';
+  sender: 'user' | 'agent' | 'agent_relay';
   agentName: string;
   text: string;
   modality: 'texto' | 'voz';
@@ -1303,6 +1307,9 @@ export interface AgentChatMessage {
     executedAt: string;
     executedBy: string;
   };
+  // Preenchido só quando sender === 'agent_relay': identifica de qual mesa veio a
+  // mensagem encaminhada automaticamente (ex.: Helena pedindo algo à Júlia).
+  fromAgentDeskId?: DepartmentId;
   // Id da mensagem no canal externo (ex.: WhatsApp Cloud API) — usado só para evitar
   // processar o mesmo evento de webhook duas vezes, nunca para provar nada por si só.
   externalMessageId?: string;
@@ -1612,10 +1619,15 @@ export interface JuliaSmartAdProject {
 
 export interface JuliaVoiceTextMessage {
   id: string;
-  sender: 'operador' | 'julia';
+  sender: 'operador' | 'julia' | 'agent_relay';
   modality: 'voz' | 'texto';
   text: string;
   timestamp: string;
+  // Preenchidos só quando sender === 'agent_relay': de qual mesa e com que nome de
+  // exibição veio a mensagem encaminhada automaticamente (ex.: Helena pedindo algo
+  // à Júlia) — nunca confundir com uma fala da própria Júlia.
+  fromAgentDeskId?: DepartmentId;
+  fromAgentName?: string;
 }
 
 export type JuliaCampaignStatus =
