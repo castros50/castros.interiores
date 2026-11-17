@@ -815,6 +815,30 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
     setTimeout(() => setStatusNotice(null), 5000);
   };
 
+  // Limpeza da conversa de voz/texto com a Júlia e do histórico de relatórios
+  // diários — são dados próprios de juliaData, separados do store.agentChats
+  // usado pelo botão "Limpar Conversa" das outras mesas.
+  const [isConfirmingClearJuliaChat, setIsConfirmingClearJuliaChat] = useState(false);
+  const [isConfirmingClearReports, setIsConfirmingClearReports] = useState(false);
+
+  const handleClearJuliaChatHistory = async () => {
+    if (!juliaData) return;
+    await handlePersistJuliaData(
+      { ...juliaData, chatHistory: [] },
+      'Conversa com a Júlia apagada.'
+    );
+    setIsConfirmingClearJuliaChat(false);
+  };
+
+  const handleClearDailyReports = async () => {
+    if (!juliaData) return;
+    await handlePersistJuliaData(
+      { ...juliaData, dailyReports: [] },
+      'Relatórios diários apagados.'
+    );
+    setIsConfirmingClearReports(false);
+  };
+
   // Sync when external SSE data arrives
   useEffect(() => {
     if (externalJuliaData) {
@@ -6290,28 +6314,57 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                   Histórico persistente de orientações faladas ou digitadas ({juliaData.chatHistory.length} mensagens)
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setVoiceSpeakEnabled((prev) => !prev)}
-                className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1 ${
-                  voiceSpeakEnabled
-                    ? 'bg-[#FAF6EE] border-[#9A7138] text-[#181512]'
-                    : 'bg-[#FAF8F5] border-[#D6CFC5] text-[#6B6257]'
-                }`}
-                title="Ativar ou silenciar voz da Júlia"
-              >
-                {voiceSpeakEnabled ? (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setVoiceSpeakEnabled((prev) => !prev)}
+                  className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1 ${
+                    voiceSpeakEnabled
+                      ? 'bg-[#FAF6EE] border-[#9A7138] text-[#181512]'
+                      : 'bg-[#FAF8F5] border-[#D6CFC5] text-[#6B6257]'
+                  }`}
+                  title="Ativar ou silenciar voz da Júlia"
+                >
+                  {voiceSpeakEnabled ? (
+                    <>
+                      <Volume2 className="w-3.5 h-3.5 text-[#9A7138]" />
+                      <span>Voz Ativa</span>
+                    </>
+                  ) : (
+                    <>
+                      <VolumeX className="w-3.5 h-3.5" />
+                      <span>Mudo</span>
+                    </>
+                  )}
+                </button>
+                {isConfirmingClearJuliaChat ? (
                   <>
-                    <Volume2 className="w-3.5 h-3.5 text-[#9A7138]" />
-                    <span>Voz Ativa</span>
+                    <button
+                      type="button"
+                      onClick={handleClearJuliaChatHistory}
+                      className="px-2.5 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 text-white text-xs font-semibold"
+                    >
+                      Confirmar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsConfirmingClearJuliaChat(false)}
+                      className="px-2.5 py-1.5 rounded-lg border border-[#D6CFC5] text-[#6B6257] text-xs font-medium"
+                    >
+                      Cancelar
+                    </button>
                   </>
                 ) : (
-                  <>
-                    <VolumeX className="w-3.5 h-3.5" />
-                    <span>Mudo</span>
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => setIsConfirmingClearJuliaChat(true)}
+                    className="p-1.5 rounded-lg border border-[#D6CFC5] text-red-700 hover:bg-red-50"
+                    title="Apagar toda a conversa com a Júlia"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 )}
-              </button>
+              </div>
             </div>
 
             {/* Lista do Histórico de Conversas */}
@@ -6701,19 +6754,48 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                   Balanço diário de fotografias reais, peças criadas e recomendações.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={handleGenerateDailyReport}
-                disabled={isGeneratingReport}
-                className="px-3.5 py-2 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>
-                  {isGeneratingReport
-                    ? 'Atualizando Relatório...'
-                    : 'Atualizar Relatório Diário'}
-                </span>
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleGenerateDailyReport}
+                  disabled={isGeneratingReport}
+                  className="px-3.5 py-2 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>
+                    {isGeneratingReport
+                      ? 'Atualizando Relatório...'
+                      : 'Atualizar Relatório Diário'}
+                  </span>
+                </button>
+                {isConfirmingClearReports ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleClearDailyReports}
+                      className="px-2.5 py-2 rounded-lg bg-red-700 hover:bg-red-800 text-white text-xs font-semibold"
+                    >
+                      Confirmar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsConfirmingClearReports(false)}
+                      className="px-2.5 py-2 rounded-lg border border-[#D6CFC5] text-[#6B6257] text-xs font-medium"
+                    >
+                      Cancelar
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setIsConfirmingClearReports(true)}
+                    className="p-2 rounded-lg border border-[#D6CFC5] text-red-700 hover:bg-red-50"
+                    title="Apagar todo o histórico de relatórios diários"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
 
             {latestReport && (
