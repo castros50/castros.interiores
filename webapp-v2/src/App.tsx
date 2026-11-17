@@ -175,6 +175,52 @@ export default function App() {
     () => localStorage.getItem('active_attendance_id')
   );
   const [clients, setClients] = useState<ClientRecord[]>([]);
+  const [isAddClientFormOpen, setIsAddClientFormOpen] = useState(false);
+  const [newClientName, setNewClientName] = useState('');
+  const [newClientPhone, setNewClientPhone] = useState('');
+  const [newClientEmail, setNewClientEmail] = useState('');
+  const [isSavingNewClient, setIsSavingNewClient] = useState(false);
+  const [addClientError, setAddClientError] = useState<string | null>(null);
+
+  const handleCreateClientManually = async () => {
+    if (!newClientName.trim()) {
+      setAddClientError('Informe o nome do cliente.');
+      return;
+    }
+    setIsSavingNewClient(true);
+    setAddClientError(null);
+    try {
+      const res = await fetch('/api/clients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newClientName.trim(),
+          phone: newClientPhone.trim() || undefined,
+          email: newClientEmail.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.client) {
+        setAddClientError(data.error || 'Erro ao cadastrar cliente.');
+        return;
+      }
+      setClients((prev) => {
+        const idx = prev.findIndex((c) => c.id === data.client.id);
+        if (idx === -1) return [data.client, ...prev];
+        const copy = [...prev];
+        copy[idx] = data.client;
+        return copy;
+      });
+      setNewClientName('');
+      setNewClientPhone('');
+      setNewClientEmail('');
+      setIsAddClientFormOpen(false);
+    } catch {
+      setAddClientError('Erro de rede ao cadastrar cliente.');
+    } finally {
+      setIsSavingNewClient(false);
+    }
+  };
 
   useEffect(() => {
     if (activeAttendanceId) {
@@ -2466,17 +2512,86 @@ export default function App() {
                       Histórico consolidado de clientes, móveis avaliados e acesso rápido aos atendimentos.
                     </p>
                   </div>
-                  <div className="relative w-full sm:w-72">
-                    <Search className="w-4 h-4 text-[#6B6257] absolute left-3 top-2.5" />
-                    <input
-                      type="text"
-                      value={clientSearch}
-                      onChange={(e) => setClientSearch(e.target.value)}
-                      placeholder="Filtrar por nome ou telefone..."
-                      className="w-full rounded-lg border border-[#D6CFC5] pl-9 pr-3 py-2 text-xs"
-                    />
+                  <div className="flex items-center gap-3 w-full sm:w-auto">
+                    <div className="relative w-full sm:w-72">
+                      <Search className="w-4 h-4 text-[#6B6257] absolute left-3 top-2.5" />
+                      <input
+                        type="text"
+                        value={clientSearch}
+                        onChange={(e) => setClientSearch(e.target.value)}
+                        placeholder="Filtrar por nome ou telefone..."
+                        className="w-full rounded-lg border border-[#D6CFC5] pl-9 pr-3 py-2 text-xs"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddClientFormOpen((prev) => !prev);
+                        setAddClientError(null);
+                      }}
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#181512] hover:bg-[#2A2420] text-white text-xs font-semibold whitespace-nowrap"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Adicionar Cliente
+                    </button>
                   </div>
                 </div>
+
+                {isAddClientFormOpen && (
+                  <div className="p-5 rounded-xl bg-[#FAF8F5] border border-[#E5DEC9] space-y-3">
+                    <p className="text-xs text-[#6B6257]">
+                      Cadastre um contato que ainda não tem atendimento registrado (ex.: cliente de fora
+                      indicado, ou alguém que você quer incluir na lista de divulgação da Júlia pelo
+                      WhatsApp). Só use pra quem realmente é cliente ou concordou em receber mensagens.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <input
+                        type="text"
+                        value={newClientName}
+                        onChange={(e) => setNewClientName(e.target.value)}
+                        placeholder="Nome do cliente *"
+                        className="rounded-lg border border-[#D6CFC5] px-3 py-2 text-xs"
+                      />
+                      <input
+                        type="text"
+                        value={newClientPhone}
+                        onChange={(e) => setNewClientPhone(e.target.value)}
+                        placeholder="Telefone (com DDD)"
+                        className="rounded-lg border border-[#D6CFC5] px-3 py-2 text-xs"
+                      />
+                      <input
+                        type="email"
+                        value={newClientEmail}
+                        onChange={(e) => setNewClientEmail(e.target.value)}
+                        placeholder="E-mail (opcional)"
+                        className="rounded-lg border border-[#D6CFC5] px-3 py-2 text-xs"
+                      />
+                    </div>
+                    {addClientError && (
+                      <p className="text-xs text-red-700">{addClientError}</p>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleCreateClientManually}
+                        disabled={isSavingNewClient}
+                        className="px-3.5 py-2 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] disabled:opacity-60 text-white text-xs font-semibold"
+                      >
+                        {isSavingNewClient ? 'Salvando...' : 'Salvar Cliente'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsAddClientFormOpen(false);
+                          setAddClientError(null);
+                        }}
+                        className="px-3.5 py-2 rounded-lg border border-[#D6CFC5] text-[#6B6257] text-xs font-semibold"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {clientsSummary.map((client) => (
