@@ -14,7 +14,7 @@ const SECTIONS = [
   { id: 'anuncios-pagos', label: '3. Anúncios pagos com aprovação de orçamento' },
   { id: 'carla-atendimento', label: '4. Como a Carla recebe e conduz um atendimento' },
   { id: 'fotos-pedro-lucas', label: '5. Como fotos e dados chegam a Pedro ou Lucas' },
-  { id: 'nove-agentes', label: '6. Como usar cada um dos 9 agentes' },
+  { id: 'nove-agentes', label: '6. Como usar cada um dos 10 agentes' },
   { id: 'automatico-vs-manual', label: '7. O que é automático e o que exige sua ação' },
   { id: 'aprovar-tarefas', label: '8. Aprovar, corrigir, pausar e retomar tarefas' },
   { id: 'painel-resumo', label: '9. Painel de supervisão e resumo diário' },
@@ -109,7 +109,7 @@ export const ManualAjuda: React.FC = () => {
         <section className="space-y-3">
           <SectionHeading id="config-inicial">1. Configuração inicial e conexão de canais</SectionHeading>
           <p>
-            O sistema já vem com os nove agentes, seus retratos e suas mesas prontos — não é preciso cadastrar
+            O sistema já vem com os dez agentes, seus retratos e suas mesas prontos — não é preciso cadastrar
             nada para começar a usar o atendimento manual, a avaliação técnica, a fabricação, o financeiro ou o
             marketing. O que precisa de configuração do responsável é apenas a parte que conecta a oficina a
             serviços externos reais:
@@ -122,7 +122,7 @@ export const ManualAjuda: React.FC = () => {
             </li>
             <li>
               <strong>Retratos dos agentes:</strong> também em Configurações, é possível enviar/trocar a foto de
-              cada um dos 9 agentes.
+              cada um dos 10 agentes.
             </li>
             <li>
               <strong>Integração oficial do WhatsApp:</strong> veja a seção 13 — exige credenciais reais da Meta
@@ -264,11 +264,11 @@ export const ManualAjuda: React.FC = () => {
           </ul>
         </section>
 
-        {/* 5. NOVE AGENTES */}
+        {/* 5. DEZ AGENTES */}
         <section className="space-y-3">
-          <SectionHeading id="nove-agentes">6. Como usar cada um dos 9 agentes</SectionHeading>
+          <SectionHeading id="nove-agentes">6. Como usar cada um dos 10 agentes</SectionHeading>
           <p>
-            Todas as mesas ficam em <strong>Escritório de Mesas</strong> (nove cartões) ou no bloco
+            Todas as mesas ficam em <strong>Escritório de Mesas</strong> (dez cartões) ou no bloco
             "Departamentos Operacionais" do Painel. Cada uma tem um botão <strong>Conversar</strong> (chat de
             texto/voz) e uma área operacional própria:
           </p>
@@ -283,6 +283,7 @@ export const ManualAjuda: React.FC = () => {
               ['Júlia — Marketing e Divulgação', '12 etapas do Anúncio Inteligente, pôsteres, carrosséis, catálogo, voz/texto, campanhas e relatório diário.'],
               ['Tapeceiro Técnico', 'Planejamento de reforma e fabricação a partir dos dados já registrados, com liberação sujeita a revisão humana.'],
               ['Helena — Supervisão Geral', 'Monitoramento integrado de prazos, cobrança de retornos, aprovação formal de decisões, automação e mediação entre mesas.'],
+              ['Juliano — Vendas de Produtos Prontos', 'Catálogo próprio de produtos novos já fabricados, controle de estoque, vendas para clientes já cadastrados e lançamento automático no financeiro da fábrica.'],
             ].map(([title, desc]) => (
               <div key={title} className="p-3 rounded-lg border border-[#E5DEC9] bg-[#FAF8F5]">
                 <p className="text-xs font-bold text-[#181512]">{title}</p>
@@ -395,7 +396,7 @@ export const ManualAjuda: React.FC = () => {
               falha, na fila, e mensagens trocadas — mostra explicitamente "Sem atividade registrada hoje" quando
               não há nada a relatar, nunca inventa uma atividade.
             </li>
-            <li>A última atividade real de cada uma das 9 mesas (ou "Sem atividade registrada").</li>
+            <li>A última atividade real de cada uma das 10 mesas (ou "Sem atividade registrada").</li>
           </ul>
           <p>
             Clique em <strong>Atualizar</strong> para recarregar os dados mais recentes a qualquer momento.

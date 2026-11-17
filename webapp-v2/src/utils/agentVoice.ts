@@ -19,6 +19,7 @@ export const DESK_SUGGESTED_GENDER: Record<DepartmentId, 'feminina' | 'masculina
   lucas_projetos: 'masculina',
   castro_estrategia: 'masculina',
   tapeceiro_tecnico: 'masculina',
+  juliano_vendas: 'masculina',
 };
 
 // A Web Speech API não expõe gênero da voz. Esta tabela é uma pista best-effort

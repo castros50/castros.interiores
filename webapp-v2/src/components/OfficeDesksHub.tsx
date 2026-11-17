@@ -44,6 +44,7 @@ import { MilaFactoryFinanceView } from './MilaFactoryFinanceView';
 import { CarlaAtendimentoDesk } from './CarlaAtendimentoDesk';
 import { CarlaOrderPanel } from './CarlaOrderPanel';
 import { PedroAvaliacaoDesk } from './PedroAvaliacaoDesk';
+import { JulianoVendasDesk } from './JulianoVendasDesk';
 
 interface OfficeDesksHubProps {
   attendances: AttendanceRecord[];
@@ -740,6 +741,27 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
               'Tem alguma reclamação aberta para encaminhar?',
               'Como está o status do pedido CI-2026-0001?',
               'Prepare uma mensagem de acompanhamento para o cliente de um pedido.',
+            ]}
+          />
+        </div>
+      )}
+
+      {/* VENDAS DE PRODUTOS PRONTOS (Juliano) — catálogo e vendas próprios, nunca dependem de pedido */}
+      {!activeOrder && selectedDeskId === 'juliano_vendas' && (
+        <div className="space-y-4">
+          <JulianoVendasDesk />
+
+          {/* Central de Conversa Funcional por Voz e Texto com o Juliano */}
+          <AgentVoiceTextChat
+            deskId="juliano_vendas"
+            agentName={selectedDeskMeta.name}
+            agentRole={selectedDeskMeta.role}
+            portraitUpdatedAt={settings.agentPortraitUpdatedAt?.juliano_vendas}
+            suggestedQuestions={[
+              'Quantas unidades temos em estoque de cada produto?',
+              'Qual produto pronto vendeu mais este mês?',
+              'Me ajuda a registrar uma venda nova?',
+              'Esse produto já foi enviado para a Júlia divulgar?',
             ]}
           />
         </div>

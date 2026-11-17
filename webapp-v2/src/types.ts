@@ -1256,7 +1256,8 @@ export type DepartmentId =
   | 'castro_estrategia'
   | 'julia_marketing'
   | 'supervisora_geral'
-  | 'tapeceiro_tecnico';
+  | 'tapeceiro_tecnico'
+  | 'juliano_vendas';
 
 export type SpecialistAgentId =
   | 'vistoriador_defeitos'
@@ -1764,6 +1765,62 @@ export interface JuliaDepartmentData {
   paidAdProposals?: PaidAdBudgetProposal[];
 }
 
+// ============================================================================
+// JULIANO — VENDAS DE PRODUTOS PRONTOS (mesa 10)
+// Catálogo e vendas próprios do Juliano. Produto pronto != matéria-prima da
+// Ana (MaterialCatalogItem) e venda de produto != AttendanceRecord (reforma/
+// fabricação). O valor de cada venda entra no financeiro da fábrica através
+// de office.generalTransactions, o mesmo mecanismo já usado por outros
+// lançamentos gerais — sem precisar de nenhuma mudança no código da Mila.
+// ============================================================================
+
+export interface ReadyMadeProduct {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  priceCents: number;
+  stockQuantity: number;
+  photoUrl?: string;
+  // Id da entrada correspondente em store.juliaData.photos, quando a foto já
+  // foi enviada para a biblioteca de campanhas da Júlia. Evita duplicar ao
+  // reenviar — reenviar atualiza a mesma entrada.
+  juliaPhotoId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ProductSalePaymentMethod = 'Pix' | 'Dinheiro' | 'Cartão' | 'Transferência';
+
+export interface ProductSaleItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPriceCents: number;
+}
+
+export interface ProductSale {
+  id: string;
+  saleNumber: string; // VP-2026-XXXX
+  clientId?: string;
+  clientName: string;
+  clientPhone?: string;
+  items: ProductSaleItem[];
+  totalCents: number;
+  paymentMethod: ProductSalePaymentMethod;
+  status: 'Concluída' | 'Cancelada';
+  // Id da transação criada em office.generalTransactions para esta venda —
+  // é assim que o valor aparece no financeiro da Mila.
+  generalTransactionId?: string;
+  createdAt: string;
+  soldBy?: string;
+}
+
+export interface JulianoDepartmentData {
+  products: ReadyMadeProduct[];
+  sales: ProductSale[];
+}
+
 export interface RealtimeSyncEvent {
   type:
     | 'connected'
@@ -1780,7 +1837,8 @@ export interface RealtimeSyncEvent {
     | 'financial:updated'
     | 'manufacturing:updated'
     | 'office:updated'
-    | 'strategy:updated';
+    | 'strategy:updated'
+    | 'juliano:updated';
   timestamp: string;
   sourceDeviceId?: string;
   sourceStationName?: string;
@@ -1792,6 +1850,7 @@ export interface RealtimeSyncEvent {
   settings?: WorkshopSettings;
   devices?: CorporateDeviceSession[];
   juliaData?: JuliaDepartmentData;
+  julianoData?: JulianoDepartmentData;
 }
 
 // ============================================================================

@@ -171,6 +171,11 @@ import type {
   ExplodedViewSimulation,
   WhatsAppWebhookLogEntry,
   WhatsAppWebhookSignatureStatus,
+  JulianoDepartmentData,
+  ReadyMadeProduct,
+  ProductSale,
+  ProductSaleItem,
+  ProductSalePaymentMethod,
 } from './src/types.ts';
 import { INSPECTION_COMPONENT_LABELS, INSPECTION_MARKING_LABELS } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
@@ -230,6 +235,7 @@ interface PersistentStore {
   materials: MaterialCatalogItem[];
   settings: WorkshopSettings;
   juliaData?: JuliaDepartmentData;
+  julianoData?: JulianoDepartmentData;
   officeData?: SharedOfficeData;
   agentChats?: Record<string, AgentChatMessage[]>;
   backgroundTasks?: BackgroundTask[];
@@ -270,6 +276,7 @@ const DESK_AGENT_NAMES: Record<string, string> = {
   julia_marketing: 'Júlia (Marketing & Divulgação)',
   supervisora_geral: 'Helena (Supervisora Geral)',
   tapeceiro_tecnico: 'Tapeceiro Técnico (Produção e Materiais)',
+  juliano_vendas: 'Juliano (Vendas de Produtos Prontos)',
 };
 
 // Mecanismo genérico de encaminhamento entre mesas: só reatribui currentDesk/deskStatus
@@ -1414,6 +1421,27 @@ function getDefaultJuliaData(): JuliaDepartmentData {
     ],
     paidAdProposals: [],
   };
+}
+
+function getDefaultJulianoData(): JulianoDepartmentData {
+  return {
+    products: [],
+    sales: [],
+  };
+}
+
+// Garante store.julianoData presente, mesmo padrão defensivo já usado para
+// store.juliaData (getDefaultJuliaData) — nunca sobrescreve dados existentes.
+function getJulianoData(store: PersistentStore): JulianoDepartmentData {
+  if (!store.julianoData) {
+    store.julianoData = getDefaultJulianoData();
+  }
+  return store.julianoData;
+}
+
+function nextProductSaleNumber(store: PersistentStore): string {
+  const count = (store.julianoData?.sales.length || 0) + 1;
+  return `VP-2026-${String(count).padStart(4, '0')}`;
 }
 
 function reconcileJuliaPhotosFromDisk(juliaData: JuliaDepartmentData): boolean {
@@ -8806,6 +8834,357 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     res.json({ ok: true, juliaData: store.juliaData });
   });
 
+  // ==========================================================================
+  // JULIANO — VENDAS DE PRODUTOS PRONTOS (mesa 10)
+  // Catálogo e vendas próprios, isolados de AttendanceRecord. A venda só toca
+  // dados compartilhados em dois pontos deliberados: lê store.clients (mesma
+  // lista da Carla) e grava em store.officeData.generalTransactions (mesmo
+  // mecanismo que já alimenta o financeiro da Mila, sem mudar o código dela).
+  // ==========================================================================
+
+  app.get('/api/juliano/products', (_req, res) => {
+    const store = loadStore();
+    res.json({ ok: true, products: getJulianoData(store).products });
+  });
+
+  app.post('/api/juliano/products', (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const { name, description, category, priceCents, stockQuantity, dataUrl, mimeType } =
+        req.body as {
+          name: string;
+          description?: string;
+          category?: string;
+          priceCents: number;
+          stockQuantity: number;
+          dataUrl?: string;
+          mimeType?: string;
+        };
+
+      if (!name?.trim()) {
+        res.status(400).json({ error: 'Informe o nome do produto.' });
+        return;
+      }
+      if (typeof priceCents !== 'number' || priceCents <= 0) {
+        res.status(400).json({ error: 'Informe um preço de venda válido.' });
+        return;
+      }
+      if (typeof stockQuantity !== 'number' || stockQuantity < 0) {
+        res.status(400).json({ error: 'Informe uma quantidade em estoque válida (0 ou mais).' });
+        return;
+      }
+
+      let photoUrl: string | undefined;
+      if (dataUrl) {
+        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (!match) {
+          res.status(400).json({ error: 'Formato de imagem inválido.' });
+          return;
+        }
+        const detectedMime = match[1] || mimeType || 'image/jpeg';
+        const ext = detectedMime.includes('png') ? '.png' : detectedMime.includes('webp') ? '.webp' : '.jpg';
+        const safeFileName = `juliano_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+        savePhotoFile(safeFileName, Buffer.from(match[2], 'base64'), detectedMime);
+        photoUrl = `/api/photos/${safeFileName}`;
+      }
+
+      const now = new Date().toISOString();
+      const newProduct: ReadyMadeProduct = {
+        id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: name.trim(),
+        description: description?.trim() || undefined,
+        category: category?.trim() || undefined,
+        priceCents,
+        stockQuantity,
+        photoUrl,
+        createdAt: now,
+        updatedAt: now,
+      };
+      julianoData.products.unshift(newProduct);
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'juliano:updated',
+        timestamp: new Date().toISOString(),
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        julianoData,
+      });
+      res.json({ ok: true, product: newProduct, julianoData });
+    } catch (error) {
+      console.error('Erro ao cadastrar produto do Juliano:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao cadastrar produto.',
+      });
+    }
+  });
+
+  app.put('/api/juliano/products/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === req.params.id);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+      const { name, description, category, priceCents, stockQuantity } = req.body as {
+        name?: string;
+        description?: string;
+        category?: string;
+        priceCents?: number;
+        stockQuantity?: number;
+      };
+      if (name !== undefined) product.name = name.trim();
+      if (description !== undefined) product.description = description.trim() || undefined;
+      if (category !== undefined) product.category = category.trim() || undefined;
+      if (priceCents !== undefined) {
+        if (typeof priceCents !== 'number' || priceCents <= 0) {
+          res.status(400).json({ error: 'Preço de venda inválido.' });
+          return;
+        }
+        product.priceCents = priceCents;
+      }
+      if (stockQuantity !== undefined) {
+        if (typeof stockQuantity !== 'number' || stockQuantity < 0) {
+          res.status(400).json({ error: 'Quantidade em estoque inválida.' });
+          return;
+        }
+        product.stockQuantity = stockQuantity;
+      }
+      product.updatedAt = new Date().toISOString();
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'juliano:updated',
+        timestamp: new Date().toISOString(),
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        julianoData,
+      });
+      res.json({ ok: true, product, julianoData });
+    } catch (error) {
+      console.error('Erro ao atualizar produto do Juliano:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao atualizar produto.',
+      });
+    }
+  });
+
+  app.delete('/api/juliano/products/:id', (req, res) => {
+    const store = loadStore();
+    const julianoData = getJulianoData(store);
+    julianoData.products = julianoData.products.filter((p) => p.id !== req.params.id);
+    saveStore(store);
+    broadcastRealtimeEvent({
+      type: 'juliano:updated',
+      timestamp: new Date().toISOString(),
+      sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+      julianoData,
+    });
+    res.json({ ok: true, julianoData });
+  });
+
+  // Envia (ou reenvia, atualizando) a foto do produto para a biblioteca de
+  // campanhas da Júlia (store.juliaData.photos) — nunca cria campanha nem
+  // agenda nada por conta própria, só disponibiliza a foto no mesmo formato
+  // que ela já lê para montar anúncios.
+  app.post('/api/juliano/products/:id/send-to-julia', (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === req.params.id);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+      if (!product.photoUrl) {
+        res.status(400).json({ error: 'Este produto ainda não tem foto cadastrada.' });
+        return;
+      }
+      if (!store.juliaData) {
+        store.juliaData = getDefaultJuliaData();
+      }
+
+      const existing = product.juliaPhotoId
+        ? store.juliaData.photos.find((p) => p.id === product.juliaPhotoId)
+        : undefined;
+
+      if (existing) {
+        existing.title = product.name;
+        existing.caption = product.description || `Produto pronto disponível — ${product.name}.`;
+        existing.imageUrl = product.photoUrl;
+        saveStore(store);
+        res.json({ ok: true, photo: existing, product });
+        return;
+      }
+
+      const newPhoto: JuliaMarketingPhoto = {
+        id: `jphoto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        title: product.name,
+        caption: product.description || `Produto pronto disponível — ${product.name}.`,
+        tag: 'Vitrine / Catálogo',
+        imageUrl: product.photoUrl,
+        thumbnailDataUrl: '',
+        mimeType: 'image/jpeg',
+        sourceDevice: 'Mesa do Juliano — Vendas de Produtos Prontos',
+        createdAt: new Date().toISOString(),
+      };
+      store.juliaData.photos.unshift(newPhoto);
+      product.juliaPhotoId = newPhoto.id;
+      product.updatedAt = new Date().toISOString();
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'julia:updated',
+        timestamp: new Date().toISOString(),
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        sourceStationName: 'Mesa do Juliano — Vendas de Produtos Prontos',
+        juliaData: store.juliaData,
+      });
+      res.json({ ok: true, photo: newPhoto, product });
+    } catch (error) {
+      console.error('Erro ao enviar foto do produto para a Júlia:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao enviar foto para a Júlia.',
+      });
+    }
+  });
+
+  app.get('/api/juliano/sales', (_req, res) => {
+    const store = loadStore();
+    res.json({ ok: true, sales: getJulianoData(store).sales });
+  });
+
+  app.post('/api/juliano/sales', (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const { clientId, clientName, clientPhone, items, paymentMethod, soldBy } = req.body as {
+        clientId?: string;
+        clientName?: string;
+        clientPhone?: string;
+        items: Array<{ productId: string; quantity: number }>;
+        paymentMethod: ProductSalePaymentMethod;
+        soldBy?: string;
+      };
+
+      if (!Array.isArray(items) || items.length === 0) {
+        res.status(400).json({ error: 'Adicione ao menos um produto à venda.' });
+        return;
+      }
+      if (!paymentMethod) {
+        res.status(400).json({ error: 'Selecione a forma de pagamento.' });
+        return;
+      }
+
+      let resolvedClientName = clientName?.trim() || '';
+      let resolvedClientPhone = clientPhone?.trim() || '';
+      if (clientId) {
+        const client = (store.clients || []).find((c) => c.id === clientId);
+        if (!client) {
+          res.status(404).json({ error: 'Cliente não encontrado.' });
+          return;
+        }
+        resolvedClientName = client.name;
+        resolvedClientPhone = client.phone;
+      }
+      if (!resolvedClientName) {
+        res.status(400).json({ error: 'Informe o cliente da venda.' });
+        return;
+      }
+
+      // Valida estoque de TODOS os itens antes de alterar qualquer coisa —
+      // nunca vende parcialmente além do que existe de verdade.
+      const saleItems: ProductSaleItem[] = [];
+      for (const item of items) {
+        const product = julianoData.products.find((p) => p.id === item.productId);
+        if (!product) {
+          res.status(404).json({ error: `Produto não encontrado (${item.productId}).` });
+          return;
+        }
+        if (!item.quantity || item.quantity <= 0) {
+          res.status(400).json({ error: `Quantidade inválida para ${product.name}.` });
+          return;
+        }
+        if (product.stockQuantity < item.quantity) {
+          res.status(400).json({
+            error: `Estoque insuficiente de "${product.name}": disponível ${product.stockQuantity}, pedido ${item.quantity}.`,
+          });
+          return;
+        }
+        saleItems.push({
+          productId: product.id,
+          productName: product.name,
+          quantity: item.quantity,
+          unitPriceCents: product.priceCents,
+        });
+      }
+
+      // Só decrementa estoque depois que TODA a validação passou.
+      for (const saleItem of saleItems) {
+        const product = julianoData.products.find((p) => p.id === saleItem.productId)!;
+        product.stockQuantity -= saleItem.quantity;
+        product.updatedAt = new Date().toISOString();
+      }
+
+      const totalCents = saleItems.reduce((sum, it) => sum + it.unitPriceCents * it.quantity, 0);
+      const now = new Date().toISOString();
+      const nowDate = now.slice(0, 10);
+      const saleNumber = nextProductSaleNumber(store);
+
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      if (!store.officeData.generalTransactions) store.officeData.generalTransactions = [];
+      const itemsSummary = saleItems.map((it) => `${it.quantity}x ${it.productName}`).join(', ');
+      const financialTransaction: FinancialTransaction = {
+        id: `gtx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        type: 'receita_cliente',
+        description: `Venda de produto pronto (Juliano) — ${itemsSummary} — ${saleNumber}`,
+        amountCents: totalCents,
+        dueDate: nowDate,
+        paymentDate: nowDate,
+        paidDate: nowDate,
+        createdAt: now,
+        status: 'realizado',
+        clientName: resolvedClientName,
+        history: [],
+      };
+      store.officeData.generalTransactions.unshift(financialTransaction);
+
+      const newSale: ProductSale = {
+        id: `sale-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        saleNumber,
+        clientId,
+        clientName: resolvedClientName,
+        clientPhone: resolvedClientPhone || undefined,
+        items: saleItems,
+        totalCents,
+        paymentMethod,
+        status: 'Concluída',
+        generalTransactionId: financialTransaction.id,
+        createdAt: now,
+        soldBy: soldBy?.trim() || 'Juliano',
+      };
+      julianoData.sales.unshift(newSale);
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'juliano:updated',
+        timestamp: new Date().toISOString(),
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        julianoData,
+      });
+      broadcastRealtimeEvent({
+        type: 'office:updated',
+        timestamp: new Date().toISOString(),
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+      });
+
+      res.json({ ok: true, sale: newSale, julianoData, generalTransactions: store.officeData.generalTransactions });
+    } catch (error) {
+      console.error('Erro ao registrar venda do Juliano:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao registrar a venda.',
+      });
+    }
+  });
+
   // Generate or Correct (Corrigir) any of the 12 steps of Anúncio Inteligente with Claude
   app.post('/api/julia/ai-step', async (req, res) => {
     try {
@@ -9339,6 +9718,13 @@ Regra: Forneça diagnósticos objetivos baseados estritamente nos dados reais da
       systemPrompt: `Você é o TAPECEIRO TÉCNICO da Castros Interiores (Mesa 9), responsável por transformar a avaliação revisada do Pedro (reforma) ou a ficha técnica revisada do Lucas (fabricação) em lista técnica de peças, cálculo de materiais e instruções de montagem.
 Regra: Nunca invente medida, encaixe, furação ou especificação estrutural a partir de foto. Diferencie dimensão acabada de dimensão de corte. Quantidade ou preço desconhecidos ficam pendentes, nunca zero ou estimativa apresentada como definitiva.`,
     },
+    juliano_vendas: {
+      name: 'Juliano',
+      title: 'Juliano (Vendas de Produtos Prontos — Mesa 10)',
+      systemPrompt: `Você é o JULIANO, vendedor de Produtos Prontos da Castros Interiores (Mesa 10).
+Missão: Vender produtos novos já fabricados e disponíveis em estoque (catálogo próprio, separado da matéria-prima da Ana e dos pedidos de reforma/fabricação sob medida). Você consulta clientes já cadastrados (mesma lista da Carla), registra vendas com forma de pagamento, controla o estoque do seu próprio catálogo e pode enviar fotos de produtos para a biblioteca de campanhas da Júlia.
+Regra: Responda apenas com base no catálogo e nas vendas reais deste sistema. Nunca invente estoque, preço ou venda que não exista. Cada venda registrada já gera automaticamente o lançamento financeiro correspondente — você nunca precisa (nem deve) pedir confirmação separada da Mila para isso.`,
+    },
   };
 
   // Tipos de ação de rotina que a Helena (supervisora_geral) pode aprovar sozinha,
@@ -9789,6 +10175,37 @@ PANORAMA GERAL DA EMPRESA (CASTROS INTERIORES):
 `;
       }
 
+      if (deskId === 'juliano_vendas') {
+        const products = store.julianoData?.products || [];
+        const sales = (store.julianoData?.sales || []).slice(0, 10);
+        factualContext += `
+CATÁLOGO DE PRODUTOS PRONTOS (MESA DO JULIANO — ${products.length} produto(s) cadastrado(s)):
+${
+  products.length > 0
+    ? products
+        .map(
+          (p) =>
+            `  * ${p.name}${p.category ? ` [${p.category}]` : ''} | Preço: R$ ${(p.priceCents / 100).toFixed(2)} | Estoque: ${p.stockQuantity} unid.${p.juliaPhotoId ? ' | foto já enviada à Júlia' : ''}`
+        )
+        .join('\n')
+    : '  Nenhum produto cadastrado ainda.'
+}
+
+ÚLTIMAS VENDAS REGISTRADAS (até 10 mais recentes):
+${
+  sales.length > 0
+    ? sales
+        .map(
+          (s) =>
+            `  * ${s.saleNumber} | ${s.clientName} | ${s.items.map((it) => `${it.quantity}x ${it.productName}`).join(', ')} | R$ ${(s.totalCents / 100).toFixed(2)} | ${s.paymentMethod}`
+        )
+        .join('\n')
+    : '  Nenhuma venda registrada ainda.'
+}
+REGRA: cada venda confirmada pelo botão da mesa já lança automaticamente o valor no financeiro geral da fábrica — você nunca precisa pedir isso à Mila. Nunca informe estoque, preço ou venda que não esteja nesta lista.
+`;
+      }
+
       // Histórico recente da mesa
       const recentChat = (store.agentChats[deskId] || [])
         .slice(-8)
@@ -9883,7 +10300,7 @@ DIRETRIZES DE RESPOSTA:
                 targetDeskId: {
                   type: Type.STRING,
                   description:
-                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | julia_marketing | supervisora_geral | tapeceiro_tecnico',
+                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | julia_marketing | supervisora_geral | tapeceiro_tecnico | juliano_vendas',
                 },
                 message: { type: Type.STRING },
               },
@@ -10181,7 +10598,7 @@ INSTRUÇÕES ESPECIAIS:
                 targetDeskId: {
                   type: Type.STRING,
                   description:
-                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | supervisora_geral | tapeceiro_tecnico',
+                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | supervisora_geral | tapeceiro_tecnico | juliano_vendas',
                 },
                 message: { type: Type.STRING },
               },

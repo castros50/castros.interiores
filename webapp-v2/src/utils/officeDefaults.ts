@@ -15,7 +15,7 @@ export interface DeskMeta {
   role: string;
   roomTitle: string;
   summary: string;
-  iconName: 'carla' | 'pedro' | 'lucas' | 'ana' | 'mila' | 'castro' | 'julia' | 'supervisora' | 'tapeceiro';
+  iconName: 'carla' | 'pedro' | 'lucas' | 'ana' | 'mila' | 'castro' | 'julia' | 'supervisora' | 'tapeceiro' | 'juliano';
   colorBadge: string;
   accentBg: string;
   description: string;
@@ -263,6 +263,32 @@ export const OFFICE_DESKS: DeskMeta[] = [
       'Cobrar Retorno de Agente com Recado Auditado',
       'Homologar Aprovações Técnicas Pendentes',
       'Auditar Status de Campanhas e Compras',
+    ],
+  },
+  {
+    id: 'juliano_vendas',
+    number: 10,
+    name: 'Juliano',
+    role: 'Vendas de Produtos Prontos',
+    roomTitle: 'Mesa de Vendas de Produtos Prontos',
+    summary: 'Catálogo próprio de produtos novos já fabricados, estoque e vendas diretas com lançamento financeiro automático.',
+    iconName: 'juliano',
+    colorBadge: 'bg-sky-100 text-sky-950 border-sky-400',
+    accentBg: 'from-sky-50 to-white',
+    description:
+      'Catálogo próprio de produtos prontos (nome, preço e estoque), separado da matéria-prima da Ana e dos pedidos sob medida de reforma/fabricação. Vende para clientes já cadastrados pela Carla e cada venda gera automaticamente o lançamento financeiro no caixa da fábrica, visível na mesa da Mila.',
+    responsibilities: [
+      'Cadastro e manutenção do catálogo de produtos prontos (preço, estoque, foto)',
+      'Registro de vendas com forma de pagamento e cliente já cadastrado',
+      'Controle de estoque próprio, nunca vendendo além do disponível',
+      'Envio de fotos de produtos para a biblioteca de campanhas da Júlia',
+      'Lançamento automático de cada venda no financeiro geral da fábrica (Mila)',
+    ],
+    sampleActions: [
+      'Cadastrar Novo Produto Pronto',
+      'Registrar Venda de Produto',
+      'Enviar Foto do Produto para a Júlia',
+      'Consultar Histórico de Vendas',
     ],
   },
 ];

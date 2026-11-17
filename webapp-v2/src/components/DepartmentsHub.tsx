@@ -346,6 +346,7 @@ export const DepartmentsHub: React.FC<DepartmentsHubProps> = ({
     castro_estrategia: '',
     supervisora_geral: '',
     tapeceiro_tecnico: '',
+    juliano_vendas: '',
   });
   const [isConsulting, setIsConsulting] = useState(false);
   const [consultError, setConsultError] = useState<string | null>(null);

@@ -56,6 +56,7 @@ const DESK_LABELS: Record<DepartmentId, string> = {
   julia_marketing: 'Júlia (Marketing)',
   supervisora_geral: 'Helena (Supervisora)',
   tapeceiro_tecnico: 'Tapeceiro Técnico',
+  juliano_vendas: 'Juliano (Vendas)',
 };
 
 const TASK_STATUS_LABELS: Record<string, string> = {
