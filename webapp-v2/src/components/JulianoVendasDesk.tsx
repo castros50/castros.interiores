@@ -9,6 +9,8 @@ import {
   Trash2,
   Search,
   ImageIcon,
+  Pencil,
+  X,
 } from 'lucide-react';
 import { ClientRecord, ProductSale, ProductSalePaymentMethod, ReadyMadeProduct } from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
@@ -21,6 +23,38 @@ interface CartItem {
   unitPriceCents: number;
   quantity: number;
   availableStock: number;
+}
+
+interface ProductDetailsDraft {
+  name: string;
+  description: string;
+  category: string;
+  color: string;
+  size: string;
+  style: string;
+  widthCm: string;
+  heightCm: string;
+  depthCm: string;
+}
+
+function draftFromProduct(p: ReadyMadeProduct): ProductDetailsDraft {
+  return {
+    name: p.name,
+    description: p.description || '',
+    category: p.category || '',
+    color: p.color || '',
+    size: p.size || '',
+    style: p.style || '',
+    widthCm: p.widthCm != null ? String(p.widthCm) : '',
+    heightCm: p.heightCm != null ? String(p.heightCm) : '',
+    depthCm: p.depthCm != null ? String(p.depthCm) : '',
+  };
+}
+
+function formatDimensions(p: ReadyMadeProduct): string | null {
+  if (!p.widthCm && !p.heightCm && !p.depthCm) return null;
+  const parts = [p.widthCm, p.heightCm, p.depthCm].filter((v): v is number => typeof v === 'number');
+  return `${parts.join(' × ')} cm (L × A × P)`;
 }
 
 async function fileToDataUrl(file: File): Promise<string> {
@@ -44,11 +78,23 @@ export const JulianoVendasDesk: React.FC = () => {
   const [newProductName, setNewProductName] = useState('');
   const [newProductDescription, setNewProductDescription] = useState('');
   const [newProductCategory, setNewProductCategory] = useState('');
+  const [newProductColor, setNewProductColor] = useState('');
+  const [newProductSize, setNewProductSize] = useState('');
+  const [newProductStyle, setNewProductStyle] = useState('');
+  const [newProductWidth, setNewProductWidth] = useState('');
+  const [newProductHeight, setNewProductHeight] = useState('');
+  const [newProductDepth, setNewProductDepth] = useState('');
   const [newProductPrice, setNewProductPrice] = useState('');
   const [newProductStock, setNewProductStock] = useState('');
-  const [newProductPhoto, setNewProductPhoto] = useState<File | null>(null);
+  const [newProductPhotos, setNewProductPhotos] = useState<File[]>([]);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
   const [sendingToJuliaId, setSendingToJuliaId] = useState<string | null>(null);
+  const [uploadingPhotoId, setUploadingPhotoId] = useState<string | null>(null);
+
+  // Edição de detalhes de um produto já cadastrado
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<ProductDetailsDraft | null>(null);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   // Formulário de nova venda
   const [clientQuery, setClientQuery] = useState('');
@@ -124,7 +170,8 @@ export const JulianoVendasDesk: React.FC = () => {
     setIsSavingProduct(true);
     setError(null);
     try {
-      const dataUrl = newProductPhoto ? await fileToDataUrl(newProductPhoto) : undefined;
+      const [firstPhoto, ...restPhotos] = newProductPhotos;
+      const dataUrl = firstPhoto ? await fileToDataUrl(firstPhoto) : undefined;
       const res = await fetch('/api/juliano/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -132,22 +179,47 @@ export const JulianoVendasDesk: React.FC = () => {
           name: newProductName.trim(),
           description: newProductDescription.trim() || undefined,
           category: newProductCategory.trim() || undefined,
+          color: newProductColor.trim() || undefined,
+          size: newProductSize.trim() || undefined,
+          style: newProductStyle.trim() || undefined,
+          widthCm: newProductWidth ? parseFloat(newProductWidth.replace(',', '.')) : undefined,
+          heightCm: newProductHeight ? parseFloat(newProductHeight.replace(',', '.')) : undefined,
+          depthCm: newProductDepth ? parseFloat(newProductDepth.replace(',', '.')) : undefined,
           priceCents,
           stockQuantity,
           dataUrl,
-          mimeType: newProductPhoto?.type,
+          mimeType: firstPhoto?.type,
         }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao cadastrar produto.');
-      setProducts((prev) => [data.product, ...prev]);
+
+      let finalProduct: ReadyMadeProduct = data.product;
+      for (const extraPhoto of restPhotos) {
+        const extraDataUrl = await fileToDataUrl(extraPhoto);
+        const photoRes = await fetch(`/api/juliano/products/${finalProduct.id}/photos`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataUrl: extraDataUrl, mimeType: extraPhoto.type }),
+        });
+        const photoData = await photoRes.json();
+        if (photoRes.ok && photoData.ok) finalProduct = photoData.product;
+      }
+
+      setProducts((prev) => [finalProduct, ...prev]);
       setShowNewProduct(false);
       setNewProductName('');
       setNewProductDescription('');
       setNewProductCategory('');
+      setNewProductColor('');
+      setNewProductSize('');
+      setNewProductStyle('');
+      setNewProductWidth('');
+      setNewProductHeight('');
+      setNewProductDepth('');
       setNewProductPrice('');
       setNewProductStock('');
-      setNewProductPhoto(null);
+      setNewProductPhotos([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao cadastrar produto.');
     } finally {
@@ -155,12 +227,12 @@ export const JulianoVendasDesk: React.FC = () => {
     }
   };
 
-  const handleUpdateStockOrPrice = async (product: ReadyMadeProduct, field: 'priceCents' | 'stockQuantity', value: number) => {
+  const handleUpdateStock = async (product: ReadyMadeProduct, value: number) => {
     try {
       const res = await fetch(`/api/juliano/products/${product.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: value }),
+        body: JSON.stringify({ stockQuantity: value }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao atualizar produto.');
@@ -170,25 +242,38 @@ export const JulianoVendasDesk: React.FC = () => {
     }
   };
 
-  const [uploadingPhotoId, setUploadingPhotoId] = useState<string | null>(null);
-
-  const handleUploadPhoto = async (product: ReadyMadeProduct, file: File) => {
+  const handleAddPhotos = async (product: ReadyMadeProduct, files: FileList) => {
     setUploadingPhotoId(product.id);
     setError(null);
     try {
-      const dataUrl = await fileToDataUrl(file);
-      const res = await fetch(`/api/juliano/products/${product.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataUrl, mimeType: file.type }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao enviar a foto.');
-      setProducts((prev) => prev.map((p) => (p.id === product.id ? data.product : p)));
+      let finalProduct: ReadyMadeProduct = product;
+      for (const file of Array.from(files)) {
+        const dataUrl = await fileToDataUrl(file);
+        const res = await fetch(`/api/juliano/products/${product.id}/photos`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataUrl, mimeType: file.type }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao enviar a foto.');
+        finalProduct = data.product;
+      }
+      setProducts((prev) => prev.map((p) => (p.id === product.id ? finalProduct : p)));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao enviar a foto.');
     } finally {
       setUploadingPhotoId(null);
+    }
+  };
+
+  const handleDeletePhoto = async (product: ReadyMadeProduct, index: number) => {
+    try {
+      const res = await fetch(`/api/juliano/products/${product.id}/photos/${index}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao remover a foto.');
+      setProducts((prev) => prev.map((p) => (p.id === product.id ? data.product : p)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao remover a foto.');
     }
   };
 
@@ -215,6 +300,47 @@ export const JulianoVendasDesk: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Erro ao enviar foto para a Júlia.');
     } finally {
       setSendingToJuliaId(null);
+    }
+  };
+
+  const handleStartEdit = (product: ReadyMadeProduct) => {
+    setEditingProductId(product.id);
+    setEditDraft(draftFromProduct(product));
+  };
+
+  const handleSaveEdit = async (product: ReadyMadeProduct) => {
+    if (!editDraft) return;
+    if (!editDraft.name.trim()) {
+      setError('Informe o nome do produto.');
+      return;
+    }
+    setIsSavingEdit(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/juliano/products/${product.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editDraft.name.trim(),
+          description: editDraft.description.trim(),
+          category: editDraft.category.trim(),
+          color: editDraft.color.trim(),
+          size: editDraft.size.trim(),
+          style: editDraft.style.trim(),
+          widthCm: editDraft.widthCm ? parseFloat(editDraft.widthCm.replace(',', '.')) : null,
+          heightCm: editDraft.heightCm ? parseFloat(editDraft.heightCm.replace(',', '.')) : null,
+          depthCm: editDraft.depthCm ? parseFloat(editDraft.depthCm.replace(',', '.')) : null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao salvar os detalhes do produto.');
+      setProducts((prev) => prev.map((p) => (p.id === product.id ? data.product : p)));
+      setEditingProductId(null);
+      setEditDraft(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao salvar os detalhes do produto.');
+    } finally {
+      setIsSavingEdit(false);
     }
   };
 
@@ -376,11 +502,60 @@ export const JulianoVendasDesk: React.FC = () => {
               <div className="grid grid-cols-3 gap-2">
                 <input
                   type="text"
-                  placeholder="Categoria (opcional)"
+                  placeholder="Categoria (ex: Puff)"
                   value={newProductCategory}
                   onChange={(e) => setNewProductCategory(e.target.value)}
                   className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
                 />
+                <input
+                  type="text"
+                  placeholder="Cor (ex: Rose)"
+                  value={newProductColor}
+                  onChange={(e) => setNewProductColor(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                />
+                <input
+                  type="text"
+                  placeholder="Tamanho (ex: Único, P/M/G)"
+                  value={newProductSize}
+                  onChange={(e) => setNewProductSize(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                />
+              </div>
+              <input
+                type="text"
+                placeholder="Estilo (ex: Rústico, Moderno)"
+                value={newProductStyle}
+                onChange={(e) => setNewProductStyle(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+              />
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-[#6B6257] pt-1">
+                Medidas (cm) — opcional, cada uma em seu campo
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                <input
+                  type="text"
+                  placeholder="Largura (cm)"
+                  value={newProductWidth}
+                  onChange={(e) => setNewProductWidth(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                />
+                <input
+                  type="text"
+                  placeholder="Altura (cm)"
+                  value={newProductHeight}
+                  onChange={(e) => setNewProductHeight(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                />
+                <input
+                  type="text"
+                  placeholder="Profundidade (cm)"
+                  value={newProductDepth}
+                  onChange={(e) => setNewProductDepth(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
                 <input
                   type="text"
                   placeholder="Preço (R$)"
@@ -396,15 +571,19 @@ export const JulianoVendasDesk: React.FC = () => {
                   className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
                 />
               </div>
-              <label className="block text-[10px] font-bold uppercase tracking-wider text-[#6B6257]">
-                Foto do Produto (tirar foto agora ou escolher do computador/galeria)
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-[#6B6257] pt-1">
+                Fotos do Produto (pode escolher várias — tirar foto agora ou pegar do computador/galeria)
               </label>
               <input
                 type="file"
                 accept="image/*"
-                onChange={(e) => setNewProductPhoto(e.target.files?.[0] || null)}
+                multiple
+                onChange={(e) => setNewProductPhotos(Array.from(e.target.files || []))}
                 className="text-xs"
               />
+              {newProductPhotos.length > 0 && (
+                <p className="text-[10px] text-[#6B6257]">{newProductPhotos.length} foto(s) selecionada(s).</p>
+              )}
               <button
                 type="button"
                 disabled={isSavingProduct}
@@ -420,101 +599,239 @@ export const JulianoVendasDesk: React.FC = () => {
             <p className="text-xs text-[#6B6257]">Nenhum produto cadastrado ainda.</p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {products.map((product) => (
-                <div key={product.id} className="p-3 rounded-lg border border-[#E5DEC9] bg-[#FAF8F5] space-y-2">
-                  <label className="block cursor-pointer">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      disabled={uploadingPhotoId === product.id}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = '';
-                        if (file) handleUploadPhoto(product, file);
-                      }}
-                    />
-                    {product.photoUrl ? (
-                      <img src={product.photoUrl} alt={product.name} className="w-full h-28 object-cover rounded" />
+              {products.map((product) => {
+                const dims = formatDimensions(product);
+                const isEditing = editingProductId === product.id;
+                return (
+                  <div key={product.id} className="p-3 rounded-lg border border-[#E5DEC9] bg-[#FAF8F5] space-y-2">
+                    {product.photoUrls.length > 0 ? (
+                      <img
+                        src={product.photoUrls[0]}
+                        alt={product.name}
+                        className="w-full h-28 object-cover rounded"
+                      />
                     ) : (
-                      <div className="w-full h-28 flex flex-col items-center justify-center gap-1 rounded bg-[#EFECE6] text-[#9A9388] hover:bg-[#E5DEC9]">
-                        <ImageIcon className="w-6 h-6" />
-                        <span className="text-[10px] font-semibold">
-                          {uploadingPhotoId === product.id ? 'Enviando...' : 'Toque para tirar foto ou escolher arquivo'}
-                        </span>
+                      <label className="block cursor-pointer">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          disabled={uploadingPhotoId === product.id}
+                          onChange={(e) => {
+                            const files = e.target.files;
+                            e.target.value = '';
+                            if (files && files.length > 0) handleAddPhotos(product, files);
+                          }}
+                        />
+                        <div className="w-full h-28 flex flex-col items-center justify-center gap-1 rounded bg-[#EFECE6] text-[#9A9388] hover:bg-[#E5DEC9]">
+                          <ImageIcon className="w-6 h-6" />
+                          <span className="text-[10px] font-semibold">
+                            {uploadingPhotoId === product.id ? 'Enviando...' : 'Toque para tirar foto ou escolher arquivo'}
+                          </span>
+                        </div>
+                      </label>
+                    )}
+
+                    {product.photoUrls.length > 0 && (
+                      <div className="flex gap-1.5 overflow-x-auto pb-1">
+                        {product.photoUrls.map((url, index) => (
+                          <div key={url} className="relative flex-shrink-0">
+                            <img
+                              src={url}
+                              alt={`${product.name} ${index + 1}`}
+                              className={`w-12 h-12 object-cover rounded ${
+                                index === 0 ? 'ring-2 ring-[#9A7138]' : 'border border-[#D6CFC5]'
+                              }`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleDeletePhoto(product, index)}
+                              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-600 text-white flex items-center justify-center"
+                              title="Remover esta foto"
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        ))}
+                        <label className="w-12 h-12 flex-shrink-0 flex items-center justify-center rounded border border-dashed border-[#D6CFC5] text-[#9A7138] cursor-pointer hover:bg-[#F3EFE6]">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="hidden"
+                            disabled={uploadingPhotoId === product.id}
+                            onChange={(e) => {
+                              const files = e.target.files;
+                              e.target.value = '';
+                              if (files && files.length > 0) handleAddPhotos(product, files);
+                            }}
+                          />
+                          <Plus className="w-4 h-4" />
+                        </label>
                       </div>
                     )}
-                  </label>
-                  <p className="font-bold text-xs text-[#181512]">{product.name}</p>
-                  {product.category && <p className="text-[10px] text-[#6B6257]">{product.category}</p>}
-                  <p className="text-xs font-semibold text-[#9A7138]">{formatCurrencyBRL(product.priceCents)}</p>
-                  <div className="flex items-center gap-1.5 text-[10px]">
-                    <span
-                      className={`px-1.5 py-0.5 rounded-full font-bold ${
-                        product.stockQuantity === 0
-                          ? 'bg-red-100 text-red-800'
-                          : product.stockQuantity <= 3
-                          ? 'bg-amber-100 text-amber-900'
-                          : 'bg-emerald-100 text-emerald-900'
-                      }`}
-                    >
-                      {product.stockQuantity} em estoque
-                    </span>
-                  </div>
-                  <div className="flex gap-1.5 flex-wrap pt-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const value = window.prompt('Novo estoque (unidades):', String(product.stockQuantity));
-                        if (value === null) return;
-                        const n = parseInt(value, 10);
-                        if (!Number.isNaN(n) && n >= 0) handleUpdateStockOrPrice(product, 'stockQuantity', n);
-                      }}
-                      className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-[#F3EFE6]"
-                    >
-                      Ajustar Estoque
-                    </button>
-                    <label className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-[#F3EFE6] flex items-center gap-1 cursor-pointer">
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        disabled={uploadingPhotoId === product.id}
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          e.target.value = '';
-                          if (file) handleUploadPhoto(product, file);
-                        }}
-                      />
-                      <ImageIcon className="w-3 h-3 text-[#9A7138]" />
-                      {uploadingPhotoId === product.id
-                        ? 'Enviando...'
-                        : product.photoUrl
-                        ? 'Trocar Foto'
-                        : 'Adicionar Foto'}
-                    </label>
-                    {product.photoUrl && (
-                      <button
-                        type="button"
-                        disabled={sendingToJuliaId === product.id}
-                        onClick={() => handleSendToJulia(product)}
-                        className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-[#F3EFE6] flex items-center gap-1 disabled:opacity-50"
-                      >
-                        <Send className="w-3 h-3 text-[#9A7138]" />
-                        {product.juliaPhotoId ? 'Reenviar p/ Júlia' : 'Enviar p/ Júlia'}
-                      </button>
+
+                    {isEditing && editDraft ? (
+                      <div className="space-y-1.5 pt-1">
+                        <input
+                          type="text"
+                          placeholder="Nome do produto"
+                          value={editDraft.name}
+                          onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })}
+                          className="w-full px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                        />
+                        <textarea
+                          placeholder="Descrição"
+                          value={editDraft.description}
+                          onChange={(e) => setEditDraft({ ...editDraft, description: e.target.value })}
+                          className="w-full px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                          rows={2}
+                        />
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <input
+                            type="text"
+                            placeholder="Categoria"
+                            value={editDraft.category}
+                            onChange={(e) => setEditDraft({ ...editDraft, category: e.target.value })}
+                            className="px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Cor"
+                            value={editDraft.color}
+                            onChange={(e) => setEditDraft({ ...editDraft, color: e.target.value })}
+                            className="px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Tamanho"
+                            value={editDraft.size}
+                            onChange={(e) => setEditDraft({ ...editDraft, size: e.target.value })}
+                            className="px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                          />
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="Estilo"
+                          value={editDraft.style}
+                          onChange={(e) => setEditDraft({ ...editDraft, style: e.target.value })}
+                          className="w-full px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                        />
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <input
+                            type="text"
+                            placeholder="Larg. (cm)"
+                            value={editDraft.widthCm}
+                            onChange={(e) => setEditDraft({ ...editDraft, widthCm: e.target.value })}
+                            className="px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Alt. (cm)"
+                            value={editDraft.heightCm}
+                            onChange={(e) => setEditDraft({ ...editDraft, heightCm: e.target.value })}
+                            className="px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Prof. (cm)"
+                            value={editDraft.depthCm}
+                            onChange={(e) => setEditDraft({ ...editDraft, depthCm: e.target.value })}
+                            className="px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                          />
+                        </div>
+                        <div className="flex gap-1.5 pt-0.5">
+                          <button
+                            type="button"
+                            disabled={isSavingEdit}
+                            onClick={() => handleSaveEdit(product)}
+                            className="px-2 py-1 rounded bg-[#181512] text-white text-[10px] font-semibold disabled:opacity-50"
+                          >
+                            {isSavingEdit ? 'Salvando...' : 'Salvar'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingProductId(null);
+                              setEditDraft(null);
+                            }}
+                            className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="font-bold text-xs text-[#181512]">{product.name}</p>
+                        <div className="flex flex-wrap gap-1 text-[10px] text-[#6B6257]">
+                          {product.category && <span>{product.category}</span>}
+                          {product.color && <span>• {product.color}</span>}
+                          {product.size && <span>• Tam. {product.size}</span>}
+                          {product.style && <span>• {product.style}</span>}
+                        </div>
+                        {dims && <p className="text-[10px] text-[#6B6257]">{dims}</p>}
+                        <p className="text-xs font-semibold text-[#9A7138]">{formatCurrencyBRL(product.priceCents)}</p>
+                        <div className="flex items-center gap-1.5 text-[10px]">
+                          <span
+                            className={`px-1.5 py-0.5 rounded-full font-bold ${
+                              product.stockQuantity === 0
+                                ? 'bg-red-100 text-red-800'
+                                : product.stockQuantity <= 3
+                                ? 'bg-amber-100 text-amber-900'
+                                : 'bg-emerald-100 text-emerald-900'
+                            }`}
+                          >
+                            {product.stockQuantity} em estoque
+                          </span>
+                        </div>
+                        <div className="flex gap-1.5 flex-wrap pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const value = window.prompt('Novo estoque (unidades):', String(product.stockQuantity));
+                              if (value === null) return;
+                              const n = parseInt(value, 10);
+                              if (!Number.isNaN(n) && n >= 0) handleUpdateStock(product, n);
+                            }}
+                            className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-[#F3EFE6]"
+                          >
+                            Ajustar Estoque
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleStartEdit(product)}
+                            className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-[#F3EFE6] flex items-center gap-1"
+                          >
+                            <Pencil className="w-3 h-3 text-[#9A7138]" />
+                            Editar Detalhes
+                          </button>
+                          {product.photoUrls.length > 0 && (
+                            <button
+                              type="button"
+                              disabled={sendingToJuliaId === product.id}
+                              onClick={() => handleSendToJulia(product)}
+                              className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-[#F3EFE6] flex items-center gap-1 disabled:opacity-50"
+                            >
+                              <Send className="w-3 h-3 text-[#9A7138]" />
+                              {product.juliaPhotoId ? 'Reenviar p/ Júlia' : 'Enviar p/ Júlia'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteProduct(product.id)}
+                            className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-red-50 text-red-700 flex items-center gap-1"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            Remover
+                          </button>
+                        </div>
+                      </>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteProduct(product.id)}
-                      className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-red-50 text-red-700 flex items-center gap-1"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                      Remover
-                    </button>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

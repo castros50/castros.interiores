@@ -1432,9 +1432,18 @@ function getDefaultJulianoData(): JulianoDepartmentData {
 
 // Garante store.julianoData presente, mesmo padrão defensivo já usado para
 // store.juliaData (getDefaultJuliaData) — nunca sobrescreve dados existentes.
+// Também migra produtos salvos antes da galeria de fotos existir (campo
+// singular "photoUrl") para o formato atual (array "photoUrls"), sem perder
+// a foto já cadastrada.
 function getJulianoData(store: PersistentStore): JulianoDepartmentData {
   if (!store.julianoData) {
     store.julianoData = getDefaultJulianoData();
+  }
+  for (const product of store.julianoData.products) {
+    if (!Array.isArray(product.photoUrls)) {
+      const legacyPhotoUrl = (product as unknown as { photoUrl?: string }).photoUrl;
+      product.photoUrls = legacyPhotoUrl ? [legacyPhotoUrl] : [];
+    }
   }
   return store.julianoData;
 }
@@ -1442,6 +1451,19 @@ function getJulianoData(store: PersistentStore): JulianoDepartmentData {
 function nextProductSaleNumber(store: PersistentStore): string {
   const count = (store.julianoData?.sales.length || 0) + 1;
   return `VP-2026-${String(count).padStart(4, '0')}`;
+}
+
+// Decodifica uma data URL (data:<mime>;base64,<...>) e salva como arquivo de
+// foto do Juliano, devolvendo a URL pública — ou null se o formato for
+// inválido. Reaproveitado pela criação de produto e pela galeria de fotos.
+function saveJulianoProductPhoto(dataUrl: string, fallbackMimeType?: string): string | null {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  const detectedMime = match[1] || fallbackMimeType || 'image/jpeg';
+  const ext = detectedMime.includes('png') ? '.png' : detectedMime.includes('webp') ? '.webp' : '.jpg';
+  const safeFileName = `juliano_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+  savePhotoFile(safeFileName, Buffer.from(match[2], 'base64'), detectedMime);
+  return `/api/photos/${safeFileName}`;
 }
 
 function reconcileJuliaPhotosFromDisk(juliaData: JuliaDepartmentData): boolean {
@@ -8851,16 +8873,35 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     try {
       const store = loadStore();
       const julianoData = getJulianoData(store);
-      const { name, description, category, priceCents, stockQuantity, dataUrl, mimeType } =
-        req.body as {
-          name: string;
-          description?: string;
-          category?: string;
-          priceCents: number;
-          stockQuantity: number;
-          dataUrl?: string;
-          mimeType?: string;
-        };
+      const {
+        name,
+        description,
+        category,
+        color,
+        size,
+        style,
+        widthCm,
+        heightCm,
+        depthCm,
+        priceCents,
+        stockQuantity,
+        dataUrl,
+        mimeType,
+      } = req.body as {
+        name: string;
+        description?: string;
+        category?: string;
+        color?: string;
+        size?: string;
+        style?: string;
+        widthCm?: number;
+        heightCm?: number;
+        depthCm?: number;
+        priceCents: number;
+        stockQuantity: number;
+        dataUrl?: string;
+        mimeType?: string;
+      };
 
       if (!name?.trim()) {
         res.status(400).json({ error: 'Informe o nome do produto.' });
@@ -8875,18 +8916,14 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         return;
       }
 
-      let photoUrl: string | undefined;
+      const photoUrls: string[] = [];
       if (dataUrl) {
-        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-        if (!match) {
+        const savedUrl = saveJulianoProductPhoto(dataUrl, mimeType);
+        if (!savedUrl) {
           res.status(400).json({ error: 'Formato de imagem inválido.' });
           return;
         }
-        const detectedMime = match[1] || mimeType || 'image/jpeg';
-        const ext = detectedMime.includes('png') ? '.png' : detectedMime.includes('webp') ? '.webp' : '.jpg';
-        const safeFileName = `juliano_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
-        savePhotoFile(safeFileName, Buffer.from(match[2], 'base64'), detectedMime);
-        photoUrl = `/api/photos/${safeFileName}`;
+        photoUrls.push(savedUrl);
       }
 
       const now = new Date().toISOString();
@@ -8895,9 +8932,15 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         name: name.trim(),
         description: description?.trim() || undefined,
         category: category?.trim() || undefined,
+        color: color?.trim() || undefined,
+        size: size?.trim() || undefined,
+        style: style?.trim() || undefined,
+        widthCm: typeof widthCm === 'number' && widthCm > 0 ? widthCm : undefined,
+        heightCm: typeof heightCm === 'number' && heightCm > 0 ? heightCm : undefined,
+        depthCm: typeof depthCm === 'number' && depthCm > 0 ? depthCm : undefined,
         priceCents,
         stockQuantity,
-        photoUrl,
+        photoUrls,
         createdAt: now,
         updatedAt: now,
       };
@@ -8927,18 +8970,40 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         res.status(404).json({ error: 'Produto não encontrado.' });
         return;
       }
-      const { name, description, category, priceCents, stockQuantity, dataUrl, mimeType } = req.body as {
+      const {
+        name,
+        description,
+        category,
+        color,
+        size,
+        style,
+        widthCm,
+        heightCm,
+        depthCm,
+        priceCents,
+        stockQuantity,
+      } = req.body as {
         name?: string;
         description?: string;
         category?: string;
+        color?: string;
+        size?: string;
+        style?: string;
+        widthCm?: number | null;
+        heightCm?: number | null;
+        depthCm?: number | null;
         priceCents?: number;
         stockQuantity?: number;
-        dataUrl?: string;
-        mimeType?: string;
       };
       if (name !== undefined) product.name = name.trim();
       if (description !== undefined) product.description = description.trim() || undefined;
       if (category !== undefined) product.category = category.trim() || undefined;
+      if (color !== undefined) product.color = color.trim() || undefined;
+      if (size !== undefined) product.size = size.trim() || undefined;
+      if (style !== undefined) product.style = style.trim() || undefined;
+      if (widthCm !== undefined) product.widthCm = typeof widthCm === 'number' && widthCm > 0 ? widthCm : undefined;
+      if (heightCm !== undefined) product.heightCm = typeof heightCm === 'number' && heightCm > 0 ? heightCm : undefined;
+      if (depthCm !== undefined) product.depthCm = typeof depthCm === 'number' && depthCm > 0 ? depthCm : undefined;
       if (priceCents !== undefined) {
         if (typeof priceCents !== 'number' || priceCents <= 0) {
           res.status(400).json({ error: 'Preço de venda inválido.' });
@@ -8952,23 +9017,6 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
           return;
         }
         product.stockQuantity = stockQuantity;
-      }
-      if (dataUrl) {
-        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-        if (!match) {
-          res.status(400).json({ error: 'Formato de imagem inválido.' });
-          return;
-        }
-        const detectedMime = match[1] || mimeType || 'image/jpeg';
-        const ext = detectedMime.includes('png') ? '.png' : detectedMime.includes('webp') ? '.webp' : '.jpg';
-        const safeFileName = `juliano_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
-        savePhotoFile(safeFileName, Buffer.from(match[2], 'base64'), detectedMime);
-        product.photoUrl = `/api/photos/${safeFileName}`;
-        // Foto trocada: a entrada antiga na biblioteca da Júlia (se houver) ainda
-        // aponta pra foto velha — zera o vínculo pra "Enviar para Júlia" criar uma
-        // nova entrada em vez de atualizar a antiga com a legenda certa mas a
-        // imagem errada.
-        product.juliaPhotoId = undefined;
       }
       product.updatedAt = new Date().toISOString();
       saveStore(store);
@@ -9001,6 +9049,86 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     res.json({ ok: true, julianoData });
   });
 
+  // Acrescenta mais uma foto à galeria do produto (não substitui as já
+  // existentes) — a primeira foto da galeria continua sendo a capa.
+  app.post('/api/juliano/products/:id/photos', (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === req.params.id);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+      const { dataUrl, mimeType } = req.body as { dataUrl?: string; mimeType?: string };
+      if (!dataUrl) {
+        res.status(400).json({ error: 'Imagem não enviada.' });
+        return;
+      }
+      const savedUrl = saveJulianoProductPhoto(dataUrl, mimeType);
+      if (!savedUrl) {
+        res.status(400).json({ error: 'Formato de imagem inválido.' });
+        return;
+      }
+      const wasFirstPhoto = product.photoUrls.length === 0;
+      product.photoUrls.push(savedUrl);
+      // Primeira foto do produto trocou de "nenhuma" para "essa" — se ele já
+      // tinha sido enviado pra Júlia (impossível sem capa, mas por segurança),
+      // zera o vínculo pra evitar uma legenda certa com imagem errada.
+      if (wasFirstPhoto) product.juliaPhotoId = undefined;
+      product.updatedAt = new Date().toISOString();
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'juliano:updated',
+        timestamp: new Date().toISOString(),
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        julianoData,
+      });
+      res.json({ ok: true, product, julianoData });
+    } catch (error) {
+      console.error('Erro ao adicionar foto ao produto do Juliano:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao adicionar foto.',
+      });
+    }
+  });
+
+  // Remove uma foto específica da galeria pelo índice. Se a foto removida
+  // era a capa (índice 0) e a entrada já tinha sido enviada à Júlia, zera o
+  // vínculo — a nova capa (se houver) precisa ser enviada de novo.
+  app.delete('/api/juliano/products/:id/photos/:photoIndex', (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === req.params.id);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+      const index = parseInt(req.params.photoIndex, 10);
+      if (Number.isNaN(index) || index < 0 || index >= product.photoUrls.length) {
+        res.status(400).json({ error: 'Foto não encontrada nesse produto.' });
+        return;
+      }
+      product.photoUrls.splice(index, 1);
+      if (index === 0) product.juliaPhotoId = undefined;
+      product.updatedAt = new Date().toISOString();
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'juliano:updated',
+        timestamp: new Date().toISOString(),
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        julianoData,
+      });
+      res.json({ ok: true, product, julianoData });
+    } catch (error) {
+      console.error('Erro ao remover foto do produto do Juliano:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao remover foto.',
+      });
+    }
+  });
+
   // Envia (ou reenvia, atualizando) a foto do produto para a biblioteca de
   // campanhas da Júlia (store.juliaData.photos) — nunca cria campanha nem
   // agenda nada por conta própria, só disponibiliza a foto no mesmo formato
@@ -9014,7 +9142,8 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         res.status(404).json({ error: 'Produto não encontrado.' });
         return;
       }
-      if (!product.photoUrl) {
+      const coverPhotoUrl = product.photoUrls[0];
+      if (!coverPhotoUrl) {
         res.status(400).json({ error: 'Este produto ainda não tem foto cadastrada.' });
         return;
       }
@@ -9029,7 +9158,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       if (existing) {
         existing.title = product.name;
         existing.caption = product.description || `Produto pronto disponível — ${product.name}.`;
-        existing.imageUrl = product.photoUrl;
+        existing.imageUrl = coverPhotoUrl;
         saveStore(store);
         res.json({ ok: true, photo: existing, product });
         return;
@@ -9040,7 +9169,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         title: product.name,
         caption: product.description || `Produto pronto disponível — ${product.name}.`,
         tag: 'Vitrine / Catálogo',
-        imageUrl: product.photoUrl,
+        imageUrl: coverPhotoUrl,
         thumbnailDataUrl: '',
         mimeType: 'image/jpeg',
         sourceDevice: 'Mesa do Juliano — Vendas de Produtos Prontos',
@@ -10202,10 +10331,16 @@ CATÁLOGO DE PRODUTOS PRONTOS (MESA DO JULIANO — ${products.length} produto(s)
 ${
   products.length > 0
     ? products
-        .map(
-          (p) =>
-            `  * ${p.name}${p.category ? ` [${p.category}]` : ''} | Preço: R$ ${(p.priceCents / 100).toFixed(2)} | Estoque: ${p.stockQuantity} unid.${p.juliaPhotoId ? ' | foto já enviada à Júlia' : ''}`
-        )
+        .map((p) => {
+          const attrs = [p.category, p.color, p.size ? `tam. ${p.size}` : null, p.style]
+            .filter(Boolean)
+            .join(', ');
+          const dims =
+            p.widthCm || p.heightCm || p.depthCm
+              ? ` | Medidas: ${[p.widthCm, p.heightCm, p.depthCm].filter((v) => v).join('×')} cm (L×A×P)`
+              : '';
+          return `  * ${p.name}${attrs ? ` [${attrs}]` : ''} | Preço: R$ ${(p.priceCents / 100).toFixed(2)} | Estoque: ${p.stockQuantity} unid.${dims} | ${p.photoUrls.length} foto(s)${p.juliaPhotoId ? ' (capa já enviada à Júlia)' : ''}`;
+        })
         .join('\n')
     : '  Nenhum produto cadastrado ainda.'
 }

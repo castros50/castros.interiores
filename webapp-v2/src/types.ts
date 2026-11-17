@@ -1779,12 +1779,20 @@ export interface ReadyMadeProduct {
   name: string;
   description?: string;
   category?: string;
+  color?: string;
+  size?: string;
+  style?: string;
+  widthCm?: number;
+  heightCm?: number;
+  depthCm?: number;
   priceCents: number;
   stockQuantity: number;
-  photoUrl?: string;
-  // Id da entrada correspondente em store.juliaData.photos, quando a foto já
-  // foi enviada para a biblioteca de campanhas da Júlia. Evita duplicar ao
-  // reenviar — reenviar atualiza a mesma entrada.
+  // Galeria de fotos do produto — índice 0 é a foto de capa (usada na
+  // miniatura do catálogo e na foto enviada para a Júlia).
+  photoUrls: string[];
+  // Id da entrada correspondente em store.juliaData.photos, quando a foto de
+  // capa já foi enviada para a biblioteca de campanhas da Júlia. Evita
+  // duplicar ao reenviar — reenviar atualiza a mesma entrada.
   juliaPhotoId?: string;
   createdAt: string;
   updatedAt: string;
