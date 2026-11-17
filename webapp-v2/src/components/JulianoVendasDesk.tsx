@@ -170,6 +170,28 @@ export const JulianoVendasDesk: React.FC = () => {
     }
   };
 
+  const [uploadingPhotoId, setUploadingPhotoId] = useState<string | null>(null);
+
+  const handleUploadPhoto = async (product: ReadyMadeProduct, file: File) => {
+    setUploadingPhotoId(product.id);
+    setError(null);
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const res = await fetch(`/api/juliano/products/${product.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl, mimeType: file.type }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao enviar a foto.');
+      setProducts((prev) => prev.map((p) => (p.id === product.id ? data.product : p)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao enviar a foto.');
+    } finally {
+      setUploadingPhotoId(null);
+    }
+  };
+
   const handleDeleteProduct = async (productId: string) => {
     try {
       const res = await fetch(`/api/juliano/products/${productId}`, { method: 'DELETE' });
@@ -374,6 +396,9 @@ export const JulianoVendasDesk: React.FC = () => {
                   className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
                 />
               </div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-[#6B6257]">
+                Foto do Produto (tirar foto agora ou escolher do computador/galeria)
+              </label>
               <input
                 type="file"
                 accept="image/*"
@@ -397,13 +422,29 @@ export const JulianoVendasDesk: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {products.map((product) => (
                 <div key={product.id} className="p-3 rounded-lg border border-[#E5DEC9] bg-[#FAF8F5] space-y-2">
-                  {product.photoUrl ? (
-                    <img src={product.photoUrl} alt={product.name} className="w-full h-28 object-cover rounded" />
-                  ) : (
-                    <div className="w-full h-28 flex items-center justify-center rounded bg-[#EFECE6] text-[#9A9388]">
-                      <ImageIcon className="w-6 h-6" />
-                    </div>
-                  )}
+                  <label className="block cursor-pointer">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      disabled={uploadingPhotoId === product.id}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (file) handleUploadPhoto(product, file);
+                      }}
+                    />
+                    {product.photoUrl ? (
+                      <img src={product.photoUrl} alt={product.name} className="w-full h-28 object-cover rounded" />
+                    ) : (
+                      <div className="w-full h-28 flex flex-col items-center justify-center gap-1 rounded bg-[#EFECE6] text-[#9A9388] hover:bg-[#E5DEC9]">
+                        <ImageIcon className="w-6 h-6" />
+                        <span className="text-[10px] font-semibold">
+                          {uploadingPhotoId === product.id ? 'Enviando...' : 'Toque para tirar foto ou escolher arquivo'}
+                        </span>
+                      </div>
+                    )}
+                  </label>
                   <p className="font-bold text-xs text-[#181512]">{product.name}</p>
                   {product.category && <p className="text-[10px] text-[#6B6257]">{product.category}</p>}
                   <p className="text-xs font-semibold text-[#9A7138]">{formatCurrencyBRL(product.priceCents)}</p>
@@ -433,6 +474,25 @@ export const JulianoVendasDesk: React.FC = () => {
                     >
                       Ajustar Estoque
                     </button>
+                    <label className="px-2 py-1 rounded bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-[#F3EFE6] flex items-center gap-1 cursor-pointer">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        disabled={uploadingPhotoId === product.id}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (file) handleUploadPhoto(product, file);
+                        }}
+                      />
+                      <ImageIcon className="w-3 h-3 text-[#9A7138]" />
+                      {uploadingPhotoId === product.id
+                        ? 'Enviando...'
+                        : product.photoUrl
+                        ? 'Trocar Foto'
+                        : 'Adicionar Foto'}
+                    </label>
                     {product.photoUrl && (
                       <button
                         type="button"

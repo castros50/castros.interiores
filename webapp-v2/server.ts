@@ -8927,12 +8927,14 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         res.status(404).json({ error: 'Produto não encontrado.' });
         return;
       }
-      const { name, description, category, priceCents, stockQuantity } = req.body as {
+      const { name, description, category, priceCents, stockQuantity, dataUrl, mimeType } = req.body as {
         name?: string;
         description?: string;
         category?: string;
         priceCents?: number;
         stockQuantity?: number;
+        dataUrl?: string;
+        mimeType?: string;
       };
       if (name !== undefined) product.name = name.trim();
       if (description !== undefined) product.description = description.trim() || undefined;
@@ -8950,6 +8952,23 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
           return;
         }
         product.stockQuantity = stockQuantity;
+      }
+      if (dataUrl) {
+        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (!match) {
+          res.status(400).json({ error: 'Formato de imagem inválido.' });
+          return;
+        }
+        const detectedMime = match[1] || mimeType || 'image/jpeg';
+        const ext = detectedMime.includes('png') ? '.png' : detectedMime.includes('webp') ? '.webp' : '.jpg';
+        const safeFileName = `juliano_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+        savePhotoFile(safeFileName, Buffer.from(match[2], 'base64'), detectedMime);
+        product.photoUrl = `/api/photos/${safeFileName}`;
+        // Foto trocada: a entrada antiga na biblioteca da Júlia (se houver) ainda
+        // aponta pra foto velha — zera o vínculo pra "Enviar para Júlia" criar uma
+        // nova entrada em vez de atualizar a antiga com a legenda certa mas a
+        // imagem errada.
+        product.juliaPhotoId = undefined;
       }
       product.updatedAt = new Date().toISOString();
       saveStore(store);
