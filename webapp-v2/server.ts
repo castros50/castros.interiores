@@ -10618,6 +10618,25 @@ DIRETRIZES DE RESPOSTA:
             replyText: targetResult.agentMessageObj.text,
           };
         }
+
+        // A resposta de quem recebeu o relay só existia na resposta HTTP desta
+        // chamada — nunca era gravada na própria conversa de quem enviou (ex.:
+        // Helena nunca via a resposta do Pedro de volta na mesa dela, só no
+        // instante da chamada). Grava aqui também, pelo mesmo padrão
+        // sender: 'agent_relay' já usado do outro lado, para o retorno ficar
+        // visível e durável na conversa de quem perguntou.
+        if (!store.agentChats) store.agentChats = {};
+        if (!store.agentChats[deskId]) store.agentChats[deskId] = [];
+        store.agentChats[deskId].push({
+          id: `cmsg-relay-reply-${Date.now()}`,
+          deskId,
+          sender: 'agent_relay',
+          agentName: relayDelivery.toAgentName,
+          fromAgentDeskId: relayDelivery.toDeskId,
+          text: relayDelivery.replyText,
+          modality: 'texto',
+          timestamp: new Date().toISOString(),
+        });
       }
 
       saveStore(store);
@@ -10862,6 +10881,19 @@ INSTRUÇÕES ESPECIAIS:
           toAgentName: targetResult.agentMessageObj.agentName,
           replyText: targetResult.agentMessageObj.text,
         };
+
+        // Mesma correção aplicada em /api/chat/agent: sem isto, a resposta de
+        // quem recebeu o relay só existia na resposta HTTP desta chamada e
+        // nunca aparecia de volta na conversa da própria Júlia.
+        store.juliaData.chatHistory.push({
+          id: `jmsg-relay-reply-${Date.now()}`,
+          sender: 'agent_relay',
+          modality: 'texto',
+          text: relayDelivery.replyText,
+          timestamp: new Date().toISOString(),
+          fromAgentDeskId: relayDelivery.toDeskId,
+          fromAgentName: relayDelivery.toAgentName,
+        });
       }
 
       saveStore(store);
