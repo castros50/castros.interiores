@@ -2148,6 +2148,8 @@ SE FOR REFORMA (reparo/revestimento de peça que o cliente já tem): peça fotos
 
 SE FOR FABRICAÇÃO DE PEÇA NOVA (móvel sob medida, do zero): pergunte modelo/referência, medidas desejadas, fotos de referência e cidade. Quando já tiver isso, classifique como "fabricacao_nova" e marque pronto para encaminhar ao Lucas (projetos).
 
+SE FOR PRODUTO PRONTO (item já fabricado e à venda, como almofadas, puffs, cadeiras avulsas — não é feito sob medida nem precisa de projeto): confira o bloco "CATÁLOGO DE PRODUTOS PRONTOS (JULIANO)" nos dados reais. Se encontrar um item claramente compatível com o que o cliente pediu, responda DIRETO com nome, preço e se está em estoque — sem dizer que vai "confirmar com a equipe", porque essa informação já está disponível pra você agora. Se não encontrar nada compatível no catálogo, aí sim diga que vai verificar e retorna — nunca invente um produto, preço ou estoque que não esteja listado nesse bloco. Isto NUNCA é "reforma" nem "fabricacao_nova" — não classifique nem marque para encaminhamento técnico; é uma venda direta, que um humano fecha na mesa do Juliano.
+
 PREÇO E PRAZO: todo valor sempre passa pela Mila (financeiro) — você nunca cria, estima ou aprova preço sozinha. Só pode CITAR um valor em reais se o bloco de dados disser claramente que o orçamento já está homologado pelo responsável; caso contrário, diga que vai confirmar com a equipe. Prazo/agendamento só é confirmado quando o sistema mostrar aprovação e confirmação — nunca prometa uma data por conta própria.
 
 NEGOCIAÇÃO: ouça as dúvidas do cliente e explique com clareza o que está incluso no serviço. Nunca desqualifique concorrentes.
@@ -2198,6 +2200,25 @@ function getConfirmedPriceCents(attendance: AttendanceRecord): number | null {
     : null;
 }
 
+// Catálogo de produtos prontos do Juliano (mesa 10) — só leitura, nunca modificado
+// por aqui. Permite a Carla responder estoque/preço de item já fabricado (ex.:
+// almofadas, puffs) na hora, sem empurrar pra "equipe" e nunca mais voltar.
+function buildReadyMadeProductsContext(store: PersistentStore): string {
+  const products = store.julianoData?.products || [];
+  if (products.length === 0) {
+    return 'CATÁLOGO DE PRODUTOS PRONTOS (JULIANO): nenhum produto cadastrado no momento.';
+  }
+  const lines = products.map((p) => {
+    const attrs = [p.category, p.color, p.size ? `tam. ${p.size}` : null, p.style]
+      .filter(Boolean)
+      .join(', ');
+    return `  * ${p.name}${attrs ? ` [${attrs}]` : ''} — R$ ${(p.priceCents / 100).toFixed(2)} — ${
+      p.stockQuantity > 0 ? `${p.stockQuantity} em estoque` : 'SEM estoque no momento'
+    }`;
+  });
+  return `CATÁLOGO DE PRODUTOS PRONTOS (JULIANO) — produtos já fabricados e à venda, NUNCA sob medida:\n${lines.join('\n')}`;
+}
+
 function buildCarlaWhatsAppFactualContext(store: PersistentStore, attendance: AttendanceRecord): string {
   const confirmedPriceCents = getConfirmedPriceCents(attendance);
   const priceLine =
@@ -2208,7 +2229,9 @@ function buildCarlaWhatsAppFactualContext(store: PersistentStore, attendance: At
   const known = (value: string | undefined, placeholder = 'A definir') =>
     value && value !== placeholder ? value : 'ainda não informado pelo cliente';
 
-  return `DADOS REAIS JÁ CADASTRADOS PARA ESTE CLIENTE (${attendance.attendanceNumber}):
+  return `${buildReadyMadeProductsContext(store)}
+
+DADOS REAIS JÁ CADASTRADOS PARA ESTE CLIENTE (${attendance.attendanceNumber}):
 - Nome: ${attendance.clientName || 'não informado ainda'}
 - Classificação já identificada: ${attendance.requestType || 'ainda não classificada — pergunte se é reforma ou peça nova'}
 - Tipo de móvel: ${known(attendance.furnitureType)}
