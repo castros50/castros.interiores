@@ -18,6 +18,7 @@ import {
   ExplodedViewSimulation,
   AttendancePhoto,
   EXPLODED_VIEW_SIMULATION_CAPTION,
+  ProductionOrder,
 } from '../types';
 import {
   calculateBudgetSummary,
@@ -1370,6 +1371,148 @@ export function generateFabricationShoppingListPdf(
 
   addPageNumbersAndFooter(doc, true, order.attendanceNumber);
   doc.save(`Lista_Compras_Fabricacao_${order.attendanceNumber}.pdf`);
+}
+
+// Ordem de serviço de produção (Henrique) — documento pra entregar na bancada
+// pro operador, com os dados reais já cadastrados (nunca inventa medida ou
+// modelo) e um espaço de preenchimento manual pra registrar a produção real.
+export function generateProductionOrderPdf(
+  order: ProductionOrder,
+  settings: WorkshopSettings
+): void {
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  doc.setFillColor(24, 21, 18);
+  doc.rect(15, 14, 180, 24, 'F');
+  drawCastrosLogoMark(doc, 23.5, 26, 6.5);
+  doc.setTextColor(249, 246, 240);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.text(
+    `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — ORDEM DE SERVIÇO (PRODUÇÃO)`,
+    34,
+    23
+  );
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(212, 185, 140);
+  doc.text(
+    `Ordem: ${order.orderNumber}   |   Emissão: ${new Date(order.createdAt).toLocaleDateString('pt-BR')}   |   Prioridade: ${order.priority}`,
+    34,
+    30
+  );
+  doc.text(`Responsável pela abertura: ${formatMissingText(order.createdBy)}`, 34, 35);
+
+  let cursorY = 46;
+
+  const dims = order.officialMeasurements
+    ? [order.officialMeasurements.widthCm, order.officialMeasurements.heightCm, order.officialMeasurements.depthCm]
+        .filter((v): v is number => typeof v === 'number')
+        .join(' × ')
+    : '';
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: {
+      fontSize: 8.5,
+      cellPadding: 2.5,
+      textColor: [28, 25, 23],
+      lineColor: [220, 214, 205],
+    },
+    headStyles: {
+      fillColor: [45, 40, 35],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+    },
+    body: [
+      ['Produto', order.productName, 'Código', formatMissingText(order.productCode)],
+      ['Modelo', formatMissingText(order.model), 'Medidas (L × A × P)', dims ? `${dims} cm` : 'Não cadastradas'],
+      ['Quantidade a Fabricar', `${order.quantityToProduce}`, 'Status', order.status],
+    ],
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('Motivo da Ordem', 15, cursorY);
+  cursorY += 5;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  const reasonLines = doc.splitTextToSize(order.reason, 180);
+  doc.text(reasonLines, 15, cursorY);
+  cursorY += reasonLines.length * 4.5 + 6;
+
+  if (order.notes) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.text('Observações', 15, cursorY);
+    cursorY += 5;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    const noteLines = doc.splitTextToSize(order.notes, 180);
+    doc.text(noteLines, 15, cursorY);
+    cursorY += noteLines.length * 4.5 + 6;
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('REGISTRO DE PRODUÇÃO (preencher na bancada)', 15, cursorY);
+  cursorY += 3;
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 3, textColor: [28, 25, 23], minCellHeight: 8 },
+    body: [
+      ['Operador Responsável', '', 'Data de Início', ''],
+      ['Quantidade Efetivamente Produzida', '', 'Data de Conclusão', ''],
+      ['Observações da Produção', { content: '', colSpan: 3 }],
+    ],
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
+
+  if (cursorY > 255) {
+    doc.addPage();
+    cursorY = 20;
+  }
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.text('Assinatura do Operador: _______________________________________', 15, cursorY);
+  doc.text('Data: ____/____/______', 150, cursorY);
+  cursorY += 10;
+
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.5);
+  doc.setTextColor(87, 83, 78);
+  doc.text(
+    'Este documento reflete só o que já está cadastrado e aprovado no sistema — nenhuma medida ou especificação foi inventada.',
+    15,
+    cursorY
+  );
+
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setDrawColor(215, 208, 198);
+    doc.line(15, 282, 195, 282);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(100, 95, 90);
+    doc.text(`Castros Interiores — Ordem de Produção ${order.orderNumber}`, 15, 286.5);
+    doc.text(`Página ${i} de ${pageCount}`, 195, 286.5, { align: 'right' });
+  }
+
+  doc.save(`Ordem_Producao_${order.orderNumber}.pdf`);
 }
 
 export async function generateManufacturingInternalPdf(

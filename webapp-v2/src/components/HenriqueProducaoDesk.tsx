@@ -9,8 +9,20 @@ import {
   Play,
   XCircle,
   Plus,
+  Printer,
 } from 'lucide-react';
-import { HenriqueDepartmentData, ProductionOrder, ProductionOrderPriority, ReadyMadeProduct } from '../types';
+import {
+  HenriqueDepartmentData,
+  ProductionOrder,
+  ProductionOrderPriority,
+  ReadyMadeProduct,
+  WorkshopSettings,
+} from '../types';
+import { generateProductionOrderPdf } from '../utils/pdfGenerator';
+
+interface HenriqueProducaoDeskProps {
+  settings: WorkshopSettings;
+}
 
 const PRIORITY_ORDER: Record<ProductionOrderPriority, number> = {
   Urgente: 0,
@@ -24,7 +36,7 @@ const PRIORITY_BADGE: Record<ProductionOrderPriority, string> = {
   Normal: 'bg-stone-100 text-stone-700 border-stone-300',
 };
 
-export const HenriqueProducaoDesk: React.FC = () => {
+export const HenriqueProducaoDesk: React.FC<HenriqueProducaoDeskProps> = ({ settings }) => {
   const [products, setProducts] = useState<ReadyMadeProduct[]>([]);
   const [henriqueData, setHenriqueData] = useState<HenriqueDepartmentData>({ productionOrders: [], stockEntries: [] });
   const [tab, setTab] = useState<'diaria' | 'estoque' | 'concluidas' | 'entradas'>('diaria');
@@ -371,6 +383,14 @@ export const HenriqueProducaoDesk: React.FC = () => {
                       Marcar como Concluída
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => generateProductionOrderPdf(order, settings)}
+                    className="px-2.5 py-1.5 rounded-lg bg-white border border-[#D6CFC5] text-[#57534E] text-xs font-semibold flex items-center gap-1.5"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    Imprimir Ordem de Serviço
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleCancel(order)}

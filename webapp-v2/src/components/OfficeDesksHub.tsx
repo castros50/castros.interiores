@@ -783,7 +783,7 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
       {/* PRODUÇÃO E CONTROLE DE ESTOQUE (Henrique) — mesmo catálogo do Juliano, nunca depende de pedido */}
       {!activeOrder && selectedDeskId === 'henrique_producao' && (
         <div className="space-y-4">
-          <HenriqueProducaoDesk />
+          <HenriqueProducaoDesk settings={settings} />
 
           {/* Central de Conversa Funcional por Voz e Texto com o Henrique */}
           <AgentVoiceTextChat

@@ -1520,6 +1520,40 @@ function checkAndCreateReplenishmentOrder(store: PersistentStore, product: Ready
     createdBy: 'Sistema (reposição automática)',
   };
   henriqueData.productionOrders.unshift(order);
+  notifyMilaOfProductionOrder(store, order);
+}
+
+// Henrique nunca compra matéria-prima por conta própria (regra de segurança
+// definida com o usuário) — mas toda ordem de produção nova, automática ou
+// manual, precisa de algum jeito de a Mila saber que vai ter que providenciar
+// material. Como o produto pronto não tem uma lista de materiais vinculada,
+// isso não pode ser uma lista estruturada — é só um aviso honesto na própria
+// conversa da Mila, pelo mesmo mecanismo de retransmissão já usado entre
+// todas as mesas (sender: 'agent_relay').
+function notifyMilaOfProductionOrder(store: PersistentStore, order: ProductionOrder): void {
+  if (!store.agentChats) store.agentChats = {};
+  if (!store.agentChats['mila_financeiro']) store.agentChats['mila_financeiro'] = [];
+  const dims = order.officialMeasurements
+    ? [order.officialMeasurements.widthCm, order.officialMeasurements.heightCm, order.officialMeasurements.depthCm]
+        .filter((v): v is number => typeof v === 'number')
+        .join(' × ')
+    : '';
+  const text =
+    `Nova ordem de produção ${order.orderNumber}: fabricar ${order.quantityToProduce} unidade(s) de ` +
+    `"${order.productName}"${order.productCode ? ` [${order.productCode}]` : ''}${dims ? ` (${dims} cm)` : ''}. ` +
+    `Motivo: ${order.reason} ` +
+    `Por favor, providencie a matéria-prima necessária para esta produção — eu não tenho a lista de materiais ` +
+    `deste produto, então não sei dizer exatamente o que precisa comprar.`;
+  store.agentChats['mila_financeiro'].push({
+    id: `cmsg-henrique-po-${order.id}`,
+    deskId: 'mila_financeiro',
+    sender: 'agent_relay',
+    agentName: 'Henrique',
+    fromAgentDeskId: 'henrique_producao',
+    text,
+    modality: 'texto',
+    timestamp: new Date().toISOString(),
+  });
 }
 
 // Decodifica uma data URL (data:<mime>;base64,<...>) e salva como arquivo de
@@ -9715,6 +9749,7 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         createdBy: createdBy?.trim() || 'Responsável pela fábrica',
       };
       henriqueData.productionOrders.unshift(order);
+      notifyMilaOfProductionOrder(store, order);
       saveStore(store);
       res.json({ ok: true, order, henriqueData });
     } catch (error) {
