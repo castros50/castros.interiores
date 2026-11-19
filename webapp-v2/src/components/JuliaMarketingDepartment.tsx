@@ -809,6 +809,11 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
 
   // Auto-save debounce timer ref (Correction 6)
   const autoSaveTimerRef = useRef<number | null>(null);
+  // Sempre aponta para o juliaData mais recente — usado pelo autosave para
+  // nunca reenviar uma foto já excluída (ou outro dado já mudado) a partir
+  // de um snapshot antigo capturado antes do agendamento do debounce.
+  const juliaDataRef = useRef<JuliaDepartmentData | null>(juliaData);
+  juliaDataRef.current = juliaData;
 
   const showTemporaryNotice = (msg: string) => {
     setStatusNotice(msg);
@@ -1028,13 +1033,17 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
     }
     autoSaveTimerRef.current = window.setTimeout(async () => {
       try {
+        // Envia o estado mais recente (ref), nunca o snapshot capturado no
+        // momento do agendamento: se uma foto foi excluída (ou qualquer
+        // outro dado mudou) enquanto este debounce esperava, reenviar o
+        // snapshot antigo ressuscitaria a foto já excluída no servidor.
         await fetch('/api/julia', {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
             'x-station-name': stationName,
           },
-          body: JSON.stringify(nextData),
+          body: JSON.stringify(juliaDataRef.current ?? nextData),
         });
       } catch {
         // ignore background network glitch
