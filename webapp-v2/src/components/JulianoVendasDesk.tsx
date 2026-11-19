@@ -650,11 +650,30 @@ export const JulianoVendasDesk: React.FC = () => {
                 return (
                   <div key={product.id} className="p-3 rounded-lg border border-[#E5DEC9] bg-[#FAF8F5] space-y-2">
                     {product.photoUrls.length > 0 ? (
-                      <img
-                        src={product.photoUrls[0]}
-                        alt={product.name}
-                        className="w-full h-28 object-cover rounded"
-                      />
+                      <label className="block relative cursor-pointer group">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          disabled={uploadingPhotoId === product.id}
+                          onChange={(e) => {
+                            const files = e.target.files;
+                            e.target.value = '';
+                            if (files && files.length > 0) handleAddPhotos(product, files);
+                          }}
+                        />
+                        <img
+                          src={product.photoUrls[0]}
+                          alt={product.name}
+                          className="w-full h-28 object-cover rounded"
+                        />
+                        <div className="absolute inset-0 rounded flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition-colors">
+                          <span className="hidden group-hover:block text-[10px] font-semibold text-white px-2 py-1 rounded bg-black/60">
+                            {uploadingPhotoId === product.id ? 'Enviando...' : 'Toque para adicionar outra foto'}
+                          </span>
+                        </div>
+                      </label>
                     ) : (
                       <label className="block cursor-pointer">
                         <input
