@@ -6126,6 +6126,209 @@ async function startServer() {
   // PUT /api/attendances/:id já existente (mesmo caminho usado para os itens do orçamento),
   // já que materialsLists é apenas mais um campo do registro do atendimento.
 
+  // Lista de Materiais da Fabricação Nova — "Gerar/Atualizar Lista de Compras com IA" (Lucas)
+  // Gera (com IA, só texto, sem foto) a partir dos dados reais já cadastrados no pedido de
+  // fabricação e grava em attendance.manufacturingData.materialRequirements — o quadro
+  // exibido na aba "Materiais" da mesa do Lucas. Nunca inventa preço: só usa o valor do
+  // catálogo real quando o nome casa; senão fica null/"a cotar". Regenerar preserva o estado
+  // de conferência de compra (purchased/actualUnitCostCents/purchaseNotes) já marcado,
+  // casando os itens pelo nome normalizado (a IA não garante o mesmo id entre chamadas).
+  app.post('/api/orders/:id/materials-list/prepare-fabrication', async (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      if (attendance.orderType !== 'Fabricação') {
+        res.status(400).json({
+          error: 'Este pedido não é de Fabricação Nova — use a lista de materiais de reforma para este caso.',
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const mfg = attendance.manufacturingData;
+      const dims = mfg?.dimensions;
+      const dimsText = dims && (dims.widthCm || dims.depthCm || dims.heightCm)
+        ? `${dims.widthCm ?? '?'}cm x ${dims.depthCm ?? '?'}cm x ${dims.heightCm ?? '?'}cm`
+        : attendance.approxMeasurements || 'Não informado ainda';
+
+      const catalogLines = store.materials
+        .slice(0, 80)
+        .map((m) => `- ${m.name}${m.specification ? ` (${m.specification})` : ''} | unidade: ${m.unit} | estoque: ${m.physicalStock ?? 0} | preço real: R$ ${(m.unitCostCents / 100).toFixed(2)}/${m.unit}`)
+        .join('\n');
+
+      const briefingContext = `
+DADOS DO PEDIDO DE FABRICAÇÃO SOB MEDIDA (${attendance.attendanceNumber}):
+- Cliente: ${attendance.clientName || 'Não informado'}
+- Tipo de Estofado: ${attendance.furnitureType || 'Estofado sob medida'}
+- Quantidade do Lote: ${attendance.piecesCount || '1 unidade'}
+- Medidas: ${dimsText}
+- Acabamento e Tecido Desejado: ${attendance.fabricAndComfortPreference || 'A definir'}
+- Especificações do Briefing/Serviço Desejado: ${attendance.desiredService || 'Fabricação própria artesanal sob medida'}
+- Notas da Oficina: ${attendance.notes || 'Sem observações'}
+
+CATÁLOGO REAL DE MATÉRIA-PRIMA DA OFICINA (use estes nomes e preços quando o material corresponder; NUNCA invente preço para um item que não está nesta lista — deixe sem preço):
+${catalogLines || '(catálogo vazio no momento)'}
+
+TAREFA:
+Monte a LISTA DE MATERIAIS PARA COMPRA completa desta peça (revestimento, estrutura/madeira, pés, espumas de assento e encosto, percinta, manta, forro interno, itens de fixação, e qualquer outro insumo necessário para fabricar do zero). Para cada item, informe nome, especificação, categoria, quantidade estimada com unidade, e percentual de perda/margem quando fizer sentido (tecido, percinta). Quando o nome do item corresponder a algo do catálogo acima, use exatamente esse nome. Nunca invente preço — preço só existe se vier do catálogo.`;
+
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
+      const LUCAS_MATERIALS_SYSTEM_INSTRUCTION = `Você é o AGENTE LUCAS — Engenheiro de Projetos e Fabricação de Produtos Novos da Castros Interiores.
+Sua tarefa agora é só montar a lista de materiais para compra de uma peça de fabricação nova, com base nos dados já cadastrados do pedido. Você é técnico e meticuloso. Nunca inventa preço de material: preço só existe quando o nome do item corresponde a algo do catálogo real informado.`;
+
+      const { response } = await generateContentWithRetryAndFallback({
+        preferredModel,
+        parts: [{ text: briefingContext }],
+        systemInstruction: LUCAS_MATERIALS_SYSTEM_INSTRUCTION,
+        lockKey: `fab-materials:${attendance.id}`,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            items: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  specification: { type: Type.STRING },
+                  category: {
+                    type: Type.STRING,
+                    description: 'Ex.: Revestimento, Estrutura, Pés, Espuma, Percinta, Forro, Fixação, Outro',
+                  },
+                  consumptionUnit: { type: Type.STRING, description: 'Ex.: m, m², un, kg, metros lineares' },
+                  requiredQuantity: { type: Type.NUMBER },
+                  justifiedLossPercent: { type: Type.NUMBER },
+                  notes: { type: Type.STRING },
+                },
+                required: ['name', 'specification', 'category', 'consumptionUnit', 'requiredQuantity'],
+              },
+            },
+          },
+          required: ['items'],
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}');
+      const items: any[] = Array.isArray(parsed.items) ? parsed.items : [];
+      if (items.length === 0) {
+        res.status(502).json({ error: 'A IA não retornou nenhum item de material. Tente novamente.' });
+        return;
+      }
+
+      const normalizeName = (s: string) => s.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+      const defaultMfg: ManufacturingProjectData = mfg || {
+        modelCode: `MOD-${attendance.attendanceNumber}`,
+        modelName: attendance.furnitureType || 'Estofado Sob Encomenda',
+        category: 'sofa',
+        version: 'v1.0-rascunho',
+        isDraft: true,
+        unitDimensions: {
+          widthMm: 1600,
+          depthMm: 880,
+          heightMm: 920,
+          seatHeightMm: 450,
+          source: 'proposta_pendente',
+        },
+        components: [],
+        materialRequirements: [],
+        assemblyManual: {
+          version: 'v1.0-rascunho',
+          isDraft: true,
+          modelCode: `MOD-${attendance.attendanceNumber}`,
+          modelName: attendance.furnitureType || 'Estofado Sob Encomenda',
+          status: 'rascunho_tecnico',
+          lastUpdatedAt: now,
+          referenceImages: [],
+          steps: [],
+          materialsAndTools: [],
+          generalPreparationNotes: '',
+          finalInspectionCriteria: '',
+        },
+        qualityCheckpoints: [],
+        technicalNotes: '',
+      };
+
+      const previousByName = new Map(
+        (defaultMfg.materialRequirements || []).map((it) => [normalizeName(it.materialName || it.name || ''), it])
+      );
+
+      const nextMaterials: ManufacturingMaterialRequirement[] = items.map((it, idx) => {
+        const name = String(it.name || `Material ${idx + 1}`);
+        const matchedCatalog = store.materials.find(
+          (cat) =>
+            normalizeName(cat.name) === normalizeName(name) ||
+            normalizeName(cat.name).includes(normalizeName(name)) ||
+            normalizeName(name).includes(normalizeName(cat.name))
+        );
+        const prev = previousByName.get(normalizeName(name));
+        const qty = Number(it.requiredQuantity) || 0;
+        const unitCostCents = matchedCatalog ? matchedCatalog.unitCostCents : null;
+
+        return {
+          id: prev?.id || `matreq-${Date.now()}-${idx}`,
+          materialId: matchedCatalog?.id,
+          materialCode: matchedCatalog?.code,
+          materialName: name,
+          name,
+          category: matchedCatalog?.category,
+          specification: it.specification || matchedCatalog?.specification || '',
+          unit: it.consumptionUnit || matchedCatalog?.unit || 'un',
+          consumptionUnit: it.consumptionUnit || matchedCatalog?.unit || 'un',
+          quantityPerUnit: qty,
+          totalOrderRequirement: qty,
+          totalRequired: qty,
+          justifiedLossPercent: typeof it.justifiedLossPercent === 'number' ? it.justifiedLossPercent : undefined,
+          scrapLossPercentage: typeof it.justifiedLossPercent === 'number' ? it.justifiedLossPercent : undefined,
+          physicalStock: matchedCatalog?.physicalStock ?? 0,
+          reservedStock: matchedCatalog?.reservedStock ?? 0,
+          availableStock: Math.max(0, (matchedCatalog?.physicalStock ?? 0) - (matchedCatalog?.reservedStock ?? 0)),
+          unitCostCents: unitCostCents ?? undefined,
+          totalCostCents: unitCostCents != null ? Math.round(unitCostCents * qty) : undefined,
+          source: matchedCatalog ? 'informado_oficina' : 'proposta_pendente',
+          notes: it.notes || undefined,
+          // Preserva a conferência de compra já feita ao regenerar a lista.
+          purchased: prev?.purchased,
+          purchasedAt: prev?.purchasedAt,
+          purchasedBy: prev?.purchasedBy,
+          actualUnitCostCents: prev?.actualUnitCostCents,
+          actualTotalCostCents: prev?.actualTotalCostCents,
+          purchaseNotes: prev?.purchaseNotes,
+        };
+      });
+
+      defaultMfg.materialRequirements = nextMaterials;
+      attendance.manufacturingData = defaultMfg;
+      attendance.updatedAt = now;
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor: 'Lucas (Projetos & Fabricação — IA)',
+        stage: 'Lista de materiais de fabricação',
+        action: 'Lista de compras gerada/atualizada por IA',
+        details: `${nextMaterials.length} item(ns) na lista de materiais do pedido.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+
+      res.json({ ok: true, order: attendance, manufacturingData: attendance.manufacturingData });
+    } catch (err) {
+      console.error('Erro ao gerar lista de materiais de fabricação:', err);
+      res.status(500).json({ error: 'Erro ao gerar lista de materiais de fabricação.' });
+    }
+  });
+
   // Pedro envia um pedido de compra formal e estruturado para a Ana (Compras & Suprimentos),
   // a partir da lista de materiais vigente — nunca monta um pacote vazio ou inventado.
   app.post('/api/attendances/:id/purchase-requests', (req, res) => {

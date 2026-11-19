@@ -1991,6 +1991,15 @@ export interface ManufacturingMaterialRequirement {
   // Memória do cálculo quando source === 'calculado_tecnico' (ex.: estimativa de
   // tecido/espuma a partir da ficha de visita técnica) — nunca um número solto.
   calculationMemo?: string;
+
+  // Conferência de compra real (quadro de checkbox do Lucas) — preenchido
+  // manualmente quando o item é de fato comprado; nunca inventado pela IA.
+  purchased?: boolean;
+  purchasedAt?: string;
+  purchasedBy?: string;
+  actualUnitCostCents?: number | null;
+  actualTotalCostCents?: number | null;
+  purchaseNotes?: string;
 }
 
 export interface AssemblyManualStep {

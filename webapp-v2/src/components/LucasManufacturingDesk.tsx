@@ -27,6 +27,7 @@ import {
   WorkshopSettings,
 } from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
+import { generateFabricationShoppingListPdf } from '../utils/pdfGenerator';
 import { AgentPortrait } from './AgentPortrait';
 import { ProductTechnicalEvaluationForm } from './ProductTechnicalEvaluationForm';
 import { InspectionSheetForm } from './InspectionSheetForm';
@@ -169,6 +170,57 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
       approvedByResponsible: 'Oficina Técnica Castros',
       approvedAt: new Date().toISOString(),
     };
+    handleSaveProject(next);
+  };
+
+  const [isGeneratingList, setIsGeneratingList] = useState(false);
+  const [generateListError, setGenerateListError] = useState<string | null>(null);
+
+  const handleGenerateFabricationMaterialsList = async () => {
+    setIsGeneratingList(true);
+    setGenerateListError(null);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/materials-list/prepare-fabrication`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Falha ao gerar a lista de materiais.');
+      }
+      onUpdateOrder(data.order);
+    } catch (err: any) {
+      setGenerateListError(err.message || 'Erro ao gerar a lista de materiais.');
+    } finally {
+      setIsGeneratingList(false);
+    }
+  };
+
+  const handleTogglePurchased = (id: string, checked: boolean) => {
+    const next = { ...project };
+    next.materialRequirements = (next.materialRequirements || []).map((m) =>
+      m.id === id
+        ? {
+            ...m,
+            purchased: checked,
+            purchasedAt: checked ? new Date().toISOString() : undefined,
+          }
+        : m
+    );
+    handleSaveProject(next);
+  };
+
+  const handleUpdateActualCost = (id: string, actualUnitCostCentsInput: number | null) => {
+    const next = { ...project };
+    next.materialRequirements = (next.materialRequirements || []).map((m) => {
+      if (m.id !== id) return m;
+      const qty = m.totalOrderRequirement || m.quantityPerUnit || m.totalRequired || m.requiredPerProduct || 0;
+      return {
+        ...m,
+        actualUnitCostCents: actualUnitCostCentsInput,
+        actualTotalCostCents: actualUnitCostCentsInput != null ? Math.round(actualUnitCostCentsInput * qty) : null,
+      };
+    });
     handleSaveProject(next);
   };
 
@@ -561,9 +613,9 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                 compara o consumo total com estoque físico e reservas existentes, arredondando para unidades
                 comerciais.
               </div>
-              <div className="shrink-0 flex items-center gap-2">
+              <div className="shrink-0 flex flex-col items-end gap-1">
                 <span className="font-bold text-[#181512]">
-                  Custo Total de Consumo Estimado:{' '}
+                  Total Estimado:{' '}
                   {formatCurrencyBRL(
                     (project.materialRequirements || []).reduce(
                       (acc, m) =>
@@ -574,8 +626,47 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                     )
                   )}
                 </span>
+                <span className="font-bold text-emerald-800">
+                  Total Já Comprado (Real):{' '}
+                  {formatCurrencyBRL(
+                    (project.materialRequirements || [])
+                      .filter((m) => m.purchased)
+                      .reduce((acc, m) => acc + (m.actualTotalCostCents || 0), 0)
+                  )}
+                </span>
               </div>
             </div>
+
+            {order.orderType === 'Fabricação' && (
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleGenerateFabricationMaterialsList}
+                  disabled={isGeneratingList}
+                  className="px-3.5 py-2 rounded-lg bg-[#181512] hover:bg-[#2E2722] disabled:opacity-60 text-xs font-semibold text-white flex items-center gap-1.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                  {isGeneratingList
+                    ? 'Gerando lista com IA…'
+                    : (project.materialRequirements || []).length > 0
+                      ? 'Atualizar Lista de Compras com IA'
+                      : 'Gerar Lista de Compras com IA'}
+                </button>
+                {(project.materialRequirements || []).length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => generateFabricationShoppingListPdf(order, settings)}
+                    className="px-3.5 py-2 rounded-lg bg-white hover:bg-[#FAF7F2] border border-[#D6CFC5] text-xs font-semibold text-[#181512] flex items-center gap-1.5"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    Imprimir / Exportar Lista
+                  </button>
+                )}
+                {generateListError && (
+                  <span className="text-xs text-red-700 font-medium">{generateListError}</span>
+                )}
+              </div>
+            )}
 
             <div className="overflow-x-auto border border-[#E5DEC9] rounded-xl">
               <table className="w-full text-left border-collapse text-xs">
@@ -589,6 +680,8 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                     <th className="py-2.5 px-3 text-right">Estoque Disp.</th>
                     <th className="py-2.5 px-3 text-right font-bold text-amber-300">Necessidade Compra</th>
                     <th className="py-2.5 px-3">Status</th>
+                    <th className="py-2.5 px-3 text-center">Comprado</th>
+                    <th className="py-2.5 px-3 text-right">Preço Real / Total</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#EFECE6]">
@@ -598,7 +691,7 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                     const toBuy = Math.max(0, reqQty - availableStock);
 
                     return (
-                      <tr key={mat.id} className="hover:bg-[#FAF7F2]">
+                      <tr key={mat.id} className={mat.purchased ? 'bg-emerald-50/60' : 'hover:bg-[#FAF7F2]'}>
                         <td className="py-2 px-3 font-mono font-bold text-[#181512]">{mat.materialCode}</td>
                         <td className="py-2 px-3">
                           <p className="font-semibold text-[#181512]">{mat.materialName}</p>
@@ -628,9 +721,48 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                           {toBuy > 0 ? `${toBuy.toFixed(1)} ${mat.unit}` : 'Suficiente em estoque'}
                         </td>
                         <td className="py-2 px-3">{getSourceBadge(mat.source)}</td>
+                        <td className="py-2 px-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={!!mat.purchased}
+                            onChange={(e) => handleTogglePurchased(mat.id, e.target.checked)}
+                            className="w-4 h-4 accent-emerald-700 cursor-pointer"
+                            title="Marcar como comprado"
+                          />
+                        </td>
+                        <td className="py-2 px-3 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="Preço real (R$)"
+                            defaultValue={
+                              mat.actualUnitCostCents != null ? (mat.actualUnitCostCents / 100).toFixed(2) : ''
+                            }
+                            onBlur={(e) => {
+                              const val = e.target.value.trim();
+                              handleUpdateActualCost(mat.id, val === '' ? null : Math.round(parseFloat(val) * 100));
+                            }}
+                            className="w-24 px-1.5 py-1 rounded border border-[#D6CFC5] text-right text-xs"
+                          />
+                          {mat.actualTotalCostCents != null && (
+                            <p className="text-[10px] text-emerald-800 font-semibold mt-0.5">
+                              Total: {formatCurrencyBRL(mat.actualTotalCostCents)}
+                            </p>
+                          )}
+                        </td>
                       </tr>
                     );
                   })}
+                  {(project.materialRequirements || []).length === 0 && (
+                    <tr>
+                      <td colSpan={10} className="py-6 px-3 text-center text-[#6B6257]">
+                        Nenhum item na lista ainda.{' '}
+                        {order.orderType === 'Fabricação'
+                          ? 'Use o botão "Gerar Lista de Compras com IA" acima.'
+                          : 'Esta aba é para pedidos de Fabricação Nova.'}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

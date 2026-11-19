@@ -1187,6 +1187,191 @@ export async function generateShoppingListPdf(
   doc.save(`Lista_Compras_${attendance.attendanceNumber}_rev${materialsList.revision}.pdf`);
 }
 
+export function generateFabricationShoppingListPdf(
+  order: AttendanceRecord,
+  settings: WorkshopSettings
+): void {
+  const items: ManufacturingMaterialRequirement[] = order.manufacturingData?.materialRequirements || [];
+
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  doc.setFillColor(24, 21, 18);
+  doc.rect(15, 14, 180, 24, 'F');
+  drawCastrosLogoMark(doc, 23.5, 26, 6.5);
+  doc.setTextColor(249, 246, 240);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.text(
+    `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — LISTA DE COMPRAS (FABRICAÇÃO)`,
+    34,
+    23
+  );
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(212, 185, 140);
+  doc.text(
+    `Pedido: ${order.attendanceNumber}   |   Emissão: ${new Date().toLocaleDateString('pt-BR')}`,
+    34,
+    30
+  );
+  doc.text(`Cliente: ${formatMissingText(order.clientName)}`, 34, 35);
+
+  let cursorY = 46;
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: {
+      fontSize: 8.5,
+      cellPadding: 2.5,
+      textColor: [28, 25, 23],
+      lineColor: [220, 214, 205],
+    },
+    headStyles: {
+      fillColor: [45, 40, 35],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+    },
+    body: [
+      ['Cliente', formatMissingText(order.clientName), 'Móvel', formatMissingText(order.furnitureType)],
+      [
+        'Total Estimado (App)',
+        formatCurrencyBRL(
+          items.reduce(
+            (acc, m) =>
+              acc + (m.unitCostCents || 0) * (m.totalOrderRequirement || m.quantityPerUnit || m.totalRequired || m.requiredPerProduct || 0),
+            0
+          )
+        ),
+        'Total Já Comprado (Real)',
+        formatCurrencyBRL(items.filter((m) => m.purchased).reduce((acc, m) => acc + (m.actualTotalCostCents || 0), 0)),
+      ],
+    ],
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
+
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.5);
+  doc.setTextColor(87, 83, 78);
+  doc.text(
+    'Preço só aparece quando vem do catálogo real ou já foi conferido na compra — nunca inventado pelo app.',
+    15,
+    cursorY
+  );
+  cursorY += 5;
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: {
+      fontSize: 8,
+      cellPadding: 2.5,
+      textColor: [28, 25, 23],
+      lineColor: [220, 214, 205],
+      overflow: 'linebreak',
+    },
+    headStyles: {
+      fillColor: [45, 40, 35],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      fontSize: 7.5,
+    },
+    head: [
+      [
+        'Material e Especificação',
+        'Qtd. Prevista',
+        'Unid.',
+        '✓ Comprado',
+        'Preço Unit. Real',
+        'Total Real',
+      ],
+    ],
+    body: items.map((item) => {
+      const qty = item.totalOrderRequirement || item.quantityPerUnit || item.totalRequired || item.requiredPerProduct || 0;
+      return [
+        {
+          content: `${item.materialName || item.name || 'Material'}${item.specification ? `\n${item.specification}` : ''}${
+            item.unitCostCents != null
+              ? `\n(estimado no app: ${formatCurrencyBRL(item.unitCostCents)}/${item.unit || item.consumptionUnit || 'un'})`
+              : ''
+          }`,
+        },
+        qty ? `${qty}` : 'A definir',
+        item.unit || item.consumptionUnit || 'un',
+        item.purchased ? 'SIM' : '',
+        item.actualUnitCostCents != null ? formatCurrencyBRL(item.actualUnitCostCents) : '',
+        item.actualTotalCostCents != null ? formatCurrencyBRL(item.actualTotalCostCents) : '',
+      ];
+    }),
+    columnStyles: {
+      0: { cellWidth: 70 },
+      1: { cellWidth: 24, halign: 'right' },
+      2: { cellWidth: 16 },
+      3: { cellWidth: 20, halign: 'center', minCellHeight: 10 },
+      4: { cellWidth: 25, halign: 'right', minCellHeight: 10 },
+      5: { cellWidth: 25, halign: 'right', minCellHeight: 10 },
+    },
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 4;
+
+  if (items.length === 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.text('Nenhum item na lista ainda — gere a lista com IA na mesa do Lucas antes de imprimir.', 15, cursorY);
+    cursorY += 6;
+  }
+
+  if (cursorY > 230) {
+    doc.addPage();
+    cursorY = 20;
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text('CONFERÊNCIA DA COMPRA (preencher na loja ou ao retornar)', 15, cursorY);
+  cursorY += 3;
+
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 3, textColor: [28, 25, 23], minCellHeight: 8 },
+    body: [
+      ['Loja / Fornecedor', '', 'Data da Compra', ''],
+      ['Nº da Nota ou Recibo', '', 'Forma de Pagamento', ''],
+      ['Frete (R$)', '', 'Desconto (R$)', ''],
+      ['Outros Valores Identificados (R$)', '', 'Total Pago (R$)', ''],
+    ],
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 5;
+
+  if (cursorY > 255) {
+    doc.addPage();
+    cursorY = 20;
+  }
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.text('Assinatura do Comprador: _______________________________________', 15, cursorY);
+  doc.text('Data: ____/____/______', 150, cursorY);
+  cursorY += 8;
+
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7);
+  doc.setTextColor(120, 113, 108);
+  doc.text(`Pedido de fabricação: ${order.attendanceNumber}.`, 15, cursorY);
+
+  addPageNumbersAndFooter(doc, true, order.attendanceNumber);
+  doc.save(`Lista_Compras_Fabricacao_${order.attendanceNumber}.pdf`);
+}
+
 export async function generateManufacturingInternalPdf(
   attendance: AttendanceRecord,
   settings: WorkshopSettings
