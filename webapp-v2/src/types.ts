@@ -1807,8 +1807,62 @@ export interface ReadyMadeProduct {
   // capa já foi enviada para a biblioteca de campanhas da Júlia. Evita
   // duplicar ao reenviar — reenviar atualiza a mesma entrada.
   juliaPhotoId?: string;
+  // Manual de execução e vista explodida (layout) gerados por IA a partir
+  // do cadastro — pro Henrique imprimir e levar pra fábrica. Gerados uma
+  // vez por produto e reaproveitados em toda ordem de produção futura;
+  // histórico de versões, nunca sobrescreve a versão já aprovada.
+  manuals?: ReadyMadeProductManual[];
+  explodedViews?: ReadyMadeExplodedView[];
   createdAt: string;
   updatedAt: string;
+}
+
+// Item da lista de peças do manual — mesmo princípio de nunca inventar preço
+// usado em toda a sessão: unitCostCents só existe quando o nome bate com um
+// item real do catálogo de matéria-prima (store.materials).
+export interface ReadyMadeProductManualItem {
+  id: string;
+  name: string;
+  specification?: string;
+  category: string; // Ex.: Revestimento, Estrutura, Pés, Espuma, Fixação, Outro
+  consumptionUnit: string;
+  requiredQuantity: number;
+  justifiedLossPercent?: number;
+  notes?: string;
+  materialCatalogItemId?: string;
+  unitCostCents?: number | null;
+}
+
+export interface ReadyMadeProductManual {
+  id: string;
+  productId: string;
+  version: number; // nova versão a cada regeneração após já aprovado
+  status: 'rascunho' | 'aprovado';
+  partsList: ReadyMadeProductManualItem[];
+  cuttingPlanNote: string;
+  fabricGrainDirection?: 'Vertical' | 'Horizontal' | 'Indiferente';
+  sewingInstructions: { seamType?: string; thread?: string; stitch?: string; marginsNote?: string; notes?: string };
+  steps: string[]; // passo a passo de montagem
+  generatedAt: string;
+  approvedBy?: string;
+  approvedAt?: string;
+}
+
+export type ReadyMadeExplodedViewStatus = 'gerada' | 'aprovada' | 'rejeitada';
+
+export interface ReadyMadeExplodedView {
+  id: string;
+  productId: string;
+  version: number;
+  status: ReadyMadeExplodedViewStatus;
+  sourcePhotoUrls: string[];
+  generatedImageUrl?: string;
+  generationPrompt: string;
+  generationError?: string;
+  rejectedReason?: string;
+  createdAt: string;
+  approvedBy?: string;
+  approvedAt?: string;
 }
 
 export type ProductSalePaymentMethod = 'Pix' | 'Dinheiro' | 'Cartão' | 'Transferência';

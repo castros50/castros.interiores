@@ -183,6 +183,9 @@ import type {
   ProductionOrderStatus,
   ProductionOrderPriority,
   StockEntryRecord,
+  ReadyMadeProductManual,
+  ReadyMadeProductManualItem,
+  ReadyMadeExplodedView,
 } from './src/types.ts';
 import { INSPECTION_COMPONENT_LABELS, INSPECTION_MARKING_LABELS } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
@@ -9554,6 +9557,333 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Erro ao enviar foto para a Júlia.',
       });
+    }
+  });
+
+  // ----------------------------------------------------------------------
+  // MANUAL DE EXECUÇÃO + VISTA EXPLODIDA DO PRODUTO PRONTO (Henrique) —
+  // gerados por IA a partir do cadastro, reaproveitados em toda ordem de
+  // produção futura do mesmo produto. Sempre nascem como rascunho/gerada;
+  // só valem como liberados depois de uma aprovação humana explícita —
+  // mesmo princípio usado em todo o resto do sistema (execution-manual,
+  // exploded-view do pedido de cliente, plano técnico, etc.).
+  // ----------------------------------------------------------------------
+
+  app.post('/api/juliano/products/:id/manual/prepare', async (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === req.params.id);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+
+      const dims =
+        product.widthCm || product.heightCm || product.depthCm
+          ? `${product.widthCm ?? '?'}cm x ${product.heightCm ?? '?'}cm x ${product.depthCm ?? '?'}cm (L x A x P)`
+          : 'Não cadastradas';
+
+      const catalogLines = store.materials
+        .slice(0, 80)
+        .map(
+          (m) =>
+            `- ${m.name}${m.specification ? ` (${m.specification})` : ''} | unidade: ${m.unit} | estoque: ${m.physicalStock ?? 0} | preço real: R$ ${(m.unitCostCents / 100).toFixed(2)}/${m.unit}`
+        )
+        .join('\n');
+
+      const context = `
+DADOS DO PRODUTO JÁ CADASTRADO NO CATÁLOGO (não invente nada além disto):
+- Nome: ${product.name}
+- Categoria: ${product.category || 'Não informada'}
+- Cor: ${product.color || 'Não informada'}
+- Tamanho: ${product.size || 'Não informado'}
+- Estilo: ${product.style || 'Não informado'}
+- Medidas (L x A x P): ${dims}
+- Modelo/Referência: ${product.model || 'Não informado'}
+- Descrição: ${product.description || 'Sem descrição cadastrada'}
+
+CATÁLOGO REAL DE MATÉRIA-PRIMA DA OFICINA (use estes nomes e preços quando o material corresponder; NUNCA invente preço para um item que não está nesta lista — deixe sem preço):
+${catalogLines || '(catálogo vazio no momento)'}
+
+TAREFA:
+Monte o MANUAL DE EXECUÇÃO completo deste produto pronto (revestimento, estrutura/madeira, pés, espumas, percinta, forro, itens de fixação e qualquer outro insumo necessário para fabricar do zero), com plano de corte, direção do fio do tecido quando fizer sentido, instruções de costura e um passo a passo de montagem. Nunca invente preço — preço só existe se o nome do item corresponder a algo do catálogo acima. Nunca invente medida fora do que está cadastrado.`;
+
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
+      const systemInstruction = `Você é o AGENTE HENRIQUE — Gerente de Produção e Controle de Estoque da Castros Interiores.
+Sua tarefa agora é montar o manual de execução de um produto pronto do catálogo, com base só no que já está cadastrado. Você é técnico e meticuloso. Nunca inventa preço de material fora do catálogo real nem medida fora do cadastro.`;
+
+      const { response } = await generateContentWithRetryAndFallback({
+        preferredModel,
+        parts: [{ text: context }],
+        systemInstruction,
+        lockKey: `ready-made-manual:${product.id}`,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            partsList: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  specification: { type: Type.STRING },
+                  category: { type: Type.STRING },
+                  consumptionUnit: { type: Type.STRING },
+                  requiredQuantity: { type: Type.NUMBER },
+                  justifiedLossPercent: { type: Type.NUMBER },
+                  notes: { type: Type.STRING },
+                },
+                required: ['name', 'category', 'consumptionUnit', 'requiredQuantity'],
+              },
+            },
+            cuttingPlanNote: { type: Type.STRING },
+            fabricGrainDirection: { type: Type.STRING, description: "'Vertical', 'Horizontal' ou 'Indiferente'" },
+            sewingInstructions: {
+              type: Type.OBJECT,
+              properties: {
+                seamType: { type: Type.STRING },
+                thread: { type: Type.STRING },
+                stitch: { type: Type.STRING },
+                marginsNote: { type: Type.STRING },
+                notes: { type: Type.STRING },
+              },
+            },
+            steps: { type: Type.ARRAY, items: { type: Type.STRING } },
+          },
+          required: ['partsList', 'cuttingPlanNote', 'steps'],
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}');
+      const rawItems: any[] = Array.isArray(parsed.partsList) ? parsed.partsList : [];
+      if (rawItems.length === 0) {
+        res.status(502).json({ error: 'A IA não retornou nenhum item para o manual. Tente novamente.' });
+        return;
+      }
+
+      const normalizeName = (s: string) => s.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      const partsList: ReadyMadeProductManualItem[] = rawItems.map((it, idx) => {
+        const matched = store.materials.find(
+          (cat) =>
+            normalizeName(cat.name) === normalizeName(String(it.name || '')) ||
+            normalizeName(cat.name).includes(normalizeName(String(it.name || ''))) ||
+            normalizeName(String(it.name || '')).includes(normalizeName(cat.name))
+        );
+        return {
+          id: `rmi-${Date.now()}-${idx}`,
+          name: String(it.name || 'Item'),
+          specification: it.specification ? String(it.specification) : undefined,
+          category: String(it.category || 'Outro'),
+          consumptionUnit: String(it.consumptionUnit || 'un'),
+          requiredQuantity: typeof it.requiredQuantity === 'number' ? it.requiredQuantity : 0,
+          justifiedLossPercent: typeof it.justifiedLossPercent === 'number' ? it.justifiedLossPercent : undefined,
+          notes: it.notes ? String(it.notes) : undefined,
+          materialCatalogItemId: matched?.id,
+          unitCostCents: matched ? matched.unitCostCents : null,
+        };
+      });
+
+      const now = new Date().toISOString();
+      if (!product.manuals) product.manuals = [];
+      const latest = product.manuals.slice().sort((a, b) => b.version - a.version)[0];
+
+      let manual: ReadyMadeProductManual;
+      if (latest && latest.status === 'rascunho') {
+        latest.partsList = partsList;
+        latest.cuttingPlanNote = String(parsed.cuttingPlanNote || 'Pendente de medição.');
+        latest.fabricGrainDirection = parsed.fabricGrainDirection || undefined;
+        latest.sewingInstructions = parsed.sewingInstructions || {};
+        latest.steps = Array.isArray(parsed.steps) ? parsed.steps.map(String) : [];
+        latest.generatedAt = now;
+        manual = latest;
+      } else {
+        manual = {
+          id: `rmm-${Date.now()}`,
+          productId: product.id,
+          version: (latest?.version || 0) + 1,
+          status: 'rascunho',
+          partsList,
+          cuttingPlanNote: String(parsed.cuttingPlanNote || 'Pendente de medição.'),
+          fabricGrainDirection: parsed.fabricGrainDirection || undefined,
+          sewingInstructions: parsed.sewingInstructions || {},
+          steps: Array.isArray(parsed.steps) ? parsed.steps.map(String) : [],
+          generatedAt: now,
+        };
+        product.manuals.push(manual);
+      }
+
+      product.updatedAt = now;
+      saveStore(store);
+      res.json({ ok: true, product, manual });
+    } catch (error) {
+      console.error('Erro ao gerar manual de execução do produto:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao gerar manual de execução.',
+      });
+    }
+  });
+
+  app.post('/api/juliano/products/:id/manual/:manualId/approve', (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === req.params.id);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+      const manual = (product.manuals || []).find((m) => m.id === req.params.manualId);
+      if (!manual) {
+        res.status(404).json({ error: 'Manual não encontrado.' });
+        return;
+      }
+      const { approvedBy } = req.body as { approvedBy?: string };
+      if (!approvedBy?.trim()) {
+        res.status(400).json({ error: 'Informe quem está aprovando o manual.' });
+        return;
+      }
+      manual.status = 'aprovado';
+      manual.approvedBy = approvedBy.trim();
+      manual.approvedAt = new Date().toISOString();
+      saveStore(store);
+      res.json({ ok: true, product, manual });
+    } catch (error) {
+      console.error('Erro ao aprovar manual de execução:', error);
+      res.status(500).json({ error: 'Erro ao aprovar manual de execução.' });
+    }
+  });
+
+  const READY_MADE_EXPLODED_VIEW_PROMPT =
+    'Crie uma vista explodida ilustrativa deste mesmo produto novo de showroom. ' +
+    'Separe visualmente os componentes identificáveis, mantendo sua relação de posição e montagem. ' +
+    'Preserve o acabamento, cor e material observados nas fotos. ' +
+    'Não apresente componentes internos desconhecidos como se tivessem sido fotografados ou inspecionados. ' +
+    'Não transforme o produto em algo diferente do que já é.';
+
+  app.post('/api/juliano/products/:id/exploded-view/generate', async (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === req.params.id);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+      if (!product.photoUrls || product.photoUrls.length === 0) {
+        res.status(400).json({ error: 'Este produto ainda não tem nenhuma foto cadastrada — cadastre pelo menos uma foto antes de gerar a vista explodida.' });
+        return;
+      }
+      const { createdBy } = req.body as { createdBy?: string };
+      const sourcePhotoUrls = product.photoUrls.slice(0, 3);
+
+      const referencePhotos: Array<{ mimeType: string; data: string }> = [];
+      for (const url of sourcePhotoUrls) {
+        const resolved = resolvePhotoBase64(url);
+        if (resolved) referencePhotos.push(resolved);
+      }
+      if (referencePhotos.length === 0) {
+        res.status(400).json({ error: 'Não foi possível ler os arquivos das fotos deste produto.' });
+        return;
+      }
+
+      let generatedImageUrl: string | undefined;
+      let generationError: string | undefined;
+      try {
+        const { imageBase64, imageMimeType } = await generateExplodedViewImage({
+          prompt: READY_MADE_EXPLODED_VIEW_PROMPT,
+          referencePhotos,
+        });
+        const ext = imageMimeType.includes('png') ? '.png' : imageMimeType.includes('webp') ? '.webp' : '.jpg';
+        const fileName = `explodedview-juliano-${product.id}-${Date.now()}${ext}`;
+        savePhotoFile(fileName, Buffer.from(imageBase64, 'base64'), imageMimeType);
+        generatedImageUrl = `/api/photos/${fileName}`;
+      } catch (genError) {
+        generationError = genError instanceof Error ? genError.message : 'Erro ao gerar a vista explodida.';
+      }
+
+      if (!generatedImageUrl) {
+        res.status(502).json({ error: generationError || 'Erro ao gerar a vista explodida.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      if (!product.explodedViews) product.explodedViews = [];
+      const previousVersion = product.explodedViews
+        .slice()
+        .sort((a, b) => b.version - a.version)[0];
+      const view: ReadyMadeExplodedView = {
+        id: `rev-${Date.now()}`,
+        productId: product.id,
+        version: (previousVersion?.version || 0) + 1,
+        status: 'gerada',
+        sourcePhotoUrls,
+        generatedImageUrl,
+        generationPrompt: READY_MADE_EXPLODED_VIEW_PROMPT,
+        createdAt: now,
+      };
+      product.explodedViews.push(view);
+      product.updatedAt = now;
+      saveStore(store);
+      res.json({ ok: true, product, view, createdBy });
+    } catch (error) {
+      console.error('Erro ao gerar vista explodida do produto:', error);
+      res.status(500).json({ error: 'Erro ao gerar vista explodida.' });
+    }
+  });
+
+  app.post('/api/juliano/products/:id/exploded-view/:simId/approve', (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === req.params.id);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+      const view = (product.explodedViews || []).find((v) => v.id === req.params.simId);
+      if (!view) {
+        res.status(404).json({ error: 'Vista explodida não encontrada.' });
+        return;
+      }
+      const { approvedBy } = req.body as { approvedBy?: string };
+      if (!approvedBy?.trim()) {
+        res.status(400).json({ error: 'Informe quem está aprovando a vista explodida.' });
+        return;
+      }
+      view.status = 'aprovada';
+      view.approvedBy = approvedBy.trim();
+      view.approvedAt = new Date().toISOString();
+      saveStore(store);
+      res.json({ ok: true, product, view });
+    } catch (error) {
+      console.error('Erro ao aprovar vista explodida:', error);
+      res.status(500).json({ error: 'Erro ao aprovar vista explodida.' });
+    }
+  });
+
+  app.post('/api/juliano/products/:id/exploded-view/:simId/reject', (req, res) => {
+    try {
+      const store = loadStore();
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === req.params.id);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+      const view = (product.explodedViews || []).find((v) => v.id === req.params.simId);
+      if (!view) {
+        res.status(404).json({ error: 'Vista explodida não encontrada.' });
+        return;
+      }
+      const { rejectedReason } = req.body as { rejectedReason?: string };
+      view.status = 'rejeitada';
+      view.rejectedReason = rejectedReason?.trim() || undefined;
+      saveStore(store);
+      res.json({ ok: true, product, view });
+    } catch (error) {
+      console.error('Erro ao rejeitar vista explodida:', error);
+      res.status(500).json({ error: 'Erro ao rejeitar vista explodida.' });
     }
   });
 

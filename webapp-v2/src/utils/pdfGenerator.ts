@@ -19,6 +19,9 @@ import {
   AttendancePhoto,
   EXPLODED_VIEW_SIMULATION_CAPTION,
   ProductionOrder,
+  ReadyMadeProduct,
+  ReadyMadeProductManual,
+  ReadyMadeExplodedView,
 } from '../types';
 import {
   calculateBudgetSummary,
@@ -1513,6 +1516,269 @@ export function generateProductionOrderPdf(
   }
 
   doc.save(`Ordem_Producao_${order.orderNumber}.pdf`);
+}
+
+// Vista explodida do produto pronto (Henrique) — mesmo layout visual da vista
+// explodida de pedido de cliente (generateExplodedViewPdf), adaptado para
+// ReadyMadeProduct/ReadyMadeExplodedView.
+export async function generateReadyMadeExplodedViewPdf(
+  product: ReadyMadeProduct,
+  view: ReadyMadeExplodedView,
+  settings: WorkshopSettings
+): Promise<void> {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+  doc.setFillColor(24, 21, 18);
+  doc.rect(15, 14, 180, 24, 'F');
+  drawCastrosLogoMark(doc, 23.5, 26, 6.5);
+  doc.setTextColor(249, 246, 240);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12.5);
+  doc.text(`${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — VISTA EXPLODIDA (PRODUTO)`, 34, 23);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(212, 185, 140);
+  doc.text(
+    `Produto: ${product.name}   |   Versão: v${view.version}   |   ${new Date().toLocaleDateString('pt-BR')}`,
+    34,
+    30.5
+  );
+
+  let cursorY = 44;
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 2.5, textColor: [28, 25, 23] },
+    body: [
+      ['Produto', product.name],
+      ['Código', formatMissingText(product.code)],
+      ['Modelo', formatMissingText(product.model)],
+      [
+        'Status',
+        view.status === 'aprovada'
+          ? 'Aprovada'
+          : view.status === 'rejeitada'
+          ? 'Rejeitada'
+          : 'Gerada (pendente de revisão)',
+      ],
+    ],
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+
+  if (view.generatedImageUrl) {
+    const loaded = await loadProportionalImage(view.generatedImageUrl);
+    if (loaded) {
+      const maxW = 180;
+      let w = maxW;
+      let h = (loaded.height / loaded.width) * w;
+      if (cursorY + h > 250) {
+        h = 250 - cursorY;
+        w = (loaded.width / loaded.height) * h;
+      }
+      doc.addImage(loaded.dataUrl, 'JPEG', 15, cursorY, w, h);
+      cursorY += h + 4;
+    }
+  }
+
+  doc.setFillColor(255, 243, 205);
+  doc.rect(15, cursorY, 180, 10, 'F');
+  doc.setDrawColor(154, 113, 56);
+  doc.setLineWidth(0.3);
+  doc.rect(15, cursorY, 180, 10, 'S');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(120, 53, 15);
+  doc.text(EXPLODED_VIEW_SIMULATION_CAPTION, 105, cursorY + 6.5, { align: 'center', maxWidth: 176 });
+  cursorY += 16;
+
+  if (view.rejectedReason) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(153, 27, 27);
+    doc.text(`Versão rejeitada: ${view.rejectedReason}`, 15, cursorY, { maxWidth: 180 });
+    cursorY += 8;
+  }
+
+  const footerY = Math.min(cursorY + 10, 280);
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.5);
+  doc.setTextColor(120, 53, 15);
+  doc.text(
+    'Simulação ilustrativa gerada por IA a partir das fotos reais já cadastradas do produto — nunca inventa componente interno não observável.',
+    15,
+    footerY,
+    { maxWidth: 180 }
+  );
+
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setDrawColor(215, 208, 198);
+    doc.line(15, 282, 195, 282);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(100, 95, 90);
+    doc.text(`Castros Interiores — Produto ${product.name}`, 15, 286.5);
+    doc.text(`Página ${i} de ${pageCount}`, 195, 286.5, { align: 'right' });
+  }
+
+  doc.save(`Vista_Explodida_${product.name.replace(/\s+/g, '_')}_v${view.version}.pdf`);
+}
+
+// Manual de execução do produto pronto (Henrique) — mesmo layout visual do
+// manual de execução de pedido de cliente (generateExecutionManualPdf),
+// adaptado para ReadyMadeProduct/ReadyMadeProductManual (gerado por IA a
+// partir só do que já está cadastrado, nunca inventa preço fora do catálogo).
+export function generateReadyMadeManualPdf(
+  product: ReadyMadeProduct,
+  manual: ReadyMadeProductManual,
+  settings: WorkshopSettings
+): void {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+  doc.setFillColor(24, 21, 18);
+  doc.rect(0, 0, 210, 297, 'F');
+  drawCastrosLogoMark(doc, 105, 90, 22);
+  doc.setTextColor(249, 246, 240);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(20);
+  doc.text('MANUAL DE EXECUÇÃO DO PRODUTO', 105, 140, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(12);
+  doc.text(product.name, 105, 152, { align: 'center' });
+  doc.setFontSize(10);
+  doc.setTextColor(212, 185, 140);
+  doc.text(`Código: ${product.code || 'Não informado'}`, 105, 164, { align: 'center' });
+  doc.text(
+    `Versão: v${manual.version} — ${manual.status === 'aprovado' ? 'APROVADO PARA EXECUÇÃO' : 'RASCUNHO'}`,
+    105,
+    171,
+    { align: 'center' }
+  );
+  if (manual.status === 'aprovado' && manual.approvedBy) {
+    doc.text(
+      `Aprovado por ${manual.approvedBy} em ${manual.approvedAt ? new Date(manual.approvedAt).toLocaleDateString('pt-BR') : ''}`,
+      105,
+      178,
+      { align: 'center' }
+    );
+  }
+  if (manual.status !== 'aprovado') {
+    doc.setTextColor(214, 158, 46);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('RASCUNHO — AINDA NÃO LIBERADO PARA EXECUÇÃO', 105, 195, { align: 'center' });
+  }
+
+  doc.addPage();
+  let cursorY = 20;
+
+  const sectionTitle = (title: string) => {
+    if (cursorY > 265) {
+      doc.addPage();
+      cursorY = 20;
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(28, 25, 23);
+    doc.text(title, 15, cursorY);
+    cursorY += 5;
+  };
+
+  sectionTitle('1. LISTA DE PEÇAS E MATERIAIS');
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8, cellPadding: 2.3, textColor: [28, 25, 23], overflow: 'linebreak' },
+    headStyles: { fillColor: [45, 40, 35], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.5 },
+    head: [['Item', 'Categoria', 'Quantidade', 'Unid.', 'Preço Unit. (catálogo)']],
+    body:
+      manual.partsList.length > 0
+        ? manual.partsList.map((it) => [
+            `${it.name}${it.specification ? `\n${it.specification}` : ''}`,
+            it.category,
+            `${it.requiredQuantity}${it.justifiedLossPercent ? ` (+${it.justifiedLossPercent}% perda)` : ''}`,
+            it.consumptionUnit,
+            it.unitCostCents != null ? formatCurrencyBRL(it.unitCostCents) : 'A cotar',
+          ])
+        : [['—', 'Nenhuma peça/material gerado ainda', '—', '—', '—']],
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+
+  sectionTitle('2. PLANO DE CORTE E ORIENTAÇÃO DO TECIDO');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(28, 25, 23);
+  doc.text(`Plano de corte: ${manual.cuttingPlanNote || 'Pendente.'}`, 15, cursorY, { maxWidth: 180 });
+  cursorY += 6;
+  doc.text(`Sentido da estampa/fio do tecido: ${manual.fabricGrainDirection || 'Não definido.'}`, 15, cursorY);
+  cursorY += 10;
+
+  sectionTitle('3. INSTRUÇÕES DE COSTURA');
+  const sewing = manual.sewingInstructions;
+  autoTable(doc, {
+    startY: cursorY,
+    margin: { left: 15, right: 15 },
+    theme: 'grid',
+    styles: { fontSize: 8, cellPadding: 2.3, textColor: [28, 25, 23] },
+    body: [
+      ['Tipo de costura/acabamento', sewing.seamType || 'Não definido'],
+      ['Linha', sewing.thread || 'Não definido'],
+      ['Ponto', sewing.stitch || 'Não definido'],
+      ['Margens', sewing.marginsNote || 'Não definido'],
+      ['Observações', sewing.notes || '—'],
+    ],
+  });
+  cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+
+  sectionTitle('4. SEQUÊNCIA DE MONTAGEM');
+  if (manual.steps.length === 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(120, 113, 105);
+    doc.text('Nenhuma etapa cadastrada ainda.', 15, cursorY);
+    cursorY += 8;
+  } else {
+    manual.steps.forEach((step, idx) => {
+      if (cursorY > 265) {
+        doc.addPage();
+        cursorY = 20;
+      }
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(28, 25, 23);
+      const lines = doc.splitTextToSize(`${idx + 1}. ${step}`, 180);
+      doc.text(lines, 15, cursorY);
+      cursorY += lines.length * 4.5 + 2;
+    });
+  }
+
+  const footerY = Math.min(cursorY + 6, 275);
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7);
+  doc.setTextColor(120, 113, 108);
+  doc.text(
+    'Manual gerado por IA a partir só do que já está cadastrado no produto — preço só aparece quando o item corresponde ao catálogo real de matéria-prima.',
+    15,
+    footerY,
+    { maxWidth: 180 }
+  );
+
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setDrawColor(215, 208, 198);
+    doc.line(15, 282, 195, 282);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(100, 95, 90);
+    doc.text(`Castros Interiores — Manual de Execução — ${product.name}`, 15, 286.5);
+    doc.text(`Página ${i} de ${pageCount}`, 195, 286.5, { align: 'right' });
+  }
+
+  doc.save(`Manual_Execucao_${product.name.replace(/\s+/g, '_')}_v${manual.version}.pdf`);
 }
 
 export async function generateManufacturingInternalPdf(

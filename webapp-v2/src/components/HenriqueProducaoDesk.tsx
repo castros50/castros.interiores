@@ -16,9 +16,15 @@ import {
   ProductionOrder,
   ProductionOrderPriority,
   ReadyMadeProduct,
+  ReadyMadeProductManual,
+  ReadyMadeExplodedView,
   WorkshopSettings,
 } from '../types';
-import { generateProductionOrderPdf } from '../utils/pdfGenerator';
+import {
+  generateProductionOrderPdf,
+  generateReadyMadeManualPdf,
+  generateReadyMadeExplodedViewPdf,
+} from '../utils/pdfGenerator';
 
 interface HenriqueProducaoDeskProps {
   settings: WorkshopSettings;
@@ -54,6 +60,13 @@ export const HenriqueProducaoDesk: React.FC<HenriqueProducaoDeskProps> = ({ sett
   const [manualQuantity, setManualQuantity] = useState('');
   const [manualPriority, setManualPriority] = useState<ProductionOrderPriority>('Normal');
   const [manualReason, setManualReason] = useState('');
+
+  // Manual de execução + vista explodida (layout) do produto, gerados por IA
+  const [expandedManualProductId, setExpandedManualProductId] = useState<string | null>(null);
+  const [isGeneratingManual, setIsGeneratingManual] = useState(false);
+  const [isGeneratingExplodedView, setIsGeneratingExplodedView] = useState(false);
+  const [manualApproverName, setManualApproverName] = useState('');
+  const [explodedViewApproverName, setExplodedViewApproverName] = useState('');
 
   const loadAll = async () => {
     setIsLoading(true);
@@ -178,6 +191,90 @@ export const HenriqueProducaoDesk: React.FC<HenriqueProducaoDeskProps> = ({ sett
       await loadAll();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Erro ao criar a ordem.');
+    }
+  };
+
+  const handleGenerateManual = async (product: ReadyMadeProduct) => {
+    setIsGeneratingManual(true);
+    try {
+      const res = await fetch(`/api/juliano/products/${product.id}/manual/prepare`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao gerar o manual.');
+      await loadAll();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erro ao gerar o manual.');
+    } finally {
+      setIsGeneratingManual(false);
+    }
+  };
+
+  const handleApproveManual = async (product: ReadyMadeProduct, manual: ReadyMadeProductManual) => {
+    if (!manualApproverName.trim()) {
+      alert('Informe quem está aprovando o manual.');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/juliano/products/${product.id}/manual/${manual.id}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approvedBy: manualApproverName.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao aprovar o manual.');
+      setManualApproverName('');
+      await loadAll();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erro ao aprovar o manual.');
+    }
+  };
+
+  const handleGenerateExplodedView = async (product: ReadyMadeProduct) => {
+    setIsGeneratingExplodedView(true);
+    try {
+      const res = await fetch(`/api/juliano/products/${product.id}/exploded-view/generate`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao gerar a vista explodida.');
+      await loadAll();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erro ao gerar a vista explodida.');
+    } finally {
+      setIsGeneratingExplodedView(false);
+    }
+  };
+
+  const handleApproveExplodedView = async (product: ReadyMadeProduct, view: ReadyMadeExplodedView) => {
+    if (!explodedViewApproverName.trim()) {
+      alert('Informe quem está aprovando a vista explodida.');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/juliano/products/${product.id}/exploded-view/${view.id}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approvedBy: explodedViewApproverName.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao aprovar a vista explodida.');
+      setExplodedViewApproverName('');
+      await loadAll();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erro ao aprovar a vista explodida.');
+    }
+  };
+
+  const handleRejectExplodedView = async (product: ReadyMadeProduct, view: ReadyMadeExplodedView) => {
+    const reason = window.prompt('Motivo da rejeição (opcional):', '') || undefined;
+    try {
+      const res = await fetch(`/api/juliano/products/${product.id}/exploded-view/${view.id}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rejectedReason: reason }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao rejeitar a vista explodida.');
+      await loadAll();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erro ao rejeitar a vista explodida.');
     }
   };
 
@@ -391,6 +488,41 @@ export const HenriqueProducaoDesk: React.FC<HenriqueProducaoDeskProps> = ({ sett
                     <Printer className="w-3.5 h-3.5" />
                     Imprimir Ordem de Serviço
                   </button>
+                  {(() => {
+                    const relatedProduct = products.find((p) => p.id === order.productId);
+                    const approvedManual = (relatedProduct?.manuals || [])
+                      .slice()
+                      .sort((a, b) => b.version - a.version)
+                      .find((m) => m.status === 'aprovado');
+                    const approvedView = (relatedProduct?.explodedViews || [])
+                      .slice()
+                      .sort((a, b) => b.version - a.version)
+                      .find((v) => v.status === 'aprovada');
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          disabled={!approvedManual || !relatedProduct}
+                          onClick={() => approvedManual && relatedProduct && generateReadyMadeManualPdf(relatedProduct, approvedManual, settings)}
+                          title={!approvedManual ? 'Gere e aprove o manual na aba "Estoque & Reposição"' : undefined}
+                          className="px-2.5 py-1.5 rounded-lg bg-white border border-[#D6CFC5] text-[#57534E] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          Imprimir Manual
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!approvedView || !relatedProduct}
+                          onClick={() => approvedView && relatedProduct && generateReadyMadeExplodedViewPdf(relatedProduct, approvedView, settings)}
+                          title={!approvedView ? 'Gere e aprove a vista explodida na aba "Estoque & Reposição"' : undefined}
+                          className="px-2.5 py-1.5 rounded-lg bg-white border border-[#D6CFC5] text-[#57534E] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          Imprimir Vista Explodida
+                        </button>
+                      </>
+                    );
+                  })()}
                   <button
                     type="button"
                     onClick={() => handleCancel(order)}
@@ -415,6 +547,7 @@ export const HenriqueProducaoDesk: React.FC<HenriqueProducaoDeskProps> = ({ sett
                 <th className="py-2 px-3 text-right">Estoque Atual</th>
                 <th className="py-2 px-3 text-right">Mínimo</th>
                 <th className="py-2 px-3 text-right">Meta</th>
+                <th className="py-2 px-3">Manual & Layout</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#EFECE6]">
@@ -464,18 +597,197 @@ export const HenriqueProducaoDesk: React.FC<HenriqueProducaoDeskProps> = ({ sett
                         className="w-16 px-1.5 py-1 rounded border border-[#D6CFC5] text-right text-xs"
                       />
                     </td>
+                    <td className="py-2 px-3">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedManualProductId((cur) => (cur === p.id ? null : p.id))}
+                        className="px-2 py-1 rounded-lg bg-white border border-[#D6CFC5] text-[10px] font-semibold hover:bg-[#F3EFE6]"
+                      >
+                        {expandedManualProductId === p.id ? 'Fechar' : 'Ver / Gerar'}
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
               {products.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="py-6 px-3 text-center text-[#6B6257]">
+                  <td colSpan={7} className="py-6 px-3 text-center text-[#6B6257]">
                     Nenhum produto cadastrado ainda (cadastre na mesa do Juliano).
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+
+          {expandedManualProductId &&
+            (() => {
+              const product = products.find((p) => p.id === expandedManualProductId);
+              if (!product) return null;
+              const latestManual = (product.manuals || []).slice().sort((a, b) => b.version - a.version)[0];
+              const latestView = (product.explodedViews || []).slice().sort((a, b) => b.version - a.version)[0];
+              return (
+                <div className="m-3 p-4 rounded-xl border border-[#E5DEC9] bg-[#FAF7F2] space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-bold text-sm text-[#181512]">Manual & Vista Explodida — {product.name}</h3>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedManualProductId(null)}
+                      className="text-xs text-[#6B6257] hover:underline"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-[#9A7138]">Manual de Execução</h4>
+                      <button
+                        type="button"
+                        disabled={isGeneratingManual}
+                        onClick={() => handleGenerateManual(product)}
+                        className="px-2.5 py-1.5 rounded-lg bg-[#181512] hover:bg-[#2A2420] text-white text-xs font-semibold disabled:opacity-50"
+                      >
+                        {isGeneratingManual ? 'Gerando...' : latestManual ? 'Gerar Nova Versão com IA' : 'Gerar Manual com IA'}
+                      </button>
+                    </div>
+                    {!latestManual ? (
+                      <p className="text-xs text-[#6B6257]">Nenhum manual gerado ainda.</p>
+                    ) : (
+                      <div className="p-3 rounded-lg bg-white border border-[#E5DEC9] space-y-2 text-xs">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                              latestManual.status === 'aprovado'
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                : 'bg-amber-100 text-amber-900 border-amber-300'
+                            }`}
+                          >
+                            v{latestManual.version} — {latestManual.status === 'aprovado' ? 'Aprovado' : 'Rascunho'}
+                          </span>
+                          {latestManual.status === 'aprovado' && latestManual.approvedBy && (
+                            <span className="text-[#6B6257]">por {latestManual.approvedBy}</span>
+                          )}
+                        </div>
+                        <p><strong>Peças/materiais:</strong> {latestManual.partsList.length} item(ns)</p>
+                        <p><strong>Plano de corte:</strong> {latestManual.cuttingPlanNote}</p>
+                        {latestManual.status !== 'aprovado' && (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            <input
+                              type="text"
+                              placeholder="Nome de quem aprova"
+                              value={manualApproverName}
+                              onChange={(e) => setManualApproverName(e.target.value)}
+                              className="px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleApproveManual(product, latestManual)}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
+                            >
+                              Aprovar Manual
+                            </button>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => generateReadyMadeManualPdf(product, latestManual, settings)}
+                          className="px-2.5 py-1.5 rounded-lg bg-white border border-[#D6CFC5] text-xs font-semibold flex items-center gap-1.5"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          Imprimir Manual (PDF)
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-[#9A7138]">Vista Explodida (Layout)</h4>
+                      <button
+                        type="button"
+                        disabled={isGeneratingExplodedView || product.photoUrls.length === 0}
+                        onClick={() => handleGenerateExplodedView(product)}
+                        className="px-2.5 py-1.5 rounded-lg bg-[#181512] hover:bg-[#2A2420] text-white text-xs font-semibold disabled:opacity-50"
+                      >
+                        {isGeneratingExplodedView ? 'Gerando...' : latestView ? 'Gerar Nova Versão com IA' : 'Gerar Vista Explodida com IA'}
+                      </button>
+                    </div>
+                    {product.photoUrls.length === 0 && (
+                      <p className="text-xs text-amber-800">
+                        Cadastre ao menos uma foto do produto (mesa do Juliano) antes de gerar.
+                      </p>
+                    )}
+                    {!latestView ? (
+                      <p className="text-xs text-[#6B6257]">Nenhuma vista explodida gerada ainda.</p>
+                    ) : (
+                      <div className="p-3 rounded-lg bg-white border border-[#E5DEC9] space-y-2 text-xs">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                              latestView.status === 'aprovada'
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                : latestView.status === 'rejeitada'
+                                ? 'bg-red-100 text-red-800 border-red-300'
+                                : 'bg-amber-100 text-amber-900 border-amber-300'
+                            }`}
+                          >
+                            v{latestView.version} —{' '}
+                            {latestView.status === 'aprovada'
+                              ? 'Aprovada'
+                              : latestView.status === 'rejeitada'
+                              ? 'Rejeitada'
+                              : 'Gerada (pendente de revisão)'}
+                          </span>
+                        </div>
+                        {latestView.generatedImageUrl && (
+                          <img
+                            src={latestView.generatedImageUrl}
+                            alt={`Vista explodida de ${product.name}`}
+                            className="w-full max-w-xs rounded border border-[#D6CFC5]"
+                          />
+                        )}
+                        {latestView.rejectedReason && (
+                          <p className="text-red-700">Motivo da rejeição: {latestView.rejectedReason}</p>
+                        )}
+                        {latestView.status === 'gerada' && (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            <input
+                              type="text"
+                              placeholder="Nome de quem aprova"
+                              value={explodedViewApproverName}
+                              onChange={(e) => setExplodedViewApproverName(e.target.value)}
+                              className="px-2 py-1 rounded border border-[#D6CFC5] text-xs"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleApproveExplodedView(product, latestView)}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
+                            >
+                              Aprovar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRejectExplodedView(product, latestView)}
+                              className="px-2.5 py-1 rounded-lg bg-white border border-[#D6CFC5] text-xs font-semibold"
+                            >
+                              Rejeitar
+                            </button>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => generateReadyMadeExplodedViewPdf(product, latestView, settings)}
+                          className="px-2.5 py-1.5 rounded-lg bg-white border border-[#D6CFC5] text-xs font-semibold flex items-center gap-1.5"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          Imprimir Vista Explodida (PDF)
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
         </div>
       ) : tab === 'concluidas' ? (
         <div className="space-y-1.5">
