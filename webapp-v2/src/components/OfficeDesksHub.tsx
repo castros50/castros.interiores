@@ -168,7 +168,15 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDeskId]);
 
-  const activeOrder = forceNoOrderView
+  // Juliano (vendas de produtos prontos) e Henrique (produção/estoque) nunca têm
+  // uma visão por pedido — são 100% independentes do pipeline de atendimentos —,
+  // então nunca devem herdar um pedido deixado selecionado em outra mesa.
+  const isOrderlessDesk =
+    selectedDeskId === 'juliano_vendas' || selectedDeskId === 'henrique_producao';
+
+  const activeOrder = isOrderlessDesk
+    ? null
+    : forceNoOrderView
     ? null
     : attendances.find((a) => a.id === activeAttendanceId) ||
       attendances.find((a) => a.currentDesk === selectedDeskId && (selectedDeskId !== 'lucas_projetos' || a.orderType === 'Fabricação')) ||
@@ -811,7 +819,9 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
       {!activeOrder &&
         selectedDeskId !== 'mila_financeiro' &&
         selectedDeskId !== 'supervisora_geral' &&
-        selectedDeskId !== 'carla_atendimento' && (
+        selectedDeskId !== 'carla_atendimento' &&
+        selectedDeskId !== 'juliano_vendas' &&
+        selectedDeskId !== 'henrique_producao' && (
         <div className="p-8 rounded-xl bg-white border border-[#E5DEC9] shadow-sm text-center space-y-3">
           <p className="text-sm font-semibold text-[#181512]">
             Nenhum pedido ativo na Mesa {selectedDeskMeta.number} — {selectedDeskMeta.name} ainda.
