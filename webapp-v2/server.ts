@@ -108,6 +108,7 @@ import type {
   BusinessStrategyRecommendation,
   WeeklyActionPlanItem,
   AssemblyManual,
+  AssemblyManualStep,
   ReformMaterialsList,
   PurchaseRequestPackage,
   ReformComponentDecisionKey,
@@ -6432,6 +6433,216 @@ Sua tarefa agora é só montar a lista de materiais para compra de uma peça de 
     } catch (err) {
       console.error('Erro ao gerar lista de materiais de fabricação:', err);
       res.status(500).json({ error: 'Erro ao gerar lista de materiais de fabricação.' });
+    }
+  });
+
+  // ----------------------------------------------------------------------
+  // MANUAL DE MONTAGEM (12 ETAPAS) — Lucas, pedido de Fabricação. Gerado por
+  // IA só a partir dos dados REAIS já cadastrados nas abas 2 (Lista de
+  // Peças & Componentes) e 3 (Relação de Materiais & Corte) do próprio
+  // pedido — nunca inventa um código de peça ou material que não exista
+  // ali. Nasce rascunho; só conta como liberado depois de aprovação humana
+  // explícita (mesmo princípio usado em todo o resto do sistema).
+  // ----------------------------------------------------------------------
+
+  app.post('/api/orders/:id/manufacturing/assembly-manual/prepare', async (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const mfg = attendance.manufacturingData;
+      const components = mfg?.components || [];
+      const materials = mfg?.materialRequirements || mfg?.materials || [];
+      if (components.length === 0 || materials.length === 0) {
+        res.status(400).json({
+          error:
+            'Gere a lista de peças (aba 2) e a lista de materiais (aba 3) antes de gerar o manual de montagem.',
+        });
+        return;
+      }
+
+      const componentsLines = components
+        .map(
+          (c) =>
+            `- ${c.code} | ${c.name} | material: ${c.material || c.specification || 'não informado'} | dimensões (mm): ${c.dimensionsMm?.length ?? '?'}×${c.dimensionsMm?.width ?? '?'}×${c.dimensionsMm?.thickness ?? '?'} | qtd/móvel: ${c.quantityPerUnit}`
+        )
+        .join('\n');
+      const materialsLines = materials
+        .map((m) => `- ${m.materialName || m.name}${m.specification ? ` (${m.specification})` : ''} | unidade: ${m.consumptionUnit || m.unit}`)
+        .join('\n');
+
+      const dims = mfg?.dimensions;
+      const dimsText = dims && (dims.widthCm || dims.depthCm || dims.heightCm)
+        ? `${dims.widthCm ?? '?'}cm x ${dims.depthCm ?? '?'}cm x ${dims.heightCm ?? '?'}cm`
+        : attendance.approxMeasurements || 'Não informado';
+
+      const context = `
+DADOS JÁ CADASTRADOS E APROVADOS DO PEDIDO (${attendance.attendanceNumber}) — não invente nada além disto:
+- Tipo de estofado: ${attendance.furnitureType || 'Estofado sob medida'}
+- Medidas: ${dimsText}
+- Acabamento/tecido desejado: ${attendance.fabricAndComfortPreference || 'A definir'}
+- Notas técnicas da oficina: ${mfg?.technicalNotes || 'Sem observações'}
+
+PEÇAS/COMPONENTES JÁ CADASTRADOS (use SOMENTE estes códigos em "piecesUsed" — nunca invente um código novo):
+${componentsLines}
+
+MATERIAIS JÁ CADASTRADOS (lista de compras já aprovada):
+${materialsLines}
+
+TAREFA:
+Monte o MANUAL DE MONTAGEM sequencial desta peça, em até 12 etapas (preparação, montagem estrutural, estofamento, acabamento). Cada etapa deve referenciar só peças/materiais da lista acima pelo código/nome exatos. Inclua ferramentas necessárias, pontos de atenção crítica, critério de conferência de qualidade por etapa, e marque honestamente quando uma etapa tiver incerteza técnica (hasUncertainties) explicando o motivo.`;
+
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
+      const systemInstruction = `Você é o AGENTE LUCAS — Engenheiro de Projetos e Fabricação de Produtos Novos da Castros Interiores.
+Sua tarefa agora é montar o manual de montagem sequencial de uma peça de fabricação, com base só nos componentes e materiais já cadastrados e aprovados neste pedido. Você é técnico e meticuloso. Nunca inventa um código de peça ou material que não esteja na lista fornecida, nem medida fora do que já está cadastrado.`;
+
+      const { response } = await generateContentWithRetryAndFallback({
+        preferredModel,
+        parts: [{ text: context }],
+        systemInstruction,
+        lockKey: `assembly-manual:${attendance.id}`,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            steps: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  stepNumber: { type: Type.NUMBER },
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  piecesUsed: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  toolsRequired: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  pointsOfAttention: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  estimatedMinutes: { type: Type.NUMBER },
+                  qualityCheckCriteria: { type: Type.STRING },
+                  hasUncertainties: { type: Type.BOOLEAN },
+                  uncertaintyNotes: { type: Type.STRING },
+                },
+                required: ['stepNumber', 'title', 'description', 'qualityCheckCriteria', 'hasUncertainties'],
+              },
+            },
+            generalPreparationNotes: { type: Type.STRING },
+            finalInspectionCriteria: { type: Type.STRING },
+            materialsAndTools: { type: Type.ARRAY, items: { type: Type.STRING } },
+          },
+          required: ['steps', 'generalPreparationNotes', 'finalInspectionCriteria'],
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}');
+      const rawSteps: any[] = Array.isArray(parsed.steps) ? parsed.steps : [];
+      if (rawSteps.length === 0) {
+        res.status(502).json({ error: 'A IA não retornou nenhuma etapa de montagem. Tente novamente.' });
+        return;
+      }
+
+      const steps: AssemblyManualStep[] = rawSteps.map((s, idx) => ({
+        stepNumber: typeof s.stepNumber === 'number' ? s.stepNumber : idx + 1,
+        title: String(s.title || `Etapa ${idx + 1}`),
+        description: String(s.description || ''),
+        piecesUsed: Array.isArray(s.piecesUsed) ? s.piecesUsed.map(String) : [],
+        toolsRequired: Array.isArray(s.toolsRequired) ? s.toolsRequired.map(String) : [],
+        sequenceOrder: idx + 1,
+        pointsOfAttention: Array.isArray(s.pointsOfAttention) ? s.pointsOfAttention.map(String) : [],
+        attentionPoints: Array.isArray(s.pointsOfAttention) ? s.pointsOfAttention.map(String) : undefined,
+        estimatedMinutes: typeof s.estimatedMinutes === 'number' ? s.estimatedMinutes : undefined,
+        qualityCheckCriteria: String(s.qualityCheckCriteria || ''),
+        hasUncertainties: Boolean(s.hasUncertainties),
+        uncertaintyNotes: s.uncertaintyNotes ? String(s.uncertaintyNotes) : undefined,
+      }));
+
+      const now = new Date().toISOString();
+      const existingManual = mfg!.assemblyManual;
+      mfg!.assemblyManual = {
+        modelName: existingManual?.modelName || attendance.furnitureType || 'Estofado Sob Encomenda',
+        modelCode: existingManual?.modelCode || `MOD-${attendance.attendanceNumber}`,
+        version: existingManual?.version || 'v1.0',
+        status: 'rascunho_tecnico',
+        isDraft: true,
+        materialsAndTools: Array.isArray(parsed.materialsAndTools) ? parsed.materialsAndTools.map(String) : [],
+        lastUpdatedAt: now,
+        referenceImages: existingManual?.referenceImages || [],
+        steps,
+        generalPreparationNotes: String(parsed.generalPreparationNotes || ''),
+        finalInspectionCriteria: String(parsed.finalInspectionCriteria || ''),
+      };
+      attendance.updatedAt = now;
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor: 'Lucas (Projetos & Fabricação — IA)',
+        stage: 'Manual de montagem',
+        action: 'Manual de montagem gerado/atualizado por IA',
+        details: `${steps.length} etapa(s), a partir de ${components.length} peça(s) e ${materials.length} material(is) já cadastrados.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+
+      res.json({ ok: true, order: attendance, assemblyManual: mfg!.assemblyManual });
+    } catch (error) {
+      console.error('Erro ao gerar manual de montagem:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao gerar manual de montagem.',
+      });
+    }
+  });
+
+  app.post('/api/orders/:id/manufacturing/assembly-manual/approve', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const manual = attendance.manufacturingData?.assemblyManual;
+      if (!manual || manual.steps.length === 0) {
+        res.status(400).json({ error: 'Gere o manual de montagem antes de aprovar.' });
+        return;
+      }
+      const { reviewedByResponsible } = req.body as { reviewedByResponsible?: string };
+      if (!reviewedByResponsible?.trim()) {
+        res.status(400).json({ error: 'Informe quem está aprovando o manual de montagem.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      manual.status = 'aprovado_oficina';
+      manual.isDraft = false;
+      manual.reviewedByResponsible = reviewedByResponsible.trim();
+      manual.reviewedAt = now;
+      attendance.updatedAt = now;
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor: reviewedByResponsible.trim(),
+        stage: 'Manual de montagem',
+        action: 'Manual de montagem aprovado para execução na oficina',
+        details: '',
+      });
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+      res.json({ ok: true, order: attendance, assemblyManual: manual });
+    } catch (error) {
+      console.error('Erro ao aprovar manual de montagem:', error);
+      res.status(500).json({ error: 'Erro ao aprovar manual de montagem.' });
     }
   });
 

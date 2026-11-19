@@ -33,6 +33,7 @@ import { ProductTechnicalEvaluationForm } from './ProductTechnicalEvaluationForm
 import { InspectionSheetForm } from './InspectionSheetForm';
 import { ExecutionManualView } from './ExecutionManualView';
 import { QualityControlBoard } from './QualityControlBoard';
+import { ExplodedViewPanel } from './ExplodedViewPanel';
 
 interface LucasManufacturingDeskProps {
   order: AttendanceRecord;
@@ -57,6 +58,12 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
   >('ficha');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Manual de montagem (12 etapas) gerado por IA a partir das peças/materiais
+  // já cadastrados — nasce rascunho, exige aprovação humana explícita.
+  const [isGeneratingAssemblyManual, setIsGeneratingAssemblyManual] = useState(false);
+  const [assemblyManualError, setAssemblyManualError] = useState<string | null>(null);
+  const [assemblyManualApproverName, setAssemblyManualApproverName] = useState('');
 
   // Se não possuir manufacturingData, inicializar modelo rascunho
   const project: ManufacturingProjectData = order.manufacturingData || {
@@ -131,6 +138,43 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
       alert('Erro ao salvar projeto.');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleGenerateAssemblyManual = async () => {
+    setIsGeneratingAssemblyManual(true);
+    setAssemblyManualError(null);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/manufacturing/assembly-manual/prepare`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao gerar o manual de montagem.');
+      onUpdateOrder(data.order);
+    } catch (err) {
+      setAssemblyManualError(err instanceof Error ? err.message : 'Erro ao gerar o manual de montagem.');
+    } finally {
+      setIsGeneratingAssemblyManual(false);
+    }
+  };
+
+  const handleApproveAssemblyManual = async () => {
+    if (!assemblyManualApproverName.trim()) {
+      alert('Informe quem está aprovando o manual de montagem.');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/orders/${order.id}/manufacturing/assembly-manual/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reviewedByResponsible: assemblyManualApproverName.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao aprovar o manual de montagem.');
+      setAssemblyManualApproverName('');
+      onUpdateOrder(data.order);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erro ao aprovar o manual de montagem.');
     }
   };
 
@@ -782,10 +826,67 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                   critério de conferência.
                 </p>
               </div>
-              <span className="text-xs font-semibold px-3 py-1 bg-amber-100 text-amber-900 rounded-full border border-amber-300">
-                Status: {project.assemblyManual?.isDraft ? 'Rascunho Técnico de Oficina' : 'Aprovado'}
+              <span
+                className={`text-xs font-semibold px-3 py-1 rounded-full border ${
+                  project.assemblyManual?.status === 'aprovado_oficina'
+                    ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                    : 'bg-amber-100 text-amber-900 border-amber-300'
+                }`}
+              >
+                Status: {project.assemblyManual?.status === 'aprovado_oficina' ? 'Aprovado para Oficina' : 'Rascunho Técnico de Oficina'}
               </span>
             </div>
+
+            <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl border border-[#E5DEC9] bg-[#FAF7F2]">
+              <button
+                type="button"
+                disabled={isGeneratingAssemblyManual || project.components.length === 0 || (project.materialRequirements || []).length === 0}
+                onClick={handleGenerateAssemblyManual}
+                className="px-3 py-2 rounded-lg bg-[#181512] hover:bg-[#2A2420] text-white text-xs font-semibold disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Sparkles className="w-4 h-4 text-amber-300" />
+                {isGeneratingAssemblyManual
+                  ? 'Gerando...'
+                  : project.assemblyManual?.steps?.length
+                  ? 'Gerar Nova Versão com IA'
+                  : 'Gerar Manual de Montagem com IA'}
+              </button>
+              {(project.components.length === 0 || (project.materialRequirements || []).length === 0) && (
+                <span className="text-[11px] text-amber-800">
+                  Gere a lista de peças (aba 2) e de materiais (aba 3) antes.
+                </span>
+              )}
+              {project.assemblyManual?.steps && project.assemblyManual.steps.length > 0 && project.assemblyManual.status !== 'aprovado_oficina' && (
+                <>
+                  <input
+                    type="text"
+                    placeholder="Nome de quem aprova"
+                    value={assemblyManualApproverName}
+                    onChange={(e) => setAssemblyManualApproverName(e.target.value)}
+                    className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApproveAssemblyManual}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
+                  >
+                    Aprovar Manual de Montagem
+                  </button>
+                </>
+              )}
+              {project.assemblyManual?.status === 'aprovado_oficina' && project.assemblyManual.reviewedByResponsible && (
+                <span className="text-[11px] text-emerald-800">
+                  Aprovado por {project.assemblyManual.reviewedByResponsible}
+                  {project.assemblyManual.reviewedAt ? ` em ${new Date(project.assemblyManual.reviewedAt).toLocaleDateString('pt-BR')}` : ''}
+                </span>
+              )}
+            </div>
+            {assemblyManualError && (
+              <div className="flex items-start gap-2 p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-xs">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                {assemblyManualError}
+              </div>
+            )}
 
             <div className="grid grid-cols-1 gap-3">
               {project.assemblyManual?.steps?.map((step) => (
@@ -844,6 +945,20 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                   )}
                 </div>
               ))}
+              {(!project.assemblyManual?.steps || project.assemblyManual.steps.length === 0) && (
+                <div className="p-4 rounded-xl border border-dashed border-[#D6CFC5] text-center text-xs text-[#6B6257]">
+                  Nenhuma etapa gerada ainda. Use o botão "Gerar Manual de Montagem com IA" acima.
+                </div>
+              )}
+            </div>
+
+            <div className="pt-4 border-t border-[#E5DEC9]">
+              <h3 className="font-bold text-sm text-[#181512] mb-1">Vista Explodida (Layout) do Produto</h3>
+              <p className="text-xs text-[#6B6257] mb-3">
+                Imagem gerada por IA mostrando os componentes do produto separados, para apoiar a montagem na
+                oficina.
+              </p>
+              <ExplodedViewPanel order={order} settings={settings} onUpdateOrder={onUpdateOrder} />
             </div>
           </div>
         )}
