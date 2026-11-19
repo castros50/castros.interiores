@@ -1261,7 +1261,8 @@ export type DepartmentId =
   | 'julia_marketing'
   | 'supervisora_geral'
   | 'tapeceiro_tecnico'
-  | 'juliano_vendas';
+  | 'juliano_vendas'
+  | 'henrique_producao';
 
 export type SpecialistAgentId =
   | 'vistoriador_defeitos'
@@ -1791,6 +1792,14 @@ export interface ReadyMadeProduct {
   depthCm?: number;
   priceCents: number;
   stockQuantity: number;
+  // Código/referência e modelo — usados pelo Henrique (controle de produção
+  // e estoque) para identificar o produto na ordem de produção.
+  code?: string;
+  model?: string;
+  // Controle de reposição do Henrique: abaixo (ou igual) ao mínimo, uma
+  // ordem de produção é gerada automaticamente até atingir a meta.
+  minStockQuantity?: number;
+  targetStockQuantity?: number;
   // Galeria de fotos do produto — índice 0 é a foto de capa (usada na
   // miniatura do catálogo e na foto enviada para a Júlia).
   photoUrls: string[];
@@ -1831,6 +1840,49 @@ export interface ProductSale {
 export interface JulianoDepartmentData {
   products: ReadyMadeProduct[];
   sales: ProductSale[];
+}
+
+export type ProductionOrderStatus = 'Pendente' | 'Em Fabricação' | 'Concluída' | 'Cancelada';
+export type ProductionOrderPriority = 'Normal' | 'Alta' | 'Urgente';
+
+// Ordem de produção do Henrique (reposição de estoque de produtos prontos) —
+// nunca inventa medida/modelo: tudo copiado do ReadyMadeProduct real no
+// instante da emissão.
+export interface ProductionOrder {
+  id: string;
+  orderNumber: string; // OP-2026-XXXX
+  productId: string;
+  productName: string;
+  productCode?: string;
+  quantityToProduce: number;
+  officialMeasurements?: { widthCm?: number; heightCm?: number; depthCm?: number };
+  model?: string;
+  reason: string;
+  priority: ProductionOrderPriority;
+  status: ProductionOrderStatus;
+  createdAt: string;
+  createdBy?: string;
+  startedAt?: string;
+  completedAt?: string;
+  actualQuantityProduced?: number;
+  completedBy?: string;
+  notes?: string;
+  cancelReason?: string;
+}
+
+export interface StockEntryRecord {
+  id: string;
+  productId: string;
+  productName: string;
+  quantity: number;
+  productionOrderId?: string;
+  enteredAt: string;
+  enteredBy?: string;
+}
+
+export interface HenriqueDepartmentData {
+  productionOrders: ProductionOrder[];
+  stockEntries: StockEntryRecord[];
 }
 
 export interface RealtimeSyncEvent {

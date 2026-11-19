@@ -178,6 +178,11 @@ import type {
   ProductSale,
   ProductSaleItem,
   ProductSalePaymentMethod,
+  HenriqueDepartmentData,
+  ProductionOrder,
+  ProductionOrderStatus,
+  ProductionOrderPriority,
+  StockEntryRecord,
 } from './src/types.ts';
 import { INSPECTION_COMPONENT_LABELS, INSPECTION_MARKING_LABELS } from './src/types.ts';
 import { FURNITURE_AREAS, REUSE_COMPONENTS } from './src/types.ts';
@@ -238,6 +243,7 @@ interface PersistentStore {
   settings: WorkshopSettings;
   juliaData?: JuliaDepartmentData;
   julianoData?: JulianoDepartmentData;
+  henriqueData?: HenriqueDepartmentData;
   officeData?: SharedOfficeData;
   agentChats?: Record<string, AgentChatMessage[]>;
   backgroundTasks?: BackgroundTask[];
@@ -279,6 +285,7 @@ const DESK_AGENT_NAMES: Record<string, string> = {
   supervisora_geral: 'Helena (Supervisora Geral)',
   tapeceiro_tecnico: 'Tapeceiro Técnico (Produção e Materiais)',
   juliano_vendas: 'Juliano (Vendas de Produtos Prontos)',
+  henrique_producao: 'Henrique (Produção e Controle de Estoque)',
 };
 
 // Mecanismo genérico de encaminhamento entre mesas: só reatribui currentDesk/deskStatus
@@ -1453,6 +1460,66 @@ function getJulianoData(store: PersistentStore): JulianoDepartmentData {
 function nextProductSaleNumber(store: PersistentStore): string {
   const count = (store.julianoData?.sales.length || 0) + 1;
   return `VP-2026-${String(count).padStart(4, '0')}`;
+}
+
+function getDefaultHenriqueData(): HenriqueDepartmentData {
+  return {
+    productionOrders: [],
+    stockEntries: [],
+  };
+}
+
+// Garante store.henriqueData presente, mesmo padrão defensivo já usado para
+// store.julianoData — nunca sobrescreve dados existentes.
+function getHenriqueData(store: PersistentStore): HenriqueDepartmentData {
+  if (!store.henriqueData) {
+    store.henriqueData = getDefaultHenriqueData();
+  }
+  return store.henriqueData;
+}
+
+function nextProductionOrderNumber(store: PersistentStore): string {
+  const count = (store.henriqueData?.productionOrders.length || 0) + 1;
+  return `OP-2026-${String(count).padStart(4, '0')}`;
+}
+
+// Henrique — verifica se um produto pronto caiu no (ou abaixo do) estoque
+// mínimo cadastrado e, se sim, gera uma ordem de produção de reposição —
+// mas nunca duplica: se já existe uma ordem Pendente ou Em Fabricação para
+// o mesmo produto, não cria outra (a já aberta cobre a necessidade atual).
+// Nunca inventa medida/modelo — copia só o que já está cadastrado no produto.
+function checkAndCreateReplenishmentOrder(store: PersistentStore, product: ReadyMadeProduct, reasonPrefix: string): void {
+  if (product.minStockQuantity == null || product.stockQuantity > product.minStockQuantity) return;
+
+  const henriqueData = getHenriqueData(store);
+  const alreadyOpen = henriqueData.productionOrders.some(
+    (o) => o.productId === product.id && (o.status === 'Pendente' || o.status === 'Em Fabricação')
+  );
+  if (alreadyOpen) return;
+
+  const targetLevel = product.targetStockQuantity ?? product.minStockQuantity;
+  const quantityToProduce = Math.max(1, targetLevel - product.stockQuantity);
+  const now = new Date().toISOString();
+
+  const order: ProductionOrder = {
+    id: `po-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    orderNumber: nextProductionOrderNumber(store),
+    productId: product.id,
+    productName: product.name,
+    productCode: product.code,
+    quantityToProduce,
+    officialMeasurements:
+      product.widthCm || product.heightCm || product.depthCm
+        ? { widthCm: product.widthCm, heightCm: product.heightCm, depthCm: product.depthCm }
+        : undefined,
+    model: product.model,
+    reason: `${reasonPrefix} — estoque atual ${product.stockQuantity}, mínimo cadastrado ${product.minStockQuantity}.`,
+    priority: 'Normal',
+    status: 'Pendente',
+    createdAt: now,
+    createdBy: 'Sistema (reposição automática)',
+  };
+  henriqueData.productionOrders.unshift(order);
 }
 
 // Decodifica uma data URL (data:<mime>;base64,<...>) e salva como arquivo de
@@ -9115,6 +9182,10 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         stockQuantity,
         dataUrl,
         mimeType,
+        code,
+        model,
+        minStockQuantity,
+        targetStockQuantity,
       } = req.body as {
         name: string;
         description?: string;
@@ -9129,6 +9200,10 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         stockQuantity: number;
         dataUrl?: string;
         mimeType?: string;
+        code?: string;
+        model?: string;
+        minStockQuantity?: number;
+        targetStockQuantity?: number;
       };
 
       if (!name?.trim()) {
@@ -9168,11 +9243,17 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         depthCm: typeof depthCm === 'number' && depthCm > 0 ? depthCm : undefined,
         priceCents,
         stockQuantity,
+        code: code?.trim() || undefined,
+        model: model?.trim() || undefined,
+        minStockQuantity: typeof minStockQuantity === 'number' && minStockQuantity >= 0 ? minStockQuantity : undefined,
+        targetStockQuantity: typeof targetStockQuantity === 'number' && targetStockQuantity >= 0 ? targetStockQuantity : undefined,
         photoUrls,
         createdAt: now,
         updatedAt: now,
       };
       julianoData.products.unshift(newProduct);
+      // Henrique — produto já pode nascer no/abaixo do mínimo cadastrado.
+      checkAndCreateReplenishmentOrder(store, newProduct, 'Produto cadastrado já abaixo do mínimo');
       saveStore(store);
       broadcastRealtimeEvent({
         type: 'juliano:updated',
@@ -9210,6 +9291,10 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         depthCm,
         priceCents,
         stockQuantity,
+        code,
+        model,
+        minStockQuantity,
+        targetStockQuantity,
       } = req.body as {
         name?: string;
         description?: string;
@@ -9222,6 +9307,10 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         depthCm?: number | null;
         priceCents?: number;
         stockQuantity?: number;
+        code?: string;
+        model?: string;
+        minStockQuantity?: number | null;
+        targetStockQuantity?: number | null;
       };
       if (name !== undefined) product.name = name.trim();
       if (description !== undefined) product.description = description.trim() || undefined;
@@ -9232,6 +9321,14 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       if (widthCm !== undefined) product.widthCm = typeof widthCm === 'number' && widthCm > 0 ? widthCm : undefined;
       if (heightCm !== undefined) product.heightCm = typeof heightCm === 'number' && heightCm > 0 ? heightCm : undefined;
       if (depthCm !== undefined) product.depthCm = typeof depthCm === 'number' && depthCm > 0 ? depthCm : undefined;
+      if (code !== undefined) product.code = code.trim() || undefined;
+      if (model !== undefined) product.model = model.trim() || undefined;
+      if (minStockQuantity !== undefined) {
+        product.minStockQuantity = typeof minStockQuantity === 'number' && minStockQuantity >= 0 ? minStockQuantity : undefined;
+      }
+      if (targetStockQuantity !== undefined) {
+        product.targetStockQuantity = typeof targetStockQuantity === 'number' && targetStockQuantity >= 0 ? targetStockQuantity : undefined;
+      }
       if (priceCents !== undefined) {
         if (typeof priceCents !== 'number' || priceCents <= 0) {
           res.status(400).json({ error: 'Preço de venda inválido.' });
@@ -9247,6 +9344,9 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         product.stockQuantity = stockQuantity;
       }
       product.updatedAt = new Date().toISOString();
+      // Henrique — editar manualmente mínimo/estoque pode deixar o produto já
+      // abaixo do mínimo na hora; verifica e gera ordem de reposição se for o caso.
+      checkAndCreateReplenishmentOrder(store, product, 'Ajuste manual de cadastro/estoque');
       saveStore(store);
       broadcastRealtimeEvent({
         type: 'juliano:updated',
@@ -9498,6 +9598,9 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
         const product = julianoData.products.find((p) => p.id === saleItem.productId)!;
         product.stockQuantity -= saleItem.quantity;
         product.updatedAt = new Date().toISOString();
+        // Henrique — venda pode derrubar o estoque até (ou abaixo d)o mínimo cadastrado;
+        // verifica e gera ordem de produção de reposição automaticamente quando for o caso.
+        checkAndCreateReplenishmentOrder(store, product, 'Venda registrada pelo Juliano');
       }
 
       const totalCents = saleItems.reduce((sum, it) => sum + it.unitPriceCents * it.quantity, 0);
@@ -9558,6 +9661,182 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Erro ao registrar a venda.',
       });
+    }
+  });
+
+  // Henrique — Gerente de Produção e Controle de Estoque (Mesa 11). Lê/gera ordens de
+  // produção de reposição dos produtos prontos do Juliano (mesmo catálogo, só com os
+  // campos de mínimo/meta a mais) — nunca inventa medida/modelo, só copia o que já
+  // está cadastrado; e só dá entrada em estoque depois de confirmação humana explícita
+  // de que o produto foi de fato fabricado.
+  app.get('/api/henrique/production-orders', (_req, res) => {
+    const store = loadStore();
+    res.json({ ok: true, henriqueData: getHenriqueData(store) });
+  });
+
+  app.post('/api/henrique/production-orders', (req, res) => {
+    try {
+      const store = loadStore();
+      const henriqueData = getHenriqueData(store);
+      const julianoData = getJulianoData(store);
+      const { productId, quantityToProduce, priority, reason, createdBy } = req.body as {
+        productId: string;
+        quantityToProduce: number;
+        priority?: ProductionOrderPriority;
+        reason?: string;
+        createdBy?: string;
+      };
+      const product = julianoData.products.find((p) => p.id === productId);
+      if (!product) {
+        res.status(404).json({ error: 'Produto não encontrado.' });
+        return;
+      }
+      if (!quantityToProduce || quantityToProduce <= 0) {
+        res.status(400).json({ error: 'Informe uma quantidade a fabricar válida.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      const order: ProductionOrder = {
+        id: `po-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        orderNumber: nextProductionOrderNumber(store),
+        productId: product.id,
+        productName: product.name,
+        productCode: product.code,
+        quantityToProduce,
+        officialMeasurements:
+          product.widthCm || product.heightCm || product.depthCm
+            ? { widthCm: product.widthCm, heightCm: product.heightCm, depthCm: product.depthCm }
+            : undefined,
+        model: product.model,
+        reason: reason?.trim() || 'Ordem de produção aberta manualmente.',
+        priority: priority || 'Normal',
+        status: 'Pendente',
+        createdAt: now,
+        createdBy: createdBy?.trim() || 'Responsável pela fábrica',
+      };
+      henriqueData.productionOrders.unshift(order);
+      saveStore(store);
+      res.json({ ok: true, order, henriqueData });
+    } catch (error) {
+      console.error('Erro ao criar ordem de produção:', error);
+      res.status(500).json({ error: 'Erro ao criar ordem de produção.' });
+    }
+  });
+
+  app.post('/api/henrique/production-orders/:id/start', (req, res) => {
+    try {
+      const store = loadStore();
+      const henriqueData = getHenriqueData(store);
+      const order = henriqueData.productionOrders.find((o) => o.id === req.params.id);
+      if (!order) {
+        res.status(404).json({ error: 'Ordem de produção não encontrada.' });
+        return;
+      }
+      if (order.status !== 'Pendente') {
+        res.status(400).json({ error: `Ordem já está em "${order.status}" — só é possível iniciar uma ordem Pendente.` });
+        return;
+      }
+      order.status = 'Em Fabricação';
+      order.startedAt = new Date().toISOString();
+      saveStore(store);
+      res.json({ ok: true, order, henriqueData });
+    } catch (error) {
+      console.error('Erro ao iniciar ordem de produção:', error);
+      res.status(500).json({ error: 'Erro ao iniciar ordem de produção.' });
+    }
+  });
+
+  // Dá baixa da ordem e entrada no estoque — SÓ é chamada quando o responsável confirma
+  // que o produto foi de fato fabricado. Nunca soma estoque antes dessa confirmação.
+  app.post('/api/henrique/production-orders/:id/complete', (req, res) => {
+    try {
+      const store = loadStore();
+      const henriqueData = getHenriqueData(store);
+      const julianoData = getJulianoData(store);
+      const order = henriqueData.productionOrders.find((o) => o.id === req.params.id);
+      if (!order) {
+        res.status(404).json({ error: 'Ordem de produção não encontrada.' });
+        return;
+      }
+      if (order.status === 'Concluída' || order.status === 'Cancelada') {
+        res.status(400).json({ error: `Ordem já está em "${order.status}" — nada a concluir.` });
+        return;
+      }
+      const { actualQuantityProduced, completedBy, notes } = req.body as {
+        actualQuantityProduced: number;
+        completedBy: string;
+        notes?: string;
+      };
+      if (!actualQuantityProduced || actualQuantityProduced <= 0) {
+        res.status(400).json({ error: 'Informe a quantidade efetivamente fabricada (maior que zero).' });
+        return;
+      }
+      if (!completedBy?.trim()) {
+        res.status(400).json({ error: 'Informe quem confirma que o produto está pronto.' });
+        return;
+      }
+      const product = julianoData.products.find((p) => p.id === order.productId);
+      if (!product) {
+        res.status(404).json({ error: 'Produto do catálogo não encontrado mais — não é possível dar entrada no estoque.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      order.status = 'Concluída';
+      order.completedAt = now;
+      order.actualQuantityProduced = actualQuantityProduced;
+      order.completedBy = completedBy.trim();
+      order.notes = notes?.trim() || order.notes;
+
+      product.stockQuantity += actualQuantityProduced;
+      product.updatedAt = now;
+
+      const stockEntry: StockEntryRecord = {
+        id: `se-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        productId: product.id,
+        productName: product.name,
+        quantity: actualQuantityProduced,
+        productionOrderId: order.id,
+        enteredAt: now,
+        enteredBy: completedBy.trim(),
+      };
+      henriqueData.stockEntries.unshift(stockEntry);
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'juliano:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        julianoData,
+      });
+      res.json({ ok: true, order, stockEntry, henriqueData, julianoData });
+    } catch (error) {
+      console.error('Erro ao concluir ordem de produção:', error);
+      res.status(500).json({ error: 'Erro ao concluir ordem de produção.' });
+    }
+  });
+
+  app.post('/api/henrique/production-orders/:id/cancel', (req, res) => {
+    try {
+      const store = loadStore();
+      const henriqueData = getHenriqueData(store);
+      const order = henriqueData.productionOrders.find((o) => o.id === req.params.id);
+      if (!order) {
+        res.status(404).json({ error: 'Ordem de produção não encontrada.' });
+        return;
+      }
+      if (order.status === 'Concluída' || order.status === 'Cancelada') {
+        res.status(400).json({ error: `Ordem já está em "${order.status}" — nada a cancelar.` });
+        return;
+      }
+      const { cancelReason } = req.body as { cancelReason?: string };
+      order.status = 'Cancelada';
+      order.cancelReason = cancelReason?.trim() || undefined;
+      saveStore(store);
+      res.json({ ok: true, order, henriqueData });
+    } catch (error) {
+      console.error('Erro ao cancelar ordem de produção:', error);
+      res.status(500).json({ error: 'Erro ao cancelar ordem de produção.' });
     }
   });
 
@@ -10101,6 +10380,13 @@ Regra: Nunca invente medida, encaixe, furação ou especificação estrutural a 
 Missão: Vender produtos novos já fabricados e disponíveis em estoque (catálogo próprio, separado da matéria-prima da Ana e dos pedidos de reforma/fabricação sob medida). Você consulta clientes já cadastrados (mesma lista da Carla), registra vendas com forma de pagamento, controla o estoque do seu próprio catálogo e pode enviar fotos de produtos para a biblioteca de campanhas da Júlia.
 Regra: Responda apenas com base no catálogo e nas vendas reais deste sistema. Nunca invente estoque, preço ou venda que não exista. Cada venda registrada já gera automaticamente o lançamento financeiro correspondente — você nunca precisa (nem deve) pedir confirmação separada da Mila para isso.`,
     },
+    henrique_producao: {
+      name: 'Henrique',
+      title: 'Henrique (Produção e Controle de Estoque — Mesa 11)',
+      systemPrompt: `Você é o HENRIQUE, Gerente de Produção e Controle de Estoque da Castros Interiores (Mesa 11).
+Missão: Controlar o estoque de produtos prontos da loja (o mesmo catálogo que o Juliano vende), identificar quando um produto atinge ou fica abaixo do estoque mínimo cadastrado, e manter a lista diária de produção com as ordens pendentes, em fabricação e concluídas. Uma ordem de produção só é dada como concluída e só entra no estoque depois que o responsável pela fábrica confirmar explicitamente que o produto foi fabricado — nunca antes.
+Regra: Nunca invente medida, modelo, quantidade ou produto que não esteja cadastrado de verdade. Nunca trate uma ordem aberta (Pendente ou Em Fabricação) como produto disponível em estoque. Você não assume pedidos de clientes (isso é do Lucas) nem faz compras (isso é da Ana/Mila) — se precisar de suprimento, encaminhe a necessidade para a Mila.`,
+    },
   };
 
   // Tipos de ação de rotina que a Helena (supervisora_geral) pode aprovar sozinha,
@@ -10588,6 +10874,48 @@ REGRA: cada venda confirmada pelo botão da mesa já lança automaticamente o va
 `;
       }
 
+      if (deskId === 'henrique_producao') {
+        const products = store.julianoData?.products || [];
+        const belowMin = products.filter((p) => p.minStockQuantity != null && p.stockQuantity <= p.minStockQuantity);
+        const henriqueData = store.henriqueData;
+        const openOrders = (henriqueData?.productionOrders || []).filter((o) => o.status === 'Pendente' || o.status === 'Em Fabricação');
+        const recentEntries = (henriqueData?.stockEntries || []).slice(0, 10);
+        factualContext += `
+ESTOQUE DE PRODUTOS PRONTOS (MESMO CATÁLOGO DO JULIANO — ${products.length} produto(s) cadastrado(s)):
+${
+  products.length > 0
+    ? products
+        .map(
+          (p) =>
+            `  * ${p.name}${p.code ? ` [${p.code}]` : ''}${p.model ? ` modelo ${p.model}` : ''} | Estoque: ${p.stockQuantity} unid. | Mínimo: ${p.minStockQuantity ?? 'não definido'} | Meta: ${p.targetStockQuantity ?? 'não definida'}`
+        )
+        .join('\n')
+    : '  Nenhum produto cadastrado ainda.'
+}
+
+PRODUTOS NO OU ABAIXO DO ESTOQUE MÍNIMO (precisam de atenção): ${
+          belowMin.length > 0 ? belowMin.map((p) => p.name).join(', ') : 'Nenhum no momento.'
+        }
+
+ORDENS DE PRODUÇÃO ABERTAS (Pendente ou Em Fabricação — ${openOrders.length}):
+${
+  openOrders.length > 0
+    ? openOrders
+        .map((o) => `  * ${o.orderNumber} | ${o.productName} | Qtd.: ${o.quantityToProduce} | Status: ${o.status} | Prioridade: ${o.priority}`)
+        .join('\n')
+    : '  Nenhuma ordem aberta no momento.'
+}
+
+ÚLTIMAS ENTRADAS NO ESTOQUE (até 10 mais recentes):
+${
+  recentEntries.length > 0
+    ? recentEntries.map((e) => `  * ${e.productName} | +${e.quantity} unid. | ${e.enteredAt.slice(0, 10)} | confirmado por ${e.enteredBy || 'não informado'}`).join('\n')
+    : '  Nenhuma entrada registrada ainda.'
+}
+REGRA: uma ordem Pendente ou Em Fabricação NUNCA é estoque disponível — só a conclusão confirmada por um humano dá entrada real. Nunca invente medida, modelo ou quantidade fora do que está cadastrado. Você não assume pedidos de cliente (Lucas) nem faz compras (Ana/Mila) — só encaminha necessidade de suprimento.
+`;
+      }
+
       // Histórico recente da mesa
       const recentChat = (store.agentChats[deskId] || [])
         .slice(-8)
@@ -10682,7 +11010,7 @@ DIRETRIZES DE RESPOSTA:
                 targetDeskId: {
                   type: Type.STRING,
                   description:
-                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | julia_marketing | supervisora_geral | tapeceiro_tecnico | juliano_vendas',
+                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | julia_marketing | supervisora_geral | tapeceiro_tecnico | juliano_vendas | henrique_producao',
                 },
                 message: { type: Type.STRING },
               },
@@ -10999,7 +11327,7 @@ INSTRUÇÕES ESPECIAIS:
                 targetDeskId: {
                   type: Type.STRING,
                   description:
-                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | supervisora_geral | tapeceiro_tecnico | juliano_vendas',
+                    'carla_atendimento | pedro_avaliacao | lucas_projetos | ana_compras | mila_financeiro | castro_estrategia | supervisora_geral | tapeceiro_tecnico | juliano_vendas | henrique_producao',
                 },
                 message: { type: Type.STRING },
               },

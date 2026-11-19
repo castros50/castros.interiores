@@ -122,7 +122,7 @@ export const ManualAjuda: React.FC = () => {
             </li>
             <li>
               <strong>Retratos dos agentes:</strong> também em Configurações, é possível enviar/trocar a foto de
-              cada um dos 10 agentes.
+              cada um dos 11 agentes.
             </li>
             <li>
               <strong>Integração oficial do WhatsApp:</strong> veja a seção 13 — exige credenciais reais da Meta
@@ -266,9 +266,9 @@ export const ManualAjuda: React.FC = () => {
 
         {/* 5. DEZ AGENTES */}
         <section className="space-y-3">
-          <SectionHeading id="nove-agentes">6. Como usar cada um dos 10 agentes</SectionHeading>
+          <SectionHeading id="nove-agentes">6. Como usar cada um dos 11 agentes</SectionHeading>
           <p>
-            Todas as mesas ficam em <strong>Escritório de Mesas</strong> (dez cartões) ou no bloco
+            Todas as mesas ficam em <strong>Escritório de Mesas</strong> (onze cartões) ou no bloco
             "Departamentos Operacionais" do Painel. Cada uma tem um botão <strong>Conversar</strong> (chat de
             texto/voz) e uma área operacional própria:
           </p>
@@ -284,6 +284,7 @@ export const ManualAjuda: React.FC = () => {
               ['Tapeceiro Técnico', 'Planejamento de reforma e fabricação a partir dos dados já registrados, com liberação sujeita a revisão humana.'],
               ['Helena — Supervisão Geral', 'Monitoramento integrado de prazos, cobrança de retornos, aprovação formal de decisões, automação e mediação entre mesas.'],
               ['Juliano — Vendas de Produtos Prontos', 'Catálogo próprio de produtos novos já fabricados, controle de estoque, vendas para clientes já cadastrados e lançamento automático no financeiro da fábrica.'],
+              ['Henrique — Produção e Controle de Estoque', 'Monitora o mesmo catálogo do Juliano, gera ordens de produção de reposição quando o estoque atinge o mínimo cadastrado, mantém a lista diária de produção e só dá entrada no estoque após confirmação de que o produto foi fabricado.'],
             ].map(([title, desc]) => (
               <div key={title} className="p-3 rounded-lg border border-[#E5DEC9] bg-[#FAF8F5]">
                 <p className="text-xs font-bold text-[#181512]">{title}</p>

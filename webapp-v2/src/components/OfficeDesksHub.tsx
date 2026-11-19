@@ -45,6 +45,7 @@ import { CarlaAtendimentoDesk } from './CarlaAtendimentoDesk';
 import { CarlaOrderPanel } from './CarlaOrderPanel';
 import { PedroAvaliacaoDesk } from './PedroAvaliacaoDesk';
 import { JulianoVendasDesk } from './JulianoVendasDesk';
+import { HenriqueProducaoDesk } from './HenriqueProducaoDesk';
 
 interface OfficeDesksHubProps {
   attendances: AttendanceRecord[];
@@ -766,6 +767,27 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
               'Qual produto pronto vendeu mais este mês?',
               'Me ajuda a registrar uma venda nova?',
               'Esse produto já foi enviado para a Júlia divulgar?',
+            ]}
+          />
+        </div>
+      )}
+
+      {/* PRODUÇÃO E CONTROLE DE ESTOQUE (Henrique) — mesmo catálogo do Juliano, nunca depende de pedido */}
+      {!activeOrder && selectedDeskId === 'henrique_producao' && (
+        <div className="space-y-4">
+          <HenriqueProducaoDesk />
+
+          {/* Central de Conversa Funcional por Voz e Texto com o Henrique */}
+          <AgentVoiceTextChat
+            deskId="henrique_producao"
+            agentName={selectedDeskMeta.name}
+            agentRole={selectedDeskMeta.role}
+            portraitUpdatedAt={settings.agentPortraitUpdatedAt?.henrique_producao}
+            suggestedQuestions={[
+              'Quais produtos estão abaixo do estoque mínimo?',
+              'Qual a lista de produção de hoje?',
+              'Quantas ordens de produção estão em aberto?',
+              'Avisa a Mila que vamos precisar de mais tecido pra repor estoque?',
             ]}
           />
         </div>

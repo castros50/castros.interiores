@@ -15,7 +15,7 @@ export interface DeskMeta {
   role: string;
   roomTitle: string;
   summary: string;
-  iconName: 'carla' | 'pedro' | 'lucas' | 'ana' | 'mila' | 'castro' | 'julia' | 'supervisora' | 'tapeceiro' | 'juliano';
+  iconName: 'carla' | 'pedro' | 'lucas' | 'ana' | 'mila' | 'castro' | 'julia' | 'supervisora' | 'tapeceiro' | 'juliano' | 'henrique';
   colorBadge: string;
   accentBg: string;
   description: string;
@@ -289,6 +289,32 @@ export const OFFICE_DESKS: DeskMeta[] = [
       'Registrar Venda de Produto',
       'Enviar Foto do Produto para a Júlia',
       'Consultar Histórico de Vendas',
+    ],
+  },
+  {
+    id: 'henrique_producao',
+    number: 11,
+    name: 'Henrique',
+    role: 'Produção e Controle de Estoque',
+    roomTitle: 'Mesa de Produção e Controle de Estoque',
+    summary: 'Controla o estoque de produtos prontos (mesmo catálogo do Juliano), gera ordens de produção de reposição e mantém a lista diária de fabricação.',
+    iconName: 'henrique',
+    colorBadge: 'bg-amber-100 text-amber-950 border-amber-400',
+    accentBg: 'from-amber-50 to-white',
+    description:
+      'Gerente de Produção e Controle de Estoque: acompanha o mesmo catálogo de produtos prontos que o Juliano vende, identifica quando um produto atinge o estoque mínimo cadastrado e gera automaticamente uma ordem de produção de reposição, evitando duplicar ordens já abertas. Mantém a lista diária de produção (pendentes, em fabricação, concluídas) e só dá entrada real no estoque depois que o responsável pela fábrica confirmar que o produto foi efetivamente fabricado.',
+    responsibilities: [
+      'Monitorar estoque mínimo e meta de reposição de cada produto pronto',
+      'Gerar ordens de produção automaticamente quando o estoque cai no/abaixo do mínimo, sem duplicar',
+      'Manter a lista diária de produção (pendentes, em fabricação, concluídas)',
+      'Dar baixa da ordem e entrada no estoque somente após confirmação humana de que o produto está pronto',
+      'Encaminhar necessidades de suprimento para a Mila, nunca comprar diretamente',
+    ],
+    sampleActions: [
+      'Ver Lista Diária de Produção',
+      'Abrir Ordem de Produção Manual',
+      'Marcar Ordem como Concluída',
+      'Ajustar Estoque Mínimo de um Produto',
     ],
   },
 ];

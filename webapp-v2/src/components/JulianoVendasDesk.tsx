@@ -86,6 +86,10 @@ export const JulianoVendasDesk: React.FC = () => {
   const [newProductDepth, setNewProductDepth] = useState('');
   const [newProductPrice, setNewProductPrice] = useState('');
   const [newProductStock, setNewProductStock] = useState('');
+  const [newProductCode, setNewProductCode] = useState('');
+  const [newProductModel, setNewProductModel] = useState('');
+  const [newProductMinStock, setNewProductMinStock] = useState('');
+  const [newProductTargetStock, setNewProductTargetStock] = useState('');
   const [newProductPhotos, setNewProductPhotos] = useState<File[]>([]);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
   const [sendingToJuliaId, setSendingToJuliaId] = useState<string | null>(null);
@@ -187,6 +191,10 @@ export const JulianoVendasDesk: React.FC = () => {
           depthCm: newProductDepth ? parseFloat(newProductDepth.replace(',', '.')) : undefined,
           priceCents,
           stockQuantity,
+          code: newProductCode.trim() || undefined,
+          model: newProductModel.trim() || undefined,
+          minStockQuantity: newProductMinStock ? parseFloat(newProductMinStock.replace(',', '.')) : undefined,
+          targetStockQuantity: newProductTargetStock ? parseFloat(newProductTargetStock.replace(',', '.')) : undefined,
           dataUrl,
           mimeType: firstPhoto?.type,
         }),
@@ -219,6 +227,10 @@ export const JulianoVendasDesk: React.FC = () => {
       setNewProductDepth('');
       setNewProductPrice('');
       setNewProductStock('');
+      setNewProductCode('');
+      setNewProductModel('');
+      setNewProductMinStock('');
+      setNewProductTargetStock('');
       setNewProductPhotos([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao cadastrar produto.');
@@ -568,6 +580,39 @@ export const JulianoVendasDesk: React.FC = () => {
                   placeholder="Estoque (unid.)"
                   value={newProductStock}
                   onChange={(e) => setNewProductStock(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                />
+              </div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-[#6B6257] pt-1">
+                Controle de produção (Henrique) — opcional
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  placeholder="Código/referência"
+                  value={newProductCode}
+                  onChange={(e) => setNewProductCode(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                />
+                <input
+                  type="text"
+                  placeholder="Modelo"
+                  value={newProductModel}
+                  onChange={(e) => setNewProductModel(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                />
+                <input
+                  type="number"
+                  placeholder="Estoque mínimo"
+                  value={newProductMinStock}
+                  onChange={(e) => setNewProductMinStock(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                />
+                <input
+                  type="number"
+                  placeholder="Meta de reposição"
+                  value={newProductTargetStock}
+                  onChange={(e) => setNewProductTargetStock(e.target.value)}
                   className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
                 />
               </div>
