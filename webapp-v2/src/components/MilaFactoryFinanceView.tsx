@@ -15,8 +15,19 @@ import {
   ArrowRightLeft,
   Download,
   Filter,
+  Camera,
+  Receipt,
 } from 'lucide-react';
-import { FinancialTransaction, FinancialTransactionType, FixedExpense, WorkshopSettings } from '../types';
+import {
+  FinancialTransaction,
+  FinancialTransactionType,
+  FixedExpense,
+  WorkshopSettings,
+  MaterialCatalogItem,
+  PurchaseReceipt,
+  PurchaseReceiptItem,
+  RawMaterialCategory,
+} from '../types';
 import { formatCurrencyBRL } from '../utils/calculations';
 import { AgentPortrait } from './AgentPortrait';
 import { generateMonthlyFinancialReportPdf } from '../utils/pdfGenerator';
@@ -68,7 +79,37 @@ interface FactoryFinancialSummary {
 interface MilaFactoryFinanceViewProps {
   settings: WorkshopSettings;
   onOpenOrder?: (orderId: string) => void;
+  materialsCatalog: MaterialCatalogItem[];
+  onMaterialsUpdated: (materials: MaterialCatalogItem[]) => void;
 }
+
+async function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const RAW_MATERIAL_CATEGORY_LABELS: Record<RawMaterialCategory, string> = {
+  espumas: 'Espumas',
+  tecidos_revestimentos: 'Tecidos / Revestimentos',
+  madeira_chapas: 'Madeira / Chapas',
+  percintas_molas: 'Percintas / Molas',
+  grampos_fixadores: 'Grampos / Fixadores',
+  colas_auxiliares: 'Colas / Auxiliares',
+  mantas_enchimentos: 'Mantas / Enchimentos',
+  pes_ferragens: 'Pés / Ferragens',
+  outros_materiais: 'Outros Materiais',
+};
+
+const EXPENSE_TYPE_OPTIONS: { value: FinancialTransactionType; label: string }[] = [
+  { value: 'despesa_servico', label: 'Despesa: Serviço' },
+  { value: 'despesa_mao_de_obra', label: 'Despesa: Mão de Obra' },
+  { value: 'despesa_geral_fabrica', label: 'Despesa Geral da Fábrica' },
+  { value: 'outro', label: 'Outro' },
+];
 
 function isOverdue(t: FinancialTransaction): boolean {
   if (t.status !== 'previsto' && t.status !== 'parcial') return false;
@@ -107,8 +148,15 @@ const TX_TYPE_LABELS: Partial<Record<FinancialTransactionType, string>> = {
   outro: 'Outro',
 };
 
-export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({ settings, onOpenOrder }) => {
-  const [activeTab, setActiveTab] = useState<'resumo' | 'contas_fixas' | 'reserva_edson' | 'saldo_inicial' | 'contas_caixa'>('resumo');
+export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({
+  settings,
+  onOpenOrder,
+  materialsCatalog,
+  onMaterialsUpdated,
+}) => {
+  const [activeTab, setActiveTab] = useState<
+    'resumo' | 'contas_fixas' | 'reserva_edson' | 'saldo_inicial' | 'contas_caixa' | 'comprovantes'
+  >('resumo');
   const [month, setMonth] = useState(currentMonthKey());
   const [categoryFilter, setCategoryFilter] = useState('');
   const [summary, setSummary] = useState<FactoryFinancialSummary | null>(null);
@@ -159,6 +207,81 @@ export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({ 
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [withdrawBy, setWithdrawBy] = useState(settings.responsibleDefaultName || '');
   const [withdrawNotes, setWithdrawNotes] = useState('');
+
+  // Entrada de Comprovante de Compra (estoque + financeiro)
+  const [isReadingReceipt, setIsReadingReceipt] = useState(false);
+  const [readReceiptError, setReadReceiptError] = useState<string | null>(null);
+  const [draftReceipt, setDraftReceipt] = useState<PurchaseReceipt | null>(null);
+  const [isConfirmingReceipt, setIsConfirmingReceipt] = useState(false);
+  const [confirmReceiptError, setConfirmReceiptError] = useState<string | null>(null);
+  const [confirmedByName, setConfirmedByName] = useState(settings.responsibleDefaultName || '');
+  const [confirmedReceiptsHistory, setConfirmedReceiptsHistory] = useState<PurchaseReceipt[]>([]);
+
+  const handleReceiptPhotoSelected = async (file: File) => {
+    setIsReadingReceipt(true);
+    setReadReceiptError(null);
+    setDraftReceipt(null);
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const res = await fetch('/api/office/purchase-receipts/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ receiptImageDataUrl: dataUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Falha ao ler o comprovante.');
+      }
+      setDraftReceipt(data.receipt);
+    } catch (err: any) {
+      setReadReceiptError(err.message || 'Erro ao ler o comprovante.');
+    } finally {
+      setIsReadingReceipt(false);
+    }
+  };
+
+  const updateDraftReceiptItem = (itemId: string, updates: Partial<PurchaseReceiptItem>) => {
+    setDraftReceipt((prev) =>
+      prev
+        ? {
+            ...prev,
+            items: prev.items.map((it) => (it.id === itemId ? { ...it, ...updates } : it)),
+          }
+        : prev
+    );
+  };
+
+  const handleConfirmReceipt = async () => {
+    if (!draftReceipt) return;
+    setIsConfirmingReceipt(true);
+    setConfirmReceiptError(null);
+    try {
+      const res = await fetch(`/api/office/purchase-receipts/${draftReceipt.id}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: draftReceipt.items, confirmedBy: confirmedByName || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Falha ao confirmar o comprovante.');
+      }
+      onMaterialsUpdated(data.materials);
+      setConfirmedReceiptsHistory((prev) => [data.receipt, ...prev]);
+      setDraftReceipt(null);
+      flash(
+        `Comprovante lançado: ${data.receipt.items.length} item(ns) processado(s), ${data.receipt.generalTransactionIds.length} lançamento(s) financeiro(s) criado(s).`
+      );
+      loadSummary(month, categoryFilter || undefined);
+    } catch (err: any) {
+      setConfirmReceiptError(err.message || 'Erro ao confirmar o comprovante.');
+    } finally {
+      setIsConfirmingReceipt(false);
+    }
+  };
+
+  const allDraftItemsClassified = draftReceipt
+    ? draftReceipt.items.every((it) => it.classification === 'material' || it.classification === 'despesa')
+    : false;
 
   const loadSummary = useCallback(async (m: string, cat?: string) => {
     setIsLoading(true);
@@ -611,6 +734,7 @@ export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({ 
           { id: 'reserva_edson', label: '3. Reserva do Edson (10%)' },
           { id: 'saldo_inicial', label: '4. Saldo Inicial' },
           { id: 'contas_caixa', label: `5. Contas / Caixa (${summary?.cashAccounts.length ?? 0})` },
+          { id: 'comprovantes', label: '6. Entrada de Compras' },
         ].map((t) => (
           <button
             key={t.id}
@@ -1519,6 +1643,262 @@ export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({ 
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ABA 6: ENTRADA DE COMPRAS (comprovante → estoque + financeiro) */}
+            {activeTab === 'comprovantes' && (
+              <div className="space-y-5">
+                <div className="p-4 rounded-xl bg-[#F9F6F0] border border-[#E5DEC9] text-xs text-[#57534E]">
+                  <strong className="text-[#181512]">Como funciona:</strong> tire ou envie a foto do cupom/nota de
+                  compra. A IA lê os itens pra você conferir — nada é aplicado no estoque ou no financeiro até você
+                  classificar cada item (material ou despesa/serviço) e confirmar.
+                </div>
+
+                <div className="p-4 rounded-xl border border-[#E5DEC9] bg-white flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                  <label className="px-4 py-2.5 rounded-lg bg-[#181512] hover:bg-[#2E2722] text-white text-xs font-semibold flex items-center gap-2 cursor-pointer">
+                    <Camera className="w-4 h-4 text-amber-300" />
+                    {isReadingReceipt ? 'Lendo cupom…' : 'Foto do Comprovante'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      disabled={isReadingReceipt}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleReceiptPhotoSelected(file);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  {isReadingReceipt && <RefreshCw className="w-4 h-4 animate-spin text-[#9A7138]" />}
+                  {readReceiptError && (
+                    <span className="text-xs text-red-700 font-medium">{readReceiptError}</span>
+                  )}
+                </div>
+
+                {draftReceipt && (
+                  <div className="p-4 rounded-xl border border-[#E5DEC9] bg-white space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#57534E]">
+                      <div>
+                        <strong className="text-[#181512]">{draftReceipt.storeName || 'Loja não identificada'}</strong>
+                        {draftReceipt.receiptNumber && <> — Pedido {draftReceipt.receiptNumber}</>}
+                        {draftReceipt.purchaseDate && <> — {draftReceipt.purchaseDate}</>}
+                      </div>
+                      <div className="font-bold text-[#181512]">Total do cupom: {formatCurrencyBRL(draftReceipt.totalCents)}</div>
+                    </div>
+
+                    <div className="overflow-x-auto border border-[#E5DEC9] rounded-xl">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="bg-[#181512] text-[#F9F6F0]">
+                            <th className="py-2 px-3">Item</th>
+                            <th className="py-2 px-3 text-right">Qtd.</th>
+                            <th className="py-2 px-3">Unid.</th>
+                            <th className="py-2 px-3 text-right">Preço Unit.</th>
+                            <th className="py-2 px-3 text-right">Total</th>
+                            <th className="py-2 px-3">Classificação</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#EFECE6]">
+                          {draftReceipt.items.map((item) => (
+                            <tr key={item.id} className={item.classification ? '' : 'bg-amber-50/50'}>
+                              <td className="py-2 px-3">
+                                <input
+                                  type="text"
+                                  value={item.rawName}
+                                  onChange={(e) => updateDraftReceiptItem(item.id, { rawName: e.target.value })}
+                                  className="w-full px-1.5 py-1 rounded border border-[#D6CFC5] text-xs"
+                                />
+                              </td>
+                              <td className="py-2 px-3 text-right">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={item.quantity}
+                                  onChange={(e) => updateDraftReceiptItem(item.id, { quantity: parseFloat(e.target.value) || 0 })}
+                                  className="w-16 px-1.5 py-1 rounded border border-[#D6CFC5] text-right text-xs"
+                                />
+                              </td>
+                              <td className="py-2 px-3">
+                                <input
+                                  type="text"
+                                  value={item.unit}
+                                  onChange={(e) => updateDraftReceiptItem(item.id, { unit: e.target.value })}
+                                  className="w-14 px-1.5 py-1 rounded border border-[#D6CFC5] text-xs"
+                                />
+                              </td>
+                              <td className="py-2 px-3 text-right">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={(item.unitPriceCents / 100).toFixed(2)}
+                                  onChange={(e) => {
+                                    const unitPriceCents = Math.round((parseFloat(e.target.value) || 0) * 100);
+                                    updateDraftReceiptItem(item.id, {
+                                      unitPriceCents,
+                                      totalCents: Math.round(unitPriceCents * item.quantity),
+                                    });
+                                  }}
+                                  className="w-20 px-1.5 py-1 rounded border border-[#D6CFC5] text-right text-xs"
+                                />
+                              </td>
+                              <td className="py-2 px-3 text-right font-mono font-semibold">
+                                {formatCurrencyBRL(item.totalCents)}
+                              </td>
+                              <td className="py-2 px-3">
+                                <div className="flex flex-col gap-1.5 min-w-[180px]">
+                                  <div className="flex gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => updateDraftReceiptItem(item.id, { classification: 'material' })}
+                                      className={`flex-1 px-2 py-1 rounded text-[10px] font-semibold border ${
+                                        item.classification === 'material'
+                                          ? 'bg-emerald-600 text-white border-emerald-700'
+                                          : 'bg-white text-[#57534E] border-[#D6CFC5]'
+                                      }`}
+                                    >
+                                      Material (Estoque)
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => updateDraftReceiptItem(item.id, { classification: 'despesa' })}
+                                      className={`flex-1 px-2 py-1 rounded text-[10px] font-semibold border ${
+                                        item.classification === 'despesa'
+                                          ? 'bg-amber-600 text-white border-amber-700'
+                                          : 'bg-white text-[#57534E] border-[#D6CFC5]'
+                                      }`}
+                                    >
+                                      Despesa/Serviço
+                                    </button>
+                                  </div>
+                                  {item.classification === 'material' && (
+                                    <select
+                                      value={item.materialCatalogItemId || ''}
+                                      onChange={(e) =>
+                                        updateDraftReceiptItem(item.id, {
+                                          materialCatalogItemId: e.target.value || undefined,
+                                          newMaterialRawCategory: e.target.value ? undefined : item.newMaterialRawCategory,
+                                        })
+                                      }
+                                      className="px-1.5 py-1 rounded border border-[#D6CFC5] text-[10px]"
+                                    >
+                                      <option value="">— Cadastrar como material novo —</option>
+                                      {materialsCatalog.map((m) => (
+                                        <option key={m.id} value={m.id}>
+                                          {m.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                  {item.classification === 'material' && !item.materialCatalogItemId && (
+                                    <select
+                                      value={item.newMaterialRawCategory || ''}
+                                      onChange={(e) =>
+                                        updateDraftReceiptItem(item.id, {
+                                          newMaterialRawCategory: (e.target.value || undefined) as any,
+                                        })
+                                      }
+                                      className="px-1.5 py-1 rounded border border-[#D6CFC5] text-[10px]"
+                                    >
+                                      <option value="">Categoria do material novo…</option>
+                                      {Object.entries(RAW_MATERIAL_CATEGORY_LABELS).map(([value, label]) => (
+                                        <option key={value} value={value}>
+                                          {label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                  {item.classification === 'despesa' && (
+                                    <>
+                                      <select
+                                        value={item.expenseType || ''}
+                                        onChange={(e) =>
+                                          updateDraftReceiptItem(item.id, { expenseType: (e.target.value || undefined) as any })
+                                        }
+                                        className="px-1.5 py-1 rounded border border-[#D6CFC5] text-[10px]"
+                                      >
+                                        <option value="">Tipo de despesa…</option>
+                                        {EXPENSE_TYPE_OPTIONS.map((opt) => (
+                                          <option key={opt.value} value={opt.value}>
+                                            {opt.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <input
+                                        type="text"
+                                        placeholder="Categoria livre (ex.: Frete)"
+                                        value={item.expenseCategory || ''}
+                                        onChange={(e) => updateDraftReceiptItem(item.id, { expenseCategory: e.target.value })}
+                                        className="px-1.5 py-1 rounded border border-[#D6CFC5] text-[10px]"
+                                      />
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <input
+                        type="text"
+                        placeholder="Conferido por"
+                        value={confirmedByName}
+                        onChange={(e) => setConfirmedByName(e.target.value)}
+                        className="px-2.5 py-2 rounded-lg border border-[#D6CFC5] text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleConfirmReceipt}
+                        disabled={!allDraftItemsClassified || isConfirmingReceipt}
+                        className="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 text-white text-xs font-semibold flex items-center gap-1.5"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        {isConfirmingReceipt ? 'Confirmando…' : 'Confirmar e Lançar'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDraftReceipt(null)}
+                        className="px-4 py-2 rounded-lg bg-white border border-[#D6CFC5] text-xs font-semibold text-[#57534E]"
+                      >
+                        Descartar
+                      </button>
+                      {!allDraftItemsClassified && (
+                        <span className="text-[10px] text-amber-800">
+                          Classifique todos os itens (material ou despesa) antes de confirmar.
+                        </span>
+                      )}
+                      {confirmReceiptError && (
+                        <span className="text-xs text-red-700 font-medium">{confirmReceiptError}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {confirmedReceiptsHistory.length > 0 && (
+                  <div>
+                    <h4 className="font-bold text-xs text-[#181512] mb-2 flex items-center gap-1.5">
+                      <Receipt className="w-3.5 h-3.5" /> Comprovantes lançados nesta sessão
+                    </h4>
+                    <div className="space-y-1.5">
+                      {confirmedReceiptsHistory.map((r) => (
+                        <div
+                          key={r.id}
+                          className="p-2.5 rounded-lg border border-[#E5DEC9] bg-[#FAF7F2] text-xs flex justify-between items-center"
+                        >
+                          <span>
+                            {r.storeName || 'Comprovante'} — {r.items.length} item(ns)
+                          </span>
+                          <span className="font-bold">{formatCurrencyBRL(r.totalCents)}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

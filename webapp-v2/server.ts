@@ -103,6 +103,8 @@ import type {
   AgentActionProposal,
   JuliaVoiceTextMessage,
   FinancialTransaction,
+  PurchaseReceipt,
+  PurchaseReceiptItem,
   BusinessStrategyRecommendation,
   WeeklyActionPlanItem,
   AssemblyManual,
@@ -11903,6 +11905,249 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     }
   });
 
+  function savePurchaseReceiptPhoto(dataUrl: string, fallbackMimeType?: string): string | null {
+    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) return null;
+    const detectedMime = match[1] || fallbackMimeType || 'image/jpeg';
+    const ext = detectedMime.includes('png') ? '.png' : detectedMime.includes('webp') ? '.webp' : '.jpg';
+    const safeFileName = `receipt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+    savePhotoFile(safeFileName, Buffer.from(match[2], 'base64'), detectedMime);
+    return `/api/photos/${safeFileName}`;
+  }
+
+  function normalizeMaterialName(s: string): string {
+    return s.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  }
+
+  // Mila — "Entrada de Compras": lê a foto de um cupom/nota de compra de material com IA e
+  // devolve os itens extraídos, já casados (quando possível) com o catálogo real. Nunca
+  // aplica estoque/financeiro sozinha — fica "aguardando_conferencia" até o usuário revisar
+  // e confirmar via /confirm. Mesmo padrão já usado na leitura de ficha de verificação/visita
+  // técnica: foto como data URL no corpo, IA só propõe.
+  app.post('/api/office/purchase-receipts/read', async (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      if (!store.officeData.purchaseReceipts) store.officeData.purchaseReceipts = [];
+
+      const { receiptImageDataUrl } = req.body as { receiptImageDataUrl?: string };
+      if (!receiptImageDataUrl) {
+        res.status(400).json({ error: 'Nenhuma foto de comprovante enviada.' });
+        return;
+      }
+      const match = receiptImageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!match) {
+        res.status(400).json({ error: 'Formato de imagem inválido (esperado base64 dataURL).' });
+        return;
+      }
+
+      const receiptImageUrl = savePurchaseReceiptPhoto(receiptImageDataUrl);
+      if (!receiptImageUrl) {
+        res.status(400).json({ error: 'Não foi possível salvar a foto do comprovante.' });
+        return;
+      }
+
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
+      const RECEIPT_READER_SYSTEM_INSTRUCTION = `Você está lendo a foto de um cupom/nota fiscal de compra de uma loja de materiais, para dar entrada no controle de estoque e financeiro da Castros Interiores.
+Leia SOMENTE o que está realmente impresso no cupom — nunca invente item, quantidade ou preço que não esteja visível. Se um valor estiver ilegível, omita o campo em vez de adivinhar.`;
+
+      const { response } = await generateContentWithRetryAndFallback({
+        preferredModel,
+        parts: [
+          { text: 'Leia este cupom/nota de compra e extraia os dados estruturados.' },
+          { inlineData: { mimeType: match[1], data: match[2] } },
+        ],
+        systemInstruction: RECEIPT_READER_SYSTEM_INSTRUCTION,
+        lockKey: `receipt-read:${Date.now()}`,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            storeName: { type: Type.STRING },
+            receiptNumber: { type: Type.STRING },
+            purchaseDate: { type: Type.STRING, description: 'formato YYYY-MM-DD quando legível' },
+            totalCents: { type: Type.NUMBER },
+            items: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  quantity: { type: Type.NUMBER },
+                  unit: { type: Type.STRING },
+                  unitPriceCents: { type: Type.NUMBER },
+                  totalCents: { type: Type.NUMBER },
+                },
+                required: ['name', 'quantity', 'unitPriceCents', 'totalCents'],
+              },
+            },
+          },
+          required: ['items', 'totalCents'],
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}');
+      const rawItems: any[] = Array.isArray(parsed.items) ? parsed.items : [];
+      if (rawItems.length === 0) {
+        res.status(502).json({ error: 'A IA não conseguiu ler nenhum item deste cupom. Tente uma foto mais nítida.' });
+        return;
+      }
+
+      const items: PurchaseReceiptItem[] = rawItems.map((it, idx) => {
+        const matchedCatalog = store.materials.find(
+          (cat) =>
+            normalizeMaterialName(cat.name) === normalizeMaterialName(String(it.name || '')) ||
+            normalizeMaterialName(cat.name).includes(normalizeMaterialName(String(it.name || ''))) ||
+            normalizeMaterialName(String(it.name || '')).includes(normalizeMaterialName(cat.name))
+        );
+        return {
+          id: `pri-${Date.now()}-${idx}`,
+          rawName: String(it.name || `Item ${idx + 1}`),
+          quantity: Number(it.quantity) || 0,
+          unit: it.unit || matchedCatalog?.unit || 'un',
+          unitPriceCents: Math.round(Number(it.unitPriceCents) || 0),
+          totalCents: Math.round(Number(it.totalCents) || 0),
+          classification: matchedCatalog ? 'material' : null,
+          materialCatalogItemId: matchedCatalog?.id,
+        };
+      });
+
+      const now = new Date().toISOString();
+      const receipt: PurchaseReceipt = {
+        id: `prec-${Date.now()}`,
+        createdAt: now,
+        storeName: parsed.storeName || undefined,
+        receiptNumber: parsed.receiptNumber || undefined,
+        purchaseDate: parsed.purchaseDate || undefined,
+        receiptImageUrl,
+        receiptMimeType: match[1],
+        items,
+        totalCents: Math.round(Number(parsed.totalCents) || items.reduce((acc, it) => acc + it.totalCents, 0)),
+        status: 'aguardando_conferencia',
+        generalTransactionIds: [],
+      };
+      store.officeData.purchaseReceipts.unshift(receipt);
+      saveStore(store);
+      res.json({ ok: true, receipt });
+    } catch (error) {
+      console.error('Erro ao ler comprovante de compra:', error);
+      res.status(500).json({ error: 'Erro ao ler comprovante de compra.' });
+    }
+  });
+
+  // Mila — confirma um comprovante já conferido: aplica estoque (soma físico + atualiza
+  // preço real de item existente, ou cadastra material novo quando marcado assim) e cria um
+  // FinancialTransaction por item (material ou despesa), igual à forma de objeto já usada em
+  // /api/office/general-transaction. Nunca aplica item que ainda não foi classificado.
+  app.post('/api/office/purchase-receipts/:id/confirm', (req, res) => {
+    try {
+      const store = loadStore();
+      if (!store.officeData) store.officeData = createDefaultOfficeData();
+      if (!store.officeData.purchaseReceipts) store.officeData.purchaseReceipts = [];
+
+      const { id } = req.params;
+      const receipt = store.officeData.purchaseReceipts.find((r) => r.id === id);
+      if (!receipt) {
+        res.status(404).json({ error: 'Comprovante não encontrado.' });
+        return;
+      }
+      if (receipt.status === 'confirmado') {
+        res.status(400).json({ error: 'Este comprovante já foi confirmado.' });
+        return;
+      }
+
+      const { items, confirmedBy } = req.body as { items: PurchaseReceiptItem[]; confirmedBy?: string };
+      if (!Array.isArray(items) || items.length === 0) {
+        res.status(400).json({ error: 'Nenhum item para confirmar.' });
+        return;
+      }
+      const unclassified = items.find((it) => it.classification !== 'material' && it.classification !== 'despesa');
+      if (unclassified) {
+        res.status(400).json({
+          error: `O item "${unclassified.rawName}" ainda não foi classificado como material ou despesa.`,
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const createdTransactionIds: string[] = [];
+
+      for (const item of items) {
+        if (item.classification === 'material') {
+          let catalogItem = item.materialCatalogItemId
+            ? store.materials.find((m) => m.id === item.materialCatalogItemId)
+            : undefined;
+
+          if (catalogItem) {
+            catalogItem.physicalStock = Math.max(0, (catalogItem.physicalStock || 0) + item.quantity);
+            catalogItem.unitCostCents = item.unitPriceCents;
+            catalogItem.priceOrigin = 'Nota Fiscal';
+            catalogItem.priceDate = receipt.purchaseDate || now;
+            catalogItem.updatedAt = now;
+          } else {
+            catalogItem = {
+              id: `mat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              ownerId: 'default-owner',
+              name: item.rawName,
+              category: 'Material',
+              rawCategory: item.newMaterialRawCategory,
+              supplier: receipt.storeName || '',
+              unit: item.unit,
+              unitCostCents: item.unitPriceCents,
+              priceOrigin: 'Nota Fiscal',
+              priceDate: receipt.purchaseDate || now,
+              physicalStock: item.quantity,
+              reservedStock: 0,
+              isActive: true,
+              updatedAt: now,
+              createdAt: now,
+            };
+            store.materials.unshift(catalogItem);
+            item.materialCatalogItemId = catalogItem.id;
+          }
+        }
+
+        const trans: FinancialTransaction = {
+          id: `gt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: item.classification === 'material' ? 'despesa_material' : item.expenseType || 'outro',
+          description: `${item.rawName} — ${receipt.storeName || 'Comprovante de compra'}${
+            receipt.receiptNumber ? ` (pedido ${receipt.receiptNumber})` : ''
+          }`,
+          amountCents: item.totalCents,
+          status: 'realizado',
+          dueDate: receipt.purchaseDate || now.slice(0, 10),
+          paidDate: receipt.purchaseDate || now.slice(0, 10),
+          category: item.classification === 'material' ? item.rawName : item.expenseCategory || 'Outro',
+          receiptImageUrl: receipt.receiptImageUrl,
+          receiptMimeType: receipt.receiptMimeType,
+          createdAt: now,
+          source: 'fabrica',
+          amountPaidCents: item.totalCents,
+          payments: [{ id: `pay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, amountCents: item.totalCents, paidDate: receipt.purchaseDate || now.slice(0, 10) }],
+          history: [{ action: 'Lançado a partir de comprovante de compra conferido', timestamp: now }],
+        };
+        store.officeData.generalTransactions.unshift(trans);
+        createdTransactionIds.push(trans.id);
+      }
+
+      receipt.items = items;
+      receipt.status = 'confirmado';
+      receipt.confirmedAt = now;
+      receipt.confirmedBy = confirmedBy;
+      receipt.generalTransactionIds = createdTransactionIds;
+
+      saveStore(store);
+      res.json({
+        ok: true,
+        receipt,
+        materials: store.materials,
+        generalTransactions: store.officeData.generalTransactions,
+      });
+    } catch (error) {
+      console.error('Erro ao confirmar comprovante de compra:', error);
+      res.status(500).json({ error: 'Erro ao confirmar comprovante de compra.' });
+    }
+  });
+
   // Retirada confirmada da reserva do Edson — gera saída real de caixa, uma única vez por valor confirmado.
   // Bloqueia se o valor pedido exceder o saldo de reserva restante do mês (nunca permite "estourar" a reserva).
   app.post('/api/office/edson-reserve/withdraw', (req, res) => {
@@ -13032,6 +13277,67 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
     }
   });
 
+  // Baixa automática de estoque quando o cliente aceita o orçamento/negociação — dispara a
+  // partir de /negotiation/decision e /budget-decision (os dois fluxos de decisão do cliente),
+  // sempre que decision === 'aceito'. Idempotente via order.stockDeductedAt (nunca deduz duas
+  // vezes o mesmo pedido). Nunca finge deduzir item sem vínculo real com o catálogo.
+  function applyStockDeductionOnApproval(store: PersistentStore, order: AttendanceRecord, actor: string): void {
+    if (order.stockDeductedAt) return;
+
+    type ConsumableItem = { materialCatalogItemId?: string; quantity: number; label: string };
+    let consumables: ConsumableItem[] = [];
+
+    if (order.orderType === 'Fabricação') {
+      consumables = (order.manufacturingData?.materialRequirements || []).map((m) => ({
+        materialCatalogItemId: m.materialId,
+        quantity: m.totalOrderRequirement || m.quantityPerUnit || m.totalRequired || m.requiredPerProduct || 0,
+        label: m.materialName || m.name || 'Material',
+      }));
+    } else {
+      const latestList = (order.materialsLists || [])[order.materialsLists?.length ? order.materialsLists.length - 1 : -1];
+      consumables = (latestList?.items || [])
+        .filter((it) => it.componentStatus !== 'Reaproveitado')
+        .map((it) => ({
+          materialCatalogItemId: it.materialCatalogItemId,
+          quantity: it.purchaseQuantity || 0,
+          label: it.materialName,
+        }));
+    }
+
+    let deductedCount = 0;
+    let skippedCount = 0;
+    const skippedLabels: string[] = [];
+
+    for (const item of consumables) {
+      if (item.quantity <= 0) continue;
+      const catalogItem = item.materialCatalogItemId
+        ? store.materials.find((m) => m.id === item.materialCatalogItemId)
+        : undefined;
+      if (!catalogItem) {
+        skippedCount++;
+        skippedLabels.push(item.label);
+        continue;
+      }
+      catalogItem.physicalStock = Math.max(0, (catalogItem.physicalStock || 0) - item.quantity);
+      catalogItem.updatedAt = new Date().toISOString();
+      deductedCount++;
+    }
+
+    const now = new Date().toISOString();
+    order.stockDeductedAt = now;
+    order.auditHistory.unshift({
+      id: `aud-${Date.now()}`,
+      timestamp: now,
+      actor,
+      stage: 'Baixa de Estoque',
+      action: 'Baixa de estoque aplicada após aceite do cliente',
+      details:
+        skippedCount > 0
+          ? `${deductedCount} item(ns) deduzido(s) do catálogo; ${skippedCount} item(ns) sem vínculo de catálogo não deduzido(s) (${skippedLabels.join(', ')}) — ajuste manual necessário.`
+          : `${deductedCount} item(ns) deduzido(s) do catálogo.`,
+    });
+  }
+
   // Carla — registra o aceite ou recusa do cliente, com o mesmo padrão de snapshot de
   // preço (para detectar obsolescência) já usado em BudgetData.clientDecisionPriceCentsSnapshot.
   app.post('/api/orders/:id/negotiation/decision', (req, res) => {
@@ -13069,6 +13375,10 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         action: decision === 'aceito' ? 'Cliente aceitou a proposta' : 'Cliente recusou a proposta',
         details: `Valor na decisão: ${(order.negotiation.finalPriceCents / 100).toFixed(2)}.`,
       });
+
+      if (decision === 'aceito') {
+        applyStockDeductionOnApproval(store, order, decidedBy || 'Carla (Atendimento ao Cliente)');
+      }
 
       saveStore(store);
       broadcastRealtimeEvent({
@@ -15200,6 +15510,9 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
         action: `Cliente ${decision === 'aceito' ? 'aceitou' : 'recusou'} o orçamento`,
         details: notes || '',
       });
+      if (decision === 'aceito') {
+        applyStockDeductionOnApproval(store, order, decidedBy || 'Carla (Atendimento ao Cliente)');
+      }
       saveStore(store);
       res.json({ ok: true, order });
     } catch (error) {

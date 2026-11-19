@@ -996,6 +996,10 @@ export interface AttendanceRecord {
   // 10c. Pedidos de Compra formais enviados à Ana (acumulados, nunca sobrescritos)
   purchaseRequests?: PurchaseRequestPackage[];
 
+  // 10d. Baixa de estoque aplicada quando o cliente aceitou o orçamento/negociação —
+  // presente só depois que a dedução já aconteceu uma vez (evita duplicar a baixa).
+  stockDeductedAt?: string;
+
   // 11. Parecer
   opinion: FeasibilityOpinion;
 
@@ -2200,6 +2204,39 @@ export interface FixedExpense {
   updatedAt: string;
 }
 
+// Comprovante de compra (cupom/nota) dado entrada no Financeiro da Fábrica — lido por IA,
+// nunca aplicado automaticamente: fica "aguardando_conferencia" até o usuário classificar
+// cada item (material → estoque, ou despesa → só financeiro) e confirmar.
+export interface PurchaseReceiptItem {
+  id: string;
+  rawName: string;
+  quantity: number;
+  unit: string;
+  unitPriceCents: number;
+  totalCents: number;
+  classification: 'material' | 'despesa' | null;
+  materialCatalogItemId?: string;
+  newMaterialRawCategory?: RawMaterialCategory;
+  expenseType?: FinancialTransactionType;
+  expenseCategory?: string;
+}
+
+export interface PurchaseReceipt {
+  id: string;
+  createdAt: string;
+  storeName?: string;
+  receiptNumber?: string;
+  purchaseDate?: string;
+  receiptImageUrl: string;
+  receiptMimeType?: string;
+  items: PurchaseReceiptItem[];
+  totalCents: number;
+  status: 'aguardando_conferencia' | 'confirmado';
+  confirmedAt?: string;
+  confirmedBy?: string;
+  generalTransactionIds: string[];
+}
+
 export interface InitialBalanceRecord {
   amountCents: number;
   referenceDate: string; // data de referência informada pelo usuário
@@ -2360,6 +2397,7 @@ export interface SharedOfficeData {
   initialBalance?: InitialBalanceRecord | null;
   cashAccounts?: CashAccount[];
   cashTransfers?: CashTransfer[];
+  purchaseReceipts?: PurchaseReceipt[];
 }
 
 

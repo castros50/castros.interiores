@@ -49,6 +49,7 @@ import { JulianoVendasDesk } from './JulianoVendasDesk';
 interface OfficeDesksHubProps {
   attendances: AttendanceRecord[];
   materialsCatalog: MaterialCatalogItem[];
+  onMaterialsUpdated: (materials: MaterialCatalogItem[]) => void;
   settings: WorkshopSettings;
   activeAttendanceId: string | null;
   onSelectAttendance: (id: string | null) => void;
@@ -71,6 +72,7 @@ interface OfficeDesksHubProps {
 export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   attendances,
   materialsCatalog,
+  onMaterialsUpdated,
   settings,
   activeAttendanceId,
   onSelectAttendance,
@@ -695,6 +697,8 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
         <div className="space-y-4">
           <MilaFactoryFinanceView
             settings={settings}
+            materialsCatalog={materialsCatalog}
+            onMaterialsUpdated={onMaterialsUpdated}
             onOpenOrder={(orderId) => {
               onSelectAttendance(orderId);
               setForceNoOrderView(false);

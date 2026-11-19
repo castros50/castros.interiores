@@ -2218,6 +2218,7 @@ export default function App() {
               <OfficeDesksHub
                 attendances={attendances}
                 materialsCatalog={materials}
+                onMaterialsUpdated={setMaterials}
                 settings={settings}
                 activeAttendanceId={activeAttendanceId}
                 onSelectAttendance={(id) => focusAttendanceLocally(id)}
