@@ -679,27 +679,27 @@ export const JulianoVendasDesk: React.FC = () => {
                     )}
 
                     {product.photoUrls.length > 0 && (
-                      <div className="flex gap-1.5 overflow-x-auto pb-1">
+                      <div className="flex flex-wrap gap-2 pt-0.5 pb-1">
                         {product.photoUrls.map((url, index) => (
-                          <div key={url} className="relative flex-shrink-0">
+                          <div key={url} className="relative flex-shrink-0 w-14 h-14">
                             <img
                               src={url}
                               alt={`${product.name} ${index + 1}`}
-                              className={`w-12 h-12 object-cover rounded ${
+                              className={`w-14 h-14 object-cover rounded ${
                                 index === 0 ? 'ring-2 ring-[#9A7138]' : 'border border-[#D6CFC5]'
                               }`}
                             />
                             <button
                               type="button"
                               onClick={() => handleDeletePhoto(product, index)}
-                              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-600 text-white flex items-center justify-center"
+                              className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-red-600 text-white flex items-center justify-center shadow"
                               title="Remover esta foto"
                             >
                               <X className="w-2.5 h-2.5" />
                             </button>
                           </div>
                         ))}
-                        <label className="w-12 h-12 flex-shrink-0 flex items-center justify-center rounded border border-dashed border-[#D6CFC5] text-[#9A7138] cursor-pointer hover:bg-[#F3EFE6]">
+                        <label className="w-14 h-14 flex-shrink-0 flex items-center justify-center rounded border border-dashed border-[#D6CFC5] text-[#9A7138] cursor-pointer hover:bg-[#F3EFE6]">
                           <input
                             type="file"
                             accept="image/*"
