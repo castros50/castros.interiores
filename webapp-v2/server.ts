@@ -6437,6 +6437,195 @@ Sua tarefa agora é só montar a lista de materiais para compra de uma peça de 
   });
 
   // ----------------------------------------------------------------------
+  // LISTA DE PEÇAS & COMPONENTES — Lucas, pedido de Fabricação. Gerada por
+  // IA só a partir do texto já cadastrado no pedido (tipo de móvel, medidas,
+  // preferência de tecido/conforto, briefing) — sem depender de foto. Nasce
+  // como proposta pendente de validação; a oficina confirma peça por peça
+  // (mesmo botão "Validar na Bancada" que a aba já tem).
+  // ----------------------------------------------------------------------
+
+  app.post('/api/orders/:id/manufacturing/components/prepare', async (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      if (attendance.orderType !== 'Fabricação') {
+        res.status(400).json({
+          error: 'Este pedido não é de Fabricação Nova — a lista de peças se aplica só a esse tipo de pedido.',
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const mfg = attendance.manufacturingData;
+      const dims = mfg?.dimensions;
+      const dimsText = dims && (dims.widthCm || dims.depthCm || dims.heightCm)
+        ? `${dims.widthCm ?? '?'}cm x ${dims.depthCm ?? '?'}cm x ${dims.heightCm ?? '?'}cm`
+        : attendance.approxMeasurements || 'Não informado ainda';
+      const lotSize = Number(attendance.piecesCount?.match(/\d+/)?.[0]) || 1;
+
+      const briefingContext = `
+DADOS DO PEDIDO DE FABRICAÇÃO SOB MEDIDA (${attendance.attendanceNumber}):
+- Cliente: ${attendance.clientName || 'Não informado'}
+- Tipo de Estofado: ${attendance.furnitureType || 'Estofado sob medida'}
+- Quantidade do Lote: ${attendance.piecesCount || '1 unidade'}
+- Medidas: ${dimsText}
+- Acabamento e Tecido Desejado: ${attendance.fabricAndComfortPreference || 'A definir'}
+- Especificações do Briefing/Serviço Desejado: ${attendance.desiredService || 'Fabricação própria artesanal sob medida'}
+- Notas da Oficina: ${attendance.notes || 'Sem observações'}
+
+TAREFA:
+Monte a LISTA DE PEÇAS E COMPONENTES ESTRUTURAIS desta peça (armação de madeira, pés, travessas, molas/percinta de sustentação, espuma de assento e encosto, e qualquer outro componente estrutural — NÃO inclua aqui itens de revestimento/tecido em metros, isso é a lista de materiais de compra, que é outra tela). Para cada peça, informe nome, tipo (Madeira, Espuma, Revestimento, Ferragem, Sustentação ou Acessório), material/especificação, dimensões em milímetros (comprimento x largura x espessura — quando não for possível estimar uma medida exata, descreva em texto livre) e quantidade por unidade do móvel. Esta é uma PROPOSTA TÉCNICA preliminar a partir do briefing — a oficina vai validar/ajustar cada peça na bancada antes de ela valer como definitiva. Nunca invente uma medida como se fosse certeza; quando a medida depender do projeto executivo final, diga isso explicitamente nas observações.`;
+
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
+      const LUCAS_COMPONENTS_SYSTEM_INSTRUCTION = `Você é o AGENTE LUCAS — Engenheiro de Projetos e Fabricação de Produtos Novos da Castros Interiores.
+Sua tarefa agora é só montar a lista preliminar de peças e componentes estruturais de uma fabricação nova, com base no briefing já cadastrado do pedido (sem foto de referência). Você é técnico e meticuloso, mas honesto: toda medida aqui é uma proposta técnica inicial, nunca uma certeza, até a oficina validar na bancada.`;
+
+      const { response } = await generateContentWithRetryAndFallback({
+        preferredModel,
+        parts: [{ text: briefingContext }],
+        systemInstruction: LUCAS_COMPONENTS_SYSTEM_INSTRUCTION,
+        lockKey: `fab-components:${attendance.id}`,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            items: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  componentType: {
+                    type: Type.STRING,
+                    description: 'Um de: Madeira, Espuma, Revestimento, Ferragem, Sustentação, Acessório',
+                  },
+                  material: { type: Type.STRING },
+                  specification: { type: Type.STRING },
+                  lengthMm: { type: Type.NUMBER },
+                  widthMm: { type: Type.NUMBER },
+                  thicknessMm: { type: Type.NUMBER },
+                  dimensionsRawText: { type: Type.STRING, description: 'Usar quando não der pra estimar mm exatos' },
+                  quantityPerUnit: { type: Type.NUMBER },
+                  notes: { type: Type.STRING },
+                },
+                required: ['name', 'componentType', 'specification', 'quantityPerUnit'],
+              },
+            },
+          },
+          required: ['items'],
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}');
+      const items: any[] = Array.isArray(parsed.items) ? parsed.items : [];
+      if (items.length === 0) {
+        res.status(502).json({ error: 'A IA não retornou nenhuma peça. Tente novamente.' });
+        return;
+      }
+
+      const normalizeName = (s: string) => s.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      const validComponentTypes: ManufacturingComponent['componentType'][] = [
+        'Madeira', 'Espuma', 'Revestimento', 'Ferragem', 'Sustentação', 'Acessório',
+      ];
+
+      const defaultMfg: ManufacturingProjectData = mfg || {
+        modelCode: `MOD-${attendance.attendanceNumber}`,
+        modelName: attendance.furnitureType || 'Estofado Sob Encomenda',
+        category: 'sofa',
+        version: 'v1.0-rascunho',
+        isDraft: true,
+        unitDimensions: {
+          widthMm: 1600,
+          depthMm: 880,
+          heightMm: 920,
+          seatHeightMm: 450,
+          source: 'proposta_pendente',
+        },
+        components: [],
+        materialRequirements: [],
+        assemblyManual: {
+          version: 'v1.0-rascunho',
+          isDraft: true,
+          modelCode: `MOD-${attendance.attendanceNumber}`,
+          modelName: attendance.furnitureType || 'Estofado Sob Encomenda',
+          status: 'rascunho_tecnico',
+          lastUpdatedAt: now,
+          referenceImages: [],
+          steps: [],
+          materialsAndTools: [],
+          generalPreparationNotes: '',
+          finalInspectionCriteria: '',
+        },
+        qualityCheckpoints: [],
+        technicalNotes: '',
+      };
+
+      const previousByName = new Map(
+        (defaultMfg.components || []).map((c) => [normalizeName(c.name), c])
+      );
+
+      const nextComponents: ManufacturingComponent[] = items.map((it, idx) => {
+        const name = String(it.name || `Componente ${idx + 1}`);
+        const prev = previousByName.get(normalizeName(name));
+        const qtyPerUnit = Number(it.quantityPerUnit) || 1;
+        const componentType: ManufacturingComponent['componentType'] = validComponentTypes.includes(it.componentType)
+          ? it.componentType
+          : 'Acessório';
+
+        return {
+          id: prev?.id || `comp-${Date.now()}-${idx}`,
+          code: prev?.code || `P-${String(idx + 1).padStart(2, '0')}`,
+          name,
+          componentType,
+          dimensionsMm: {
+            length: typeof it.lengthMm === 'number' ? it.lengthMm : null,
+            width: typeof it.widthMm === 'number' ? it.widthMm : null,
+            thickness: typeof it.thicknessMm === 'number' ? it.thicknessMm : null,
+            rawText: it.dimensionsRawText || undefined,
+          },
+          material: it.material || undefined,
+          specification: it.specification || '',
+          quantityPerUnit: qtyPerUnit,
+          totalQuantity: qtyPerUnit * lotSize,
+          totalQuantityForOrder: qtyPerUnit * lotSize,
+          // Preserva validação já feita pela oficina ao regenerar a lista.
+          source: prev?.source === 'informado_oficina' ? 'informado_oficina' : 'proposta_pendente',
+          notes: it.notes || undefined,
+        };
+      });
+
+      defaultMfg.components = nextComponents;
+      attendance.manufacturingData = defaultMfg;
+      attendance.updatedAt = now;
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor: 'Lucas (Projetos & Fabricação — IA)',
+        stage: 'Lista de peças de fabricação',
+        action: 'Lista de peças gerada/atualizada por IA',
+        details: `${nextComponents.length} peça(s) propostas a partir do briefing — pendente de validação na bancada.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+
+      res.json({ ok: true, order: attendance, manufacturingData: attendance.manufacturingData });
+    } catch (err) {
+      console.error('Erro ao gerar lista de peças de fabricação:', err);
+      res.status(500).json({ error: 'Erro ao gerar lista de peças de fabricação.' });
+    }
+  });
+
+  // ----------------------------------------------------------------------
   // MANUAL DE MONTAGEM (12 ETAPAS) — Lucas, pedido de Fabricação. Gerado por
   // IA só a partir dos dados REAIS já cadastrados nas abas 2 (Lista de
   // Peças & Componentes) e 3 (Relação de Materiais & Corte) do próprio

@@ -65,6 +65,11 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
   const [assemblyManualError, setAssemblyManualError] = useState<string | null>(null);
   const [assemblyManualApproverName, setAssemblyManualApproverName] = useState('');
 
+  // Lista de peças (aba 2) gerada por IA a partir do briefing já cadastrado
+  // no pedido (sem depender de foto) — nasce proposta pendente de validação.
+  const [isGeneratingComponents, setIsGeneratingComponents] = useState(false);
+  const [componentsError, setComponentsError] = useState<string | null>(null);
+
   // Se não possuir manufacturingData, inicializar modelo rascunho
   const project: ManufacturingProjectData = order.manufacturingData || {
     id: `mfg-${order.id}`,
@@ -138,6 +143,23 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
       alert('Erro ao salvar projeto.');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleGenerateComponents = async () => {
+    setIsGeneratingComponents(true);
+    setComponentsError(null);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/manufacturing/components/prepare`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao gerar a lista de peças.');
+      onUpdateOrder(data.order);
+    } catch (err) {
+      setComponentsError(err instanceof Error ? err.message : 'Erro ao gerar a lista de peças.');
+    } finally {
+      setIsGeneratingComponents(false);
     }
   };
 
@@ -597,6 +619,32 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
               </span>
             </div>
 
+            <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl border border-[#E5DEC9] bg-[#FAF7F2]">
+              <button
+                type="button"
+                disabled={isGeneratingComponents}
+                onClick={handleGenerateComponents}
+                className="px-3 py-2 rounded-lg bg-[#181512] hover:bg-[#2A2420] text-white text-xs font-semibold disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Sparkles className="w-4 h-4 text-amber-300" />
+                {isGeneratingComponents
+                  ? 'Gerando...'
+                  : project.components.length
+                  ? 'Gerar Nova Versão com IA'
+                  : 'Gerar Lista de Peças com IA'}
+              </button>
+              <span className="text-[11px] text-[#6B6257]">
+                A partir do briefing já cadastrado (tipo de móvel, medidas, tecido). Nasce como proposta pendente —
+                valide cada peça na bancada antes de considerar definitiva.
+              </span>
+            </div>
+            {componentsError && (
+              <div className="flex items-start gap-2 p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-xs">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                {componentsError}
+              </div>
+            )}
+
             <div className="overflow-x-auto border border-[#E5DEC9] rounded-xl">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
@@ -618,7 +666,9 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                       <td className="py-2 px-3 font-medium text-[#181512]">{comp.name}</td>
                       <td className="py-2 px-3 text-[#57534E]">{comp.material}</td>
                       <td className="py-2 px-3 text-right font-mono tabular-nums">
-                        {comp.dimensionsMm.length} × {comp.dimensionsMm.width} × {comp.dimensionsMm.thickness}
+                        {comp.dimensionsMm.length != null || comp.dimensionsMm.width != null || comp.dimensionsMm.thickness != null
+                          ? `${comp.dimensionsMm.length ?? '?'} × ${comp.dimensionsMm.width ?? '?'} × ${comp.dimensionsMm.thickness ?? '?'}`
+                          : comp.dimensionsMm.rawText || 'A definir'}
                       </td>
                       <td className="py-2 px-3 text-center font-mono">{comp.quantityPerUnit}</td>
                       <td className="py-2 px-3 text-center font-mono font-bold text-[#9A7138]">
@@ -641,6 +691,13 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                       </td>
                     </tr>
                   ))}
+                  {project.components.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="py-6 px-3 text-center text-[#6B6257]">
+                        Nenhuma peça cadastrada ainda. Use o botão "Gerar Lista de Peças com IA" acima.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
