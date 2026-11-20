@@ -8336,18 +8336,29 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
         }));
       }
 
+      // Mesmo casamento por nome (normalizado + bidirecional) já usado em outras rotas
+      // desta sessão — "cat.name.includes(m.name)" sozinho falhava quase sempre, porque
+      // o nome que a IA propõe costuma ser mais específico/longo que o nome do catálogo
+      // (ex.: IA diz "Courvin Creme Cappuccino Clássico", catálogo tem só "Courvin Creme").
+      const normalizeName = (s: string) => s.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
       if (Array.isArray(parsed.proposedMaterials) && parsed.proposedMaterials.length > 0) {
         currentMfg.materials = (parsed.proposedMaterials || []).map((m: any, idx: number) => {
           const reqPerProd = Number(m.requiredPerProduct) || 1;
           const totalReq = reqPerProd * unitsCount;
-          const matchingCat = store.materials.find(
-            (cat) => cat.code === m.code || cat.name.toLowerCase().includes(m.name.toLowerCase())
-          );
+          const mName = normalizeName(String(m.name || ''));
+          const matchingCat = store.materials.find((cat) => {
+            if (m.code && cat.code === m.code) return true;
+            const catName = normalizeName(cat.name);
+            return catName === mName || catName.includes(mName) || mName.includes(catName);
+          });
           const physical = matchingCat?.physicalStock || 0;
           const reserved = matchingCat?.reservedStock || 0;
           const available = Math.max(0, physical - reserved);
           const toBuy = Math.max(0, totalReq - available);
-          const costCents = matchingCat?.unitCostCents || 5500;
+          // Nunca inventa preço: sem correspondência real no catálogo, fica sem custo
+          // (a tela já mostra "pendente" nesse caso — ver formatCurrencyBRL).
+          const costCents = matchingCat?.unitCostCents;
 
           return {
             id: `mat-req-${Date.now()}-${idx}`,
@@ -8366,8 +8377,8 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
             effectivePurchasedQuantity: 0,
             effectiveConsumedQuantity: 0,
             unitCostCents: costCents,
-            totalCostCents: Math.round(costCents * totalReq),
-            purchaseDisbursementCents: Math.round(costCents * toBuy),
+            totalCostCents: costCents != null ? Math.round(costCents * totalReq) : undefined,
+            purchaseDisbursementCents: costCents != null ? Math.round(costCents * toBuy) : undefined,
             source: 'proposta_pendente',
             specification: m.specification || matchingCat?.specification || 'Proposta técnica de insumo',
           };
