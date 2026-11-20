@@ -2204,12 +2204,17 @@ export async function generateManufacturingClientPdf(
   drawCastrosLogoMark(doc, 23.5, 26, 6.5);
   doc.setTextColor(249, 246, 240);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(14);
-  doc.text(
-    `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — PROPOSTA DE FABRICAÇÃO SOB MEDIDA`,
-    34,
-    24
-  );
+  const titleText = `${(settings.workshopName || 'CASTROS INTERIORES').toUpperCase()} — PROPOSTA DE FABRICAÇÃO SOB MEDIDA`;
+  // Nome da oficina é configurável (settings.workshopName) — encolhe a fonte até caber
+  // numa linha só dentro do banner, em vez de deixar o texto vazar pra fora da faixa.
+  let titleFontSize = 14;
+  doc.setFontSize(titleFontSize);
+  const maxTitleWidth = 195 - 34 - 3;
+  while (titleFontSize > 9 && doc.getTextWidth(titleText) > maxTitleWidth) {
+    titleFontSize -= 0.5;
+    doc.setFontSize(titleFontSize);
+  }
+  doc.text(titleText, 34, 24);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(212, 185, 140);
@@ -2273,16 +2278,20 @@ export async function generateManufacturingClientPdf(
         const imgInfo = await loadProportionalImage(ph.imageUrl);
         if (imgInfo) {
           doc.addImage(imgInfo.dataUrl, 'JPEG', startX, cursorY, photoWidth, photoHeight);
+          doc.setFont('helvetica', 'normal');
           doc.setFontSize(7.5);
           doc.setTextColor(80, 75, 70);
-          doc.text(ph.caption || ph.category, startX, cursorY + photoHeight + 3.5);
+          // Quebra a legenda dentro da largura da própria foto, em vez de deixar o
+          // texto correr por cima da legenda da foto ao lado quando é mais longo.
+          const captionLines = doc.splitTextToSize(ph.caption || ph.category, photoWidth);
+          doc.text(captionLines.slice(0, 2), startX, cursorY + photoHeight + 3.5);
         }
       } catch {
         // ignore
       }
       startX += photoWidth + gap;
     }
-    cursorY += photoHeight + 8;
+    cursorY += photoHeight + 11;
   }
 
   // 3. Padrão Construtivo e Materiais de Alta Durabilidade
