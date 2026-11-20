@@ -4423,7 +4423,7 @@ function detectImageMimeFromBuffer(buffer: Buffer, extFallback: string): string 
   return extFallback === '.png' ? 'image/png' : extFallback === '.webp' ? 'image/webp' : 'image/jpeg';
 }
 
-function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string } | null {
+async function resolvePhotoBase64(imageUrl: string): Promise<{ mimeType: string; data: string } | null> {
   try {
     if (imageUrl.startsWith('data:')) {
       const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
@@ -4437,7 +4437,11 @@ function resolvePhotoBase64(imageUrl: string): { mimeType: string; data: string 
       const photoId = imageUrl.replace('/api/photos/', '').split('?')[0];
       const safeId = photoId.replace(/[^a-zA-Z0-9._-]/g, '');
       const filePath = path.join(PHOTOS_DIR, safeId);
-      if (fs.existsSync(filePath)) {
+      // Mesmo fallback já usado pela rota que serve fotos pro navegador (linha ~5899):
+      // sem disco permanente no deploy, o arquivo local some a cada reinício do
+      // container, mas a cópia enviada ao Firebase Storage no upload continua lá.
+      const available = fs.existsSync(filePath) || (await ensurePhotoFileAvailable(safeId));
+      if (available && fs.existsSync(filePath)) {
         const buffer = fs.readFileSync(filePath);
         const mimeType = detectImageMimeFromBuffer(buffer, path.extname(safeId).toLowerCase());
         return { mimeType, data: buffer.toString('base64') };
@@ -7332,7 +7336,7 @@ Sua tarefa agora é montar o manual de montagem sequencial de uma peça de fabri
 
       let loadedImagesCount = 0;
       for (const photo of savedPhotos) {
-        const resolved = resolvePhotoBase64(photo.imageUrl);
+        const resolved = await resolvePhotoBase64(photo.imageUrl);
         if (resolved) {
           loadedImagesCount++;
           parts.push({
@@ -7704,7 +7708,7 @@ Para cada área:
 
       const savedPhotos = attendance.photos.filter((p) => p.uploadStatus === 'saved');
       for (const photo of savedPhotos) {
-        const resolved = resolvePhotoBase64(photo.imageUrl);
+        const resolved = await resolvePhotoBase64(photo.imageUrl);
         if (resolved) {
           parts.push({
             text: `Foto ${photo.code} (${photo.category}): ${photo.caption || 'Sem legenda'}`,
@@ -8091,7 +8095,7 @@ TAREFA (SEGUNDA AVALIAÇÃO — REAPROVEITAMENTO, PROPOSTAS E PARECER PRELIMINAR
 
       let loadedImagesCount = 0;
       for (const photo of savedPhotos) {
-        const resolved = resolvePhotoBase64(photo.imageUrl);
+        const resolved = await resolvePhotoBase64(photo.imageUrl);
         if (resolved) {
           loadedImagesCount++;
           parts.push({
@@ -8473,7 +8477,7 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
       if (attendance) {
         const savedPhotos = attendance.photos.filter((p) => p.uploadStatus === 'saved');
         for (const photo of savedPhotos) {
-          const resolved = resolvePhotoBase64(photo.imageUrl);
+          const resolved = await resolvePhotoBase64(photo.imageUrl);
           if (resolved) {
             loadedImagesCount++;
             parts.push({
@@ -10232,7 +10236,7 @@ Sua tarefa agora é montar o manual de execução de um produto pronto do catál
 
       const referencePhotos: Array<{ mimeType: string; data: string }> = [];
       for (const url of sourcePhotoUrls) {
-        const resolved = resolvePhotoBase64(url);
+        const resolved = await resolvePhotoBase64(url);
         if (resolved) referencePhotos.push(resolved);
       }
       if (referencePhotos.length === 0) {
@@ -10696,7 +10700,7 @@ Sua tarefa agora é montar o manual de execução de um produto pronto do catál
           : store.juliaData.photos.slice(0, 3);
 
       for (const photo of photosToUse) {
-        const resolved = resolvePhotoBase64(photo.imageUrl);
+        const resolved = await resolvePhotoBase64(photo.imageUrl);
         if (resolved) {
           parts.push({
             text: `Foto de Divulgação da Júlia: "${photo.title}" (${photo.tag}) — Legenda: ${photo.caption}`,
@@ -11464,7 +11468,7 @@ Regra: Nunca invente medida, modelo, quantidade ou produto que não esteja cadas
       if (deskId === 'pedro_avaliacao' && relevantOrder) {
         const savedPhotos = relevantOrder.photos.filter((p) => p.uploadStatus === 'saved').slice(0, 3);
         for (const photo of savedPhotos) {
-          const resolved = resolvePhotoBase64(photo.imageUrl);
+          const resolved = await resolvePhotoBase64(photo.imageUrl);
           if (resolved) {
             parts.push({
               text: `Foto da avaliação técnica: ${photo.code} (${photo.category}) - ${photo.caption || 'Sem legenda'}`,
@@ -11480,7 +11484,7 @@ Regra: Nunca invente medida, modelo, quantidade ou produto que não esteja cadas
       } else if (deskId === 'julia_marketing' && store.juliaData) {
         const photosToAttach = store.juliaData.photos.slice(0, 3);
         for (const photo of photosToAttach) {
-          const resolved = resolvePhotoBase64(photo.imageUrl);
+          const resolved = await resolvePhotoBase64(photo.imageUrl);
           if (resolved) {
             parts.push({
               text: `Foto publicitária da Júlia: ${photo.title} (${photo.tag}) - ${photo.caption}`,
@@ -12071,7 +12075,7 @@ DIRETRIZES DE RESPOSTA:
 
       // Anexar fotos reais da galeria da Júlia
       for (const photo of store.juliaData.photos.slice(0, 3)) {
-        const resolved = resolvePhotoBase64(photo.imageUrl);
+        const resolved = await resolvePhotoBase64(photo.imageUrl);
         if (resolved) {
           parts.push({
             text: `Foto disponível no acervo da Júlia: ${photo.title} (${photo.tag}) - ${photo.caption}`,
@@ -16029,7 +16033,7 @@ Leia SOMENTE o que está realmente impresso no cupom — nunca invente item, qua
 
       const referencePhotos: Array<{ mimeType: string; data: string }> = [];
       for (const photo of sourcePhotos) {
-        const resolved = resolvePhotoBase64(photo.imageUrl);
+        const resolved = await resolvePhotoBase64(photo.imageUrl);
         if (resolved) referencePhotos.push(resolved);
       }
       if (referencePhotos.length === 0) {
