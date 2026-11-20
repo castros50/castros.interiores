@@ -6411,12 +6411,15 @@ Sua tarefa agora é só montar a lista de materiais para compra de uma peça de 
 
       const nextMaterials: ManufacturingMaterialRequirement[] = items.map((it, idx) => {
         const name = String(it.name || `Material ${idx + 1}`);
-        const matchedCatalog = store.materials.find(
-          (cat) =>
-            normalizeName(cat.name) === normalizeName(name) ||
-            normalizeName(cat.name).includes(normalizeName(name)) ||
-            normalizeName(name).includes(normalizeName(cat.name))
-        );
+        const matchedCatalog = store.materials.find((cat) => {
+          const cn = normalizeName(cat.name);
+          const mn = normalizeName(name);
+          // Guarda contra nome vazio no catálogo (ex.: item cadastrado sem nome ainda):
+          // sem isso, "string.includes('')" é sempre verdadeiro e esse item viraria
+          // "correspondência" de QUALQUER material proposto pela IA.
+          if (!cn || !mn) return false;
+          return cn === mn || cn.includes(mn) || mn.includes(cn);
+        });
         const prev = previousByName.get(normalizeName(name));
         const qty = Number(it.requiredQuantity) || 0;
         const unitCostCents = matchedCatalog ? matchedCatalog.unitCostCents : null;
@@ -8354,6 +8357,10 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
           const matchingCat = store.materials.find((cat) => {
             if (m.code && cat.code === m.code) return true;
             const catName = normalizeName(cat.name);
+            // Guarda contra nome vazio no catálogo: sem isso, "string.includes('')" é
+            // sempre verdadeiro e um item cadastrado sem nome "casaria" com qualquer
+            // material proposto pela IA, puxando o preço dele pra tudo.
+            if (!catName || !mName) return false;
             return catName === mName || catName.includes(mName) || mName.includes(catName);
           });
           const physical = matchingCat?.physicalStock || 0;
@@ -10121,12 +10128,14 @@ Sua tarefa agora é montar o manual de execução de um produto pronto do catál
 
       const normalizeName = (s: string) => s.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
       const partsList: ReadyMadeProductManualItem[] = rawItems.map((it, idx) => {
-        const matched = store.materials.find(
-          (cat) =>
-            normalizeName(cat.name) === normalizeName(String(it.name || '')) ||
-            normalizeName(cat.name).includes(normalizeName(String(it.name || ''))) ||
-            normalizeName(String(it.name || '')).includes(normalizeName(cat.name))
-        );
+        const itemName = normalizeName(String(it.name || ''));
+        const matched = store.materials.find((cat) => {
+          const catName = normalizeName(cat.name);
+          // Guarda contra nome vazio no catálogo: sem isso, "string.includes('')" é
+          // sempre verdadeiro e um item sem nome cadastrado "casaria" com qualquer peça.
+          if (!catName || !itemName) return false;
+          return catName === itemName || catName.includes(itemName) || itemName.includes(catName);
+        });
         return {
           id: `rmi-${Date.now()}-${idx}`,
           name: String(it.name || 'Item'),
@@ -13155,12 +13164,15 @@ Leia SOMENTE o que está realmente impresso no cupom — nunca invente item, qua
       }
 
       const items: PurchaseReceiptItem[] = rawItems.map((it, idx) => {
-        const matchedCatalog = store.materials.find(
-          (cat) =>
-            normalizeMaterialName(cat.name) === normalizeMaterialName(String(it.name || '')) ||
-            normalizeMaterialName(cat.name).includes(normalizeMaterialName(String(it.name || ''))) ||
-            normalizeMaterialName(String(it.name || '')).includes(normalizeMaterialName(cat.name))
-        );
+        const itemName = normalizeMaterialName(String(it.name || ''));
+        const matchedCatalog = store.materials.find((cat) => {
+          const catName = normalizeMaterialName(cat.name);
+          // Guarda contra nome vazio no catálogo: sem isso, "string.includes('')" é
+          // sempre verdadeiro e um item sem nome cadastrado "casaria" com qualquer
+          // item lido do cupom.
+          if (!catName || !itemName) return false;
+          return catName === itemName || catName.includes(itemName) || itemName.includes(catName);
+        });
         return {
           id: `pri-${Date.now()}-${idx}`,
           rawName: String(it.name || `Item ${idx + 1}`),
