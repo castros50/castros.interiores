@@ -13,6 +13,7 @@ import {
   ChecklistFieldReadStatus,
 } from '../types';
 import { generateTechnicalVisitSheetPdf } from '../utils/pdfGenerator';
+import { compressImageToDataUrl } from '../utils/imageCompression';
 
 interface TechnicalVisitSheetFormProps {
   order: AttendanceRecord;
@@ -265,7 +266,7 @@ export const TechnicalVisitSheetForm: React.FC<TechnicalVisitSheetFormProps> = (
     setIsSaving(sheet.id);
     setError(null);
     try {
-      const dataUrl = await fileToDataUrl(file);
+      const dataUrl = isPdf ? await fileToDataUrl(file) : await compressImageToDataUrl(file);
       const body: Record<string, unknown> = {};
       if (isPdf) body.formPdfDataUrl = dataUrl;
       else body.formPhotoDataUrl = dataUrl;

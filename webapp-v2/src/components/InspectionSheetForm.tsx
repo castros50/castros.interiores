@@ -12,6 +12,7 @@ import {
   ChecklistFieldReadStatus,
 } from '../types';
 import { generateInspectionSheetPdf } from '../utils/pdfGenerator';
+import { compressImageToDataUrl } from '../utils/imageCompression';
 
 interface InspectionSheetFormProps {
   order: AttendanceRecord;
@@ -155,7 +156,7 @@ export const InspectionSheetForm: React.FC<InspectionSheetFormProps> = ({
     setIsSaving(sheet.id);
     setError(null);
     try {
-      const dataUrl = await fileToDataUrl(file);
+      const dataUrl = isPdf ? await fileToDataUrl(file) : await compressImageToDataUrl(file);
       const body: Record<string, unknown> = { confirmedBy: defaultResponsibleName };
       if (isPdf) body.formPdfDataUrl = dataUrl;
       else body.formPhotoDataUrl = dataUrl;

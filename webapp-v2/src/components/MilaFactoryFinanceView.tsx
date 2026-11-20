@@ -31,6 +31,7 @@ import {
 import { formatCurrencyBRL } from '../utils/calculations';
 import { AgentPortrait } from './AgentPortrait';
 import { generateMonthlyFinancialReportPdf } from '../utils/pdfGenerator';
+import { compressImageToDataUrl } from '../utils/imageCompression';
 
 interface EdsonReserveSummary {
   month: string;
@@ -81,15 +82,6 @@ interface MilaFactoryFinanceViewProps {
   onOpenOrder?: (orderId: string) => void;
   materialsCatalog: MaterialCatalogItem[];
   onMaterialsUpdated: (materials: MaterialCatalogItem[]) => void;
-}
-
-async function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
 }
 
 const RAW_MATERIAL_CATEGORY_LABELS: Record<RawMaterialCategory, string> = {
@@ -222,7 +214,7 @@ export const MilaFactoryFinanceView: React.FC<MilaFactoryFinanceViewProps> = ({
     setReadReceiptError(null);
     setDraftReceipt(null);
     try {
-      const dataUrl = await fileToDataUrl(file);
+      const dataUrl = await compressImageToDataUrl(file);
       const res = await fetch('/api/office/purchase-receipts/read', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

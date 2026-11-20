@@ -13084,39 +13084,51 @@ Lembre-se: NUNCA mencione defeitos técnicos, materiais de oficina ou custos int
       const RECEIPT_READER_SYSTEM_INSTRUCTION = `Você está lendo a foto de um cupom/nota fiscal de compra de uma loja de materiais, para dar entrada no controle de estoque e financeiro da Castros Interiores.
 Leia SOMENTE o que está realmente impresso no cupom — nunca invente item, quantidade ou preço que não esteja visível. Se um valor estiver ilegível, omita o campo em vez de adivinhar.`;
 
-      const { response } = await generateContentWithRetryAndFallback({
-        preferredModel,
-        parts: [
-          { text: 'Leia este cupom/nota de compra e extraia os dados estruturados.' },
-          { inlineData: { mimeType: match[1], data: match[2] } },
-        ],
-        systemInstruction: RECEIPT_READER_SYSTEM_INSTRUCTION,
-        lockKey: `receipt-read:${Date.now()}`,
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            storeName: { type: Type.STRING },
-            receiptNumber: { type: Type.STRING },
-            purchaseDate: { type: Type.STRING, description: 'formato YYYY-MM-DD quando legível' },
-            totalCents: { type: Type.NUMBER },
-            items: {
-              type: Type.ARRAY,
+      let response: AiTextResponse;
+      try {
+        ({ response } = await generateContentWithRetryAndFallback({
+          preferredModel,
+          parts: [
+            { text: 'Leia este cupom/nota de compra e extraia os dados estruturados.' },
+            { inlineData: { mimeType: match[1], data: match[2] } },
+          ],
+          systemInstruction: RECEIPT_READER_SYSTEM_INSTRUCTION,
+          lockKey: `receipt-read:${Date.now()}`,
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              storeName: { type: Type.STRING },
+              receiptNumber: { type: Type.STRING },
+              purchaseDate: { type: Type.STRING, description: 'formato YYYY-MM-DD quando legível' },
+              totalCents: { type: Type.NUMBER },
               items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  quantity: { type: Type.NUMBER },
-                  unit: { type: Type.STRING },
-                  unitPriceCents: { type: Type.NUMBER },
-                  totalCents: { type: Type.NUMBER },
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING },
+                    quantity: { type: Type.NUMBER },
+                    unit: { type: Type.STRING },
+                    unitPriceCents: { type: Type.NUMBER },
+                    totalCents: { type: Type.NUMBER },
+                  },
+                  required: ['name', 'quantity', 'unitPriceCents', 'totalCents'],
                 },
-                required: ['name', 'quantity', 'unitPriceCents', 'totalCents'],
               },
             },
+            required: ['items', 'totalCents'],
           },
-          required: ['items', 'totalCents'],
-        },
-      });
+        }));
+      } catch (aiError) {
+        // Nunca esconde o motivo real (ex.: imagem grande demais pra API da IA, chave
+        // ausente, limite de uso) atrás de uma mensagem genérica — mesmo padrão já usado
+        // na leitura das fichas de verificação/visita técnica.
+        console.error('Erro ao chamar IA para leitura de comprovante:', aiError);
+        res.status(502).json({
+          error: aiError instanceof Error ? aiError.message : 'Erro ao ler o comprovante com a IA.',
+        });
+        return;
+      }
 
       const parsed = JSON.parse(response.text || '{}');
       const rawItems: any[] = Array.isArray(parsed.items) ? parsed.items : [];
