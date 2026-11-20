@@ -345,55 +345,13 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
         throw new Error(data.error || 'Falha ao analisar referências do projeto.');
       }
 
-      if (data.project) {
-        const nextComponents = (data.project.components || []).map((c: any, idx: number) => ({
-          ...c,
-          id: c.id || `p-${Date.now()}-${idx}`,
-          totalQuantity: (c.quantityPerUnit || 1) * (project.unitsCount ?? 1),
-        }));
-
-        const nextMaterials = (data.project.materials || []).map((m: any, idx: number) => {
-          const matchedCatalog = materialsCatalog.find(
-            (cat) => cat.name.toLowerCase().includes(m.name.toLowerCase()) || m.name.toLowerCase().includes(cat.name.toLowerCase())
-          );
-          const unitCost = matchedCatalog ? matchedCatalog.unitCostCents : (m.unitCostCents || 5000);
-          const totalReq = (m.requiredPerProduct || 1) * (project.unitsCount ?? 1);
-          const physicalStock = matchedCatalog?.physicalStock ?? 0;
-          const reservedStock = matchedCatalog?.reservedStock ?? 0;
-          const availableStock = Math.max(0, physicalStock - reservedStock);
-          const toPurchase = Math.max(0, totalReq - availableStock);
-
-          return {
-            ...m,
-            id: m.id || `mat-${Date.now()}-${idx}`,
-            materialId: matchedCatalog?.id,
-            totalRequired: totalReq,
-            physicalStock,
-            availableStock,
-            toPurchaseQuantity: toPurchase,
-            unitCostCents: unitCost,
-            totalCostCents: Math.round(totalReq * unitCost),
-            purchaseDisbursementCents: Math.round(toPurchase * unitCost),
-          };
-        });
-
-        const nextDimensions = {
-          ...project.dimensions,
-          ...(data.project.dimensions || {}),
-        };
-
-        const updatedProj: ManufacturingProjectData = {
-          ...project,
-          dimensions: nextDimensions,
-          components: nextComponents.length > 0 ? nextComponents : project.components,
-          materials: nextMaterials.length > 0 ? nextMaterials : project.materials,
-          cuttingPlanSummary: data.project.cuttingPlanSummary || project.cuttingPlanSummary,
-          aiVisibleObservations: data.project.visibleObservations || [],
-          aiMissingQuestions: data.project.missingTechnicalQuestions || [],
-          workshopMethodNotes: data.project.manualAssemblyNotes || project.workshopMethodNotes,
-        };
-
-        handleUpdateProject(updatedProj);
+      // O backend já faz toda a montagem (casamento com o catálogo real de materiais,
+      // totais por lote, dimensões, observações) e já salva — só precisamos aceitar o
+      // pedido atualizado que ele devolve. (Antes, este código tentava ler um campo
+      // "data.project" que a rota nunca retornou, então a análise rodava e salvava no
+      // banco mas a tela nunca refletia o resultado sem recarregar a página.)
+      if (data.attendance) {
+        onUpdateDraft(data.attendance);
       }
     } catch (err: any) {
       console.error('Erro na análise de fabricação do Lucas:', err);

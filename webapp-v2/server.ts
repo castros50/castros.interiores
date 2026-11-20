@@ -8377,6 +8377,8 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
       currentMfg.workshopMethodNotes = parsed.technicalDraftNotes || '';
       currentMfg.technicalDraftStatus = 'rascunho_tecnico';
       currentMfg.version = 'v1.0-rascunho';
+      if (Array.isArray(parsed.visibleFeatures)) currentMfg.aiVisibleObservations = parsed.visibleFeatures;
+      if (Array.isArray(parsed.missingTechnicalInformation)) currentMfg.aiMissingQuestions = parsed.missingTechnicalInformation;
 
       attendance.manufacturingData = currentMfg;
       attendance.aiPreliminarySummary = `Projeto preliminar estruturado pelo Agente Lucas (${usedModel}). ${parsed.visibleFeatures?.length || 0} características visíveis identificadas nas fotos; ${parsed.missingTechnicalInformation?.length || 0} pendências técnicas para validação da oficina.`;
