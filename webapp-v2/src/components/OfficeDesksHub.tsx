@@ -19,6 +19,7 @@ import {
   ChevronRight,
   FolderOpen,
   Wallet,
+  Trash2,
 } from 'lucide-react';
 import {
   AttendanceRecord,
@@ -120,6 +121,31 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
   const [isCreatingOrder, setIsCreatingOrder] = useState(false);
   const [categorizeModalOpen, setCategorizeModalOpen] = useState(false);
   const [orderToCategorize, setOrderToCategorize] = useState<AttendanceRecord | null>(null);
+
+  // Limpar o histórico de transferências/auditoria de um pedido — ação explícita,
+  // confirmada em uma etapa (botão "Apagar" só aparece depois do primeiro clique).
+  const [confirmClearHandoffHistoryId, setConfirmClearHandoffHistoryId] = useState<string | null>(null);
+  const [isClearingHandoffHistory, setIsClearingHandoffHistory] = useState(false);
+
+  const handleClearHandoffHistory = async (orderId: string) => {
+    setIsClearingHandoffHistory(true);
+    try {
+      const res = await fetch(`/api/attendances/${orderId}/handoff-history`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actorName: selectedDeskMeta.name }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok && data.order) {
+        onUpdateAttendance(data.order);
+      }
+    } catch (err) {
+      console.error('Erro ao limpar histórico de transferências:', err);
+    } finally {
+      setIsClearingHandoffHistory(false);
+      setConfirmClearHandoffHistoryId(null);
+    }
+  };
 
   // O usuário pode clicar explicitamente em "voltar à busca / sem pedido" (Mila, Carla).
   // Sem isso, limpar activeAttendanceId não bastava: a mesa reencontrava sozinha o
@@ -1210,9 +1236,46 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
 
               {/* Histórico de Transferências do Pedido */}
               <div className="space-y-3">
-                <h4 className="font-bold text-xs uppercase tracking-wider text-[#181512]">
-                  Histórico de Transferências e Auditoria do Pedido
-                </h4>
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="font-bold text-xs uppercase tracking-wider text-[#181512]">
+                    Histórico de Transferências e Auditoria do Pedido
+                  </h4>
+                  {activeOrder.handoffHistory && activeOrder.handoffHistory.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmClearHandoffHistoryId(activeOrder.id)}
+                      className="px-2.5 py-1 rounded-lg border border-[#D6CFC5] text-[11px] font-semibold text-[#6B6257] hover:border-red-400 hover:text-red-700 flex items-center gap-1"
+                      title="Apagar este histórico de transferências"
+                    >
+                      <Trash2 className="w-3 h-3" /> Limpar Histórico
+                    </button>
+                  )}
+                </div>
+                {confirmClearHandoffHistoryId === activeOrder.id && (
+                  <div className="p-3 rounded-xl bg-red-50 border border-red-200 space-y-2">
+                    <p className="text-xs font-bold text-red-900">
+                      Apagar todo o histórico de transferências e auditoria deste pedido? Essa ação não pode ser
+                      desfeita.
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setConfirmClearHandoffHistoryId(null)}
+                        className="px-3 py-1.5 rounded-lg border border-[#D6CFC5] bg-white text-[#181512] text-xs font-semibold"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isClearingHandoffHistory}
+                        onClick={() => handleClearHandoffHistory(activeOrder.id)}
+                        className="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white text-xs font-semibold"
+                      >
+                        {isClearingHandoffHistory ? 'Apagando...' : 'Sim, apagar'}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {activeOrder.handoffHistory && activeOrder.handoffHistory.length > 0 ? (
                   <div className="space-y-2">
                     {activeOrder.handoffHistory.map((hnd) => (

@@ -5799,6 +5799,46 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  // Limpa o histórico de transferências entre mesas (handoffHistory) de UM pedido —
+  // ação explícita e irreversível, confirmada em duas etapas no front-end. Diferente
+  // do histórico geral de ações (auditHistory), que nunca é apagado por aqui: registra
+  // uma linha nele contando que a limpeza aconteceu, pra não sumir todo rastro do pedido.
+  app.delete('/api/attendances/:id/handoff-history', (req, res) => {
+    try {
+      const { id } = req.params;
+      const { actorName } = req.body as { actorName?: string };
+      const store = loadStore();
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const previousCount = (attendance.handoffHistory || []).length;
+      attendance.handoffHistory = [];
+      const now = new Date().toISOString();
+      attendance.updatedAt = now;
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor: actorName || 'Não identificado',
+        stage: 'Histórico de transferências',
+        action: 'Histórico de transferências e auditoria do pedido apagado',
+        details: `${previousCount} registro(s) de transferência removido(s).`,
+      });
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+      res.json({ ok: true, order: attendance, removedCount: previousCount });
+    } catch (err) {
+      console.error('Erro ao limpar histórico de transferências:', err);
+      res.status(500).json({ error: 'Erro ao limpar o histórico de transferências.' });
+    }
+  });
+
   // Private Photo Upload Endpoint
   app.post('/api/photos/upload', (req, res) => {
     try {
