@@ -153,6 +153,11 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
   const [formPurchasePriceReais, setFormPurchasePriceReais] = useState('180,00');
   const [formFreightReais, setFormFreightReais] = useState('0,00');
   const [formDiscountReais, setFormDiscountReais] = useState('0,00');
+  // Cadastro simples (padrão): só "quanto custa por unidade" — sem precisar pensar em
+  // embalagem/frete/desconto. A conta de lote (comprei uma caixa/rolo fechado) fica
+  // escondida, só pra quem quiser abrir e deixar o sistema calcular por ela.
+  const [isDetailingPackage, setIsDetailingPackage] = useState(false);
+  const [formUnitPriceReais, setFormUnitPriceReais] = useState('0,00');
   const [formLossMarginPercent, setFormLossMarginPercent] = useState('10');
   const [formPriceOrigin, setFormPriceOrigin] = useState<MaterialCatalogItem['priceOrigin']>('Fornecedor cadastrado');
   const [formIsActive, setFormIsActive] = useState(true);
@@ -186,8 +191,20 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
     return isNaN(num) ? 0 : Math.round(num * 100);
   };
 
-  // Cálculo de Custo por Unidade de Consumo em Tempo Real com Memória
+  // Cálculo de Custo por Unidade de Consumo em Tempo Real com Memória.
+  // Modo simples (padrão): o preço digitado JÁ é o custo por unidade, sem conta nenhuma.
+  // Modo "detalhar lote": mesma conta de sempre (preço da embalagem ÷ quantidade contida).
   const calculationSummary = useMemo(() => {
+    if (!isDetailingPackage) {
+      const unitCostCents = parseCurrencyInputToCents(formUnitPriceReais);
+      return {
+        unitCostCents,
+        memoryText: `Preço informado diretamente: ${formatCurrencyBRL(unitCostCents)} por ${
+          formConsumptionUnit || 'unidade'
+        }.`,
+      };
+    }
+
     const purchaseCents = parseCurrencyInputToCents(formPurchasePriceReais);
     const freightCents = parseCurrencyInputToCents(formFreightReais);
     const discountCents = parseCurrencyInputToCents(formDiscountReais);
@@ -214,6 +231,8 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
       memoryText,
     };
   }, [
+    isDetailingPackage,
+    formUnitPriceReais,
     formPurchasePriceReais,
     formFreightReais,
     formDiscountReais,
@@ -243,6 +262,8 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
     setFormPriceOrigin('Fornecedor cadastrado');
     setFormIsActive(true);
     setFormNotes('');
+    setIsDetailingPackage(false);
+    setFormUnitPriceReais('0,00');
     setIsModalOpen(true);
   };
 
@@ -269,6 +290,14 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
     setFormPriceOrigin(item.priceOrigin || 'Fornecedor cadastrado');
     setFormIsActive(item.isActive !== false);
     setFormNotes(item.notes || '');
+    setFormUnitPriceReais((item.unitCostCents / 100).toFixed(2).replace('.', ','));
+    // Só abre o detalhamento de lote se o item já foi cadastrado assim de fato
+    // (comprado em embalagem com mais de 1 unidade, ou com unidade de compra
+    // diferente da unidade de consumo) — senão o cadastro simples já basta.
+    const purchasedInPackage =
+      (item.purchasePackageQuantity ?? 1) > 1 ||
+      Boolean(item.purchaseUnit && item.purchaseUnit !== (item.consumptionUnit || item.unit));
+    setIsDetailingPackage(purchasedInPackage);
 
     // Específicos
     if (item.foamDensity) setFoamDensity(item.foamDensity);
@@ -296,10 +325,18 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
       const now = new Date().toISOString();
       const catMeta = RAW_CATEGORIES_META.find((c) => c.id === formCategory);
 
-      const pkgQty = parseFloat(formPurchasePackageQty.replace(',', '.')) || 1;
-      const purchasePriceCents = parseCurrencyInputToCents(formPurchasePriceReais);
-      const freightCents = parseCurrencyInputToCents(formFreightReais);
-      const discountCents = parseCurrencyInputToCents(formDiscountReais);
+      // No cadastro simples (sem detalhar lote), a conta de embalagem não existe: o
+      // preço informado É o custo por unidade, "comprado" 1 a 1, sem frete/desconto
+      // separados (o usuário já informa o preço líquido que paga de fato).
+      const pkgQty = isDetailingPackage ? parseFloat(formPurchasePackageQty.replace(',', '.')) || 1 : 1;
+      const purchasePriceCents = isDetailingPackage
+        ? parseCurrencyInputToCents(formPurchasePriceReais)
+        : calculationSummary.unitCostCents;
+      const freightCents = isDetailingPackage ? parseCurrencyInputToCents(formFreightReais) : 0;
+      const discountCents = isDetailingPackage ? parseCurrencyInputToCents(formDiscountReais) : 0;
+      const purchaseUnit = isDetailingPackage
+        ? formPurchaseUnit.trim() || 'un'
+        : formConsumptionUnit.trim() || 'un';
 
       const newItem: MaterialCatalogItem = {
         id: editingItem ? editingItem.id : `mat-${Date.now()}`,
@@ -313,7 +350,7 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
         supplier: formSupplier.trim() || 'Fornecedor Oficina',
         unit: formConsumptionUnit.trim() || 'un',
         consumptionUnit: formConsumptionUnit.trim() || 'un',
-        purchaseUnit: formPurchaseUnit.trim() || 'un',
+        purchaseUnit,
         purchasePackageQuantity: pkgQty,
         conversionFactor: pkgQty,
         purchasePriceCents,
@@ -650,25 +687,29 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
                         )}
                       </td>
 
-                      {/* Embalagem de Compra */}
+                      {/* Embalagem de Compra — só mostra "Contém" quando foi comprado em lote de fato */}
                       <td className="py-3 px-3.5">
                         <p className="font-medium text-[#181512]">{mat.purchaseUnit || mat.unit}</p>
-                        <span className="text-[10px] text-[#78716C] block">
-                          Contém: {mat.purchasePackageQuantity || mat.conversionFactor || 1} {mat.consumptionUnit || mat.unit}
-                        </span>
+                        {(mat.purchasePackageQuantity || mat.conversionFactor || 1) > 1 && (
+                          <span className="text-[10px] text-[#78716C] block">
+                            Contém: {mat.purchasePackageQuantity || mat.conversionFactor} {mat.consumptionUnit || mat.unit}
+                          </span>
+                        )}
                         <span className="text-[10px] text-[#78716C] block">Fornecedor: {mat.supplier}</span>
                       </td>
 
-                      {/* Preço de Compra */}
+                      {/* Preço de Compra — só mostra frete quando houver, pra não poluir cadastro simples */}
                       <td className="py-3 px-3.5 text-right font-mono">
                         {mat.purchasePriceCents !== undefined ? (
                           <span className="font-semibold text-[#181512]">{formatCurrencyBRL(mat.purchasePriceCents)}</span>
                         ) : (
                           <span className="text-[#78716C]">—</span>
                         )}
-                        <span className="text-[10px] text-[#78716C] block">
-                          Frete: {formatCurrencyBRL(mat.freightCents || 0)}
-                        </span>
+                        {Boolean(mat.freightCents) && (
+                          <span className="text-[10px] text-[#78716C] block">
+                            Frete: {formatCurrencyBRL(mat.freightCents || 0)}
+                          </span>
+                        )}
                       </td>
 
                       {/* Custo de Consumo (Calculado e com Memória) */}
@@ -987,37 +1028,13 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
                 </div>
               )}
 
-              {/* BLOCO DE EMBALAGEM, PREÇO E CONVERSÃO */}
+              {/* BLOCO DE PREÇO — simples por padrão, lote só se abrir */}
               <div className="p-4 rounded-xl bg-[#FAF8F5] border border-[#E5DEC9] space-y-3">
                 <span className="font-bold text-[#181512] block text-[11px] uppercase tracking-wider">
-                  Conversão de Embalagem & Preços em Reais (R$)
+                  Preço do Material
                 </span>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div>
-                    <label className="block text-[#57534E] mb-1">Unidade de Compra *</label>
-                    <input
-                      type="text"
-                      required
-                      value={formPurchaseUnit}
-                      onChange={(e) => setFormPurchaseUnit(e.target.value)}
-                      placeholder="Ex: caixa, rolo, lata"
-                      className="w-full p-2 rounded border border-[#D6CFC5]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[#57534E] mb-1">Qtd na Embalagem *</label>
-                    <input
-                      type="text"
-                      required
-                      value={formPurchasePackageQty}
-                      onChange={(e) => setFormPurchasePackageQty(e.target.value)}
-                      placeholder="Ex: 5000, 50, 14, 3"
-                      className="w-full p-2 rounded border border-[#D6CFC5] font-mono font-bold"
-                    />
-                  </div>
-
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-[#57534E] mb-1">Unidade de Consumo *</label>
                     <input
@@ -1031,37 +1048,25 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
                   </div>
 
                   <div>
-                    <label className="block text-[#57534E] mb-1">Preço Compra (R$) *</label>
+                    <label className="block text-[#57534E] mb-1">
+                      Preço por {formConsumptionUnit || 'unidade'} (R$) *
+                    </label>
                     <input
                       type="text"
-                      required
-                      value={formPurchasePriceReais}
-                      onChange={(e) => setFormPurchasePriceReais(e.target.value)}
-                      placeholder="Ex: 180,00"
-                      className="w-full p-2 rounded border border-[#D6CFC5] font-mono font-bold"
+                      required={!isDetailingPackage}
+                      disabled={isDetailingPackage}
+                      value={
+                        isDetailingPackage
+                          ? (calculationSummary.unitCostCents / 100).toFixed(2).replace('.', ',')
+                          : formUnitPriceReais
+                      }
+                      onChange={(e) => setFormUnitPriceReais(e.target.value)}
+                      placeholder="Ex: 44,00"
+                      className="w-full p-2 rounded border border-[#D6CFC5] font-mono font-bold disabled:bg-[#F3EFE6] disabled:text-[#78716C]"
+                      title={isDetailingPackage ? 'Calculado automaticamente a partir do lote detalhado abaixo' : undefined}
                     />
                   </div>
-                </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-1">
-                  <div>
-                    <label className="block text-[#57534E] mb-1">Frete Atribuído (R$)</label>
-                    <input
-                      type="text"
-                      value={formFreightReais}
-                      onChange={(e) => setFormFreightReais(e.target.value)}
-                      className="w-full p-2 rounded border border-[#D6CFC5] font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[#57534E] mb-1">Desconto Atribuído (R$)</label>
-                    <input
-                      type="text"
-                      value={formDiscountReais}
-                      onChange={(e) => setFormDiscountReais(e.target.value)}
-                      className="w-full p-2 rounded border border-[#D6CFC5] font-mono"
-                    />
-                  </div>
                   <div>
                     <label className="block text-[#57534E] mb-1">Margem de Perda / Corte (%)</label>
                     <input
@@ -1073,11 +1078,84 @@ export const RawMaterialsAndPricing: React.FC<RawMaterialsAndPricingProps> = ({
                   </div>
                 </div>
 
+                <button
+                  type="button"
+                  onClick={() => setIsDetailingPackage((prev) => !prev)}
+                  className="text-xs font-semibold text-[#9A7138] hover:text-[#845E2B] underline underline-offset-2"
+                >
+                  {isDetailingPackage
+                    ? 'Ocultar detalhamento de lote — voltar ao preço direto'
+                    : 'Comprei em lote (caixa/rolo fechado)? Detalhar conversão'}
+                </button>
+
+                {isDetailingPackage && (
+                  <div className="space-y-3 pt-2 border-t border-[#E5DEC9]">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-[#57534E] mb-1">Unidade de Compra *</label>
+                        <input
+                          type="text"
+                          required
+                          value={formPurchaseUnit}
+                          onChange={(e) => setFormPurchaseUnit(e.target.value)}
+                          placeholder="Ex: caixa, rolo, lata"
+                          className="w-full p-2 rounded border border-[#D6CFC5]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[#57534E] mb-1">Qtd na Embalagem *</label>
+                        <input
+                          type="text"
+                          required
+                          value={formPurchasePackageQty}
+                          onChange={(e) => setFormPurchasePackageQty(e.target.value)}
+                          placeholder="Ex: 5000, 50, 14, 3"
+                          className="w-full p-2 rounded border border-[#D6CFC5] font-mono font-bold"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[#57534E] mb-1">Preço da Embalagem (R$) *</label>
+                        <input
+                          type="text"
+                          required
+                          value={formPurchasePriceReais}
+                          onChange={(e) => setFormPurchasePriceReais(e.target.value)}
+                          placeholder="Ex: 180,00"
+                          className="w-full p-2 rounded border border-[#D6CFC5] font-mono font-bold"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[#57534E] mb-1">Frete Atribuído (R$)</label>
+                        <input
+                          type="text"
+                          value={formFreightReais}
+                          onChange={(e) => setFormFreightReais(e.target.value)}
+                          className="w-full p-2 rounded border border-[#D6CFC5] font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[#57534E] mb-1">Desconto Atribuído (R$)</label>
+                        <input
+                          type="text"
+                          value={formDiscountReais}
+                          onChange={(e) => setFormDiscountReais(e.target.value)}
+                          className="w-full p-2 rounded border border-[#D6CFC5] font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* MEMÓRIA DE CÁLCULO EXIBIDA */}
                 <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 space-y-1">
                   <div className="flex items-center gap-2 font-bold text-emerald-900">
                     <Calculator className="w-4 h-4 text-emerald-700" />
-                    <span>Memória de Cálculo do Custo Unitário:</span>
+                    <span>Custo usado nos orçamentos:</span>
                   </div>
                   <p className="font-mono text-[11px] leading-relaxed">{calculationSummary.memoryText}</p>
                 </div>
