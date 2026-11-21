@@ -1291,7 +1291,7 @@ export function generateFabricationShoppingListPdf(
         'Material e Especificação',
         'Qtd. Prevista',
         'Unid.',
-        '✓ Comprado',
+        'Comprado',
         'Preço Unit. Real',
         'Total Real',
       ],

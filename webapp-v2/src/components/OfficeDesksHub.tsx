@@ -20,6 +20,7 @@ import {
   FolderOpen,
   Wallet,
   Trash2,
+  Printer,
 } from 'lucide-react';
 import {
   AttendanceRecord,
@@ -34,6 +35,7 @@ import {
 import { OFFICE_DESKS } from '../utils/officeDefaults';
 import { formatCurrencyBRL } from '../utils/calculations';
 import { LucasManufacturingDesk } from './LucasManufacturingDesk';
+import { generateFabricationShoppingListPdf } from '../utils/pdfGenerator';
 import { MilaFinancialDesk } from './MilaFinancialDesk';
 import { CastroStrategyDesk } from './CastroStrategyDesk';
 import { SupervisorDesk } from './SupervisorDesk';
@@ -1144,6 +1146,70 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
                   )}
                 </div>
               </div>
+
+              {/* Lista de Materiais para Compra — pedido de Fabricação encaminhado pelo Lucas */}
+              {selectedDeskId === 'ana_compras' && activeOrder.orderType === 'Fabricação' && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="font-bold text-xs uppercase tracking-wider text-[#181512]">
+                      Lista de Materiais para Compra (Fabricação)
+                    </h4>
+                    {(activeOrder.manufacturingData?.materialRequirements || []).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => generateFabricationShoppingListPdf(activeOrder, settings)}
+                        className="px-2.5 py-1 rounded-lg border border-[#D6CFC5] bg-white hover:bg-[#FAF7F2] text-[11px] font-semibold text-[#181512] flex items-center gap-1"
+                      >
+                        <Printer className="w-3.5 h-3.5" /> Imprimir / Exportar Lista
+                      </button>
+                    )}
+                  </div>
+                  {(activeOrder.manufacturingData?.materialRequirements || []).length === 0 ? (
+                    <p className="text-xs text-[#6B6257] italic">
+                      O Lucas ainda não gerou a lista de materiais deste pedido (aba "Relação de Materiais" na mesa
+                      dele).
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto border border-[#E5DEC9] rounded-xl">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="bg-[#181512] text-[#F9F6F0]">
+                            <th className="py-2 px-3">Material</th>
+                            <th className="py-2 px-3 text-center">Qtd a Comprar</th>
+                            <th className="py-2 px-3 text-right">Preço Unit.</th>
+                            <th className="py-2 px-3 text-right">Total</th>
+                            <th className="py-2 px-3 text-center">Comprado</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#EFECE6]">
+                          {(activeOrder.manufacturingData?.materialRequirements || []).map((m) => (
+                            <tr key={m.id} className="hover:bg-[#FAF7F2]">
+                              <td className="py-2 px-3 font-medium text-[#181512]">{m.materialName || m.name}</td>
+                              <td className="py-2 px-3 text-center font-mono">
+                                {m.toPurchaseQuantity ?? m.totalOrderRequirement ?? m.totalRequired ?? '-'}{' '}
+                                {m.consumptionUnit || m.unit}
+                              </td>
+                              <td className="py-2 px-3 text-right font-mono">{formatCurrencyBRL(m.unitCostCents ?? null)}</td>
+                              <td className="py-2 px-3 text-right font-mono">{formatCurrencyBRL(m.totalCostCents ?? null)}</td>
+                              <td className="py-2 px-3 text-center">
+                                {m.purchased ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                    SIM
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
+                                    NÃO
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Pedidos de Compra do Pedro pendentes de cotação (Mesa da Ana) */}
               {selectedDeskId === 'ana_compras' && (
