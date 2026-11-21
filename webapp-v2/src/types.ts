@@ -2157,6 +2157,37 @@ export interface QualityCheckpoint {
   notes?: string;
 }
 
+// Plano de Corte (tecidos e espumas) do pedido de Fabricação — gerado por IA a partir
+// dos materiais/componentes já cadastrados (aba 3 da mesa do Lucas), nunca inventando
+// material/componente fora do que já existe na lista; nasce rascunho, exige aprovação.
+export interface ManufacturingFabricCuttingGuidance {
+  materialName: string;
+  materialRequirementId?: string;
+  usableWidthMeters?: number;
+  grainDirection: 'Sentido do rolo' | 'Largura / Atravessado' | 'Indiferente';
+  layoutNotes: string;
+}
+
+export interface ManufacturingFoamCuttingGuidance {
+  pieceName: string;
+  componentId?: string;
+  cutDimensionsMm: { length: number | null; width: number | null; thickness: number | null };
+  quantity: number;
+  notes?: string;
+}
+
+export interface ManufacturingCuttingPlan {
+  id: string;
+  version: number;
+  status: 'rascunho' | 'aprovado';
+  fabricCuts: ManufacturingFabricCuttingGuidance[];
+  foamCuts: ManufacturingFoamCuttingGuidance[];
+  generalNotes: string;
+  generatedAt: string;
+  approvedBy?: string;
+  approvedAt?: string;
+}
+
 export interface ManufacturingProjectData {
   id?: string;
   modelName: string;
@@ -2211,6 +2242,7 @@ export interface ManufacturingProjectData {
   materials?: ManufacturingMaterialRequirement[];
   materialRequirements?: ManufacturingMaterialRequirement[];
   cuttingPlanSummary?: string;
+  cuttingPlan?: ManufacturingCuttingPlan;
   assemblyManual: AssemblyManual;
   qualityCheckpoints: QualityCheckpoint[];
   aiVisibleObservations?: string[];

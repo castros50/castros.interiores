@@ -65,6 +65,12 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
   const [assemblyManualError, setAssemblyManualError] = useState<string | null>(null);
   const [assemblyManualApproverName, setAssemblyManualApproverName] = useState('');
 
+  // Plano de corte (tecidos e espumas) gerado por IA a partir dos materiais
+  // e peças já cadastrados — nasce rascunho, exige aprovação humana explícita.
+  const [isGeneratingCuttingPlan, setIsGeneratingCuttingPlan] = useState(false);
+  const [cuttingPlanError, setCuttingPlanError] = useState<string | null>(null);
+  const [cuttingPlanApproverName, setCuttingPlanApproverName] = useState('');
+
   // Lista de peças (aba 2) gerada por IA a partir do briefing já cadastrado
   // no pedido (sem depender de foto) — nasce proposta pendente de validação.
   const [isGeneratingComponents, setIsGeneratingComponents] = useState(false);
@@ -197,6 +203,43 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
       onUpdateOrder(data.order);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Erro ao aprovar o manual de montagem.');
+    }
+  };
+
+  const handleGenerateCuttingPlan = async () => {
+    setIsGeneratingCuttingPlan(true);
+    setCuttingPlanError(null);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/manufacturing/cutting-plan/prepare`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao gerar o plano de corte.');
+      onUpdateOrder(data.order);
+    } catch (err) {
+      setCuttingPlanError(err instanceof Error ? err.message : 'Erro ao gerar o plano de corte.');
+    } finally {
+      setIsGeneratingCuttingPlan(false);
+    }
+  };
+
+  const handleApproveCuttingPlan = async () => {
+    if (!cuttingPlanApproverName.trim()) {
+      alert('Informe quem está aprovando o plano de corte.');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/orders/${order.id}/manufacturing/cutting-plan/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approvedBy: cuttingPlanApproverName.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao aprovar o plano de corte.');
+      setCuttingPlanApproverName('');
+      onUpdateOrder(data.order);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erro ao aprovar o plano de corte.');
     }
   };
 
@@ -867,6 +910,130 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                 </tbody>
               </table>
             </div>
+
+            {order.orderType === 'Fabricação' && (
+              <div className="pt-4 border-t border-[#E5DEC9] space-y-3">
+                <div className="flex justify-between items-center">
+                  <h3 className="font-bold text-sm text-[#181512]">
+                    Plano de Corte — Tecidos e Espumas
+                  </h3>
+                  <span
+                    className={`text-xs font-semibold px-3 py-1 rounded-full border ${
+                      project.cuttingPlan?.status === 'aprovado'
+                        ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                        : 'bg-amber-100 text-amber-900 border-amber-300'
+                    }`}
+                  >
+                    Status: {project.cuttingPlan?.status === 'aprovado' ? 'Aprovado' : 'Rascunho'}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl border border-[#E5DEC9] bg-[#FAF7F2]">
+                  <button
+                    type="button"
+                    disabled={isGeneratingCuttingPlan || (project.materialRequirements || []).length === 0}
+                    onClick={handleGenerateCuttingPlan}
+                    className="px-3 py-2 rounded-lg bg-[#181512] hover:bg-[#2A2420] text-white text-xs font-semibold disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    <Scissors className="w-4 h-4 text-amber-300" />
+                    {isGeneratingCuttingPlan
+                      ? 'Gerando...'
+                      : project.cuttingPlan
+                        ? 'Gerar Nova Versão com IA'
+                        : 'Gerar Plano de Corte com IA'}
+                  </button>
+                  {(project.materialRequirements || []).length === 0 && (
+                    <span className="text-[11px] text-amber-800">
+                      Gere a lista de materiais acima antes.
+                    </span>
+                  )}
+                  {project.cuttingPlan && (project.cuttingPlan.fabricCuts.length > 0 || project.cuttingPlan.foamCuts.length > 0) && project.cuttingPlan.status !== 'aprovado' && (
+                    <>
+                      <input
+                        type="text"
+                        placeholder="Nome de quem aprova"
+                        value={cuttingPlanApproverName}
+                        onChange={(e) => setCuttingPlanApproverName(e.target.value)}
+                        className="px-2.5 py-1.5 rounded border border-[#D6CFC5] text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleApproveCuttingPlan}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
+                      >
+                        Aprovar Plano de Corte
+                      </button>
+                    </>
+                  )}
+                  {project.cuttingPlan?.status === 'aprovado' && project.cuttingPlan.approvedBy && (
+                    <span className="text-[11px] text-emerald-800">
+                      Aprovado por {project.cuttingPlan.approvedBy}
+                      {project.cuttingPlan.approvedAt ? ` em ${new Date(project.cuttingPlan.approvedAt).toLocaleDateString('pt-BR')}` : ''}
+                    </span>
+                  )}
+                </div>
+
+                {cuttingPlanError && (
+                  <div className="flex items-start gap-2 p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-xs">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    {cuttingPlanError}
+                  </div>
+                )}
+
+                {project.cuttingPlan && (project.cuttingPlan.fabricCuts.length > 0 || project.cuttingPlan.foamCuts.length > 0) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="p-3 rounded-xl border border-[#E5DEC9] bg-[#FAF8F5]">
+                      <h4 className="font-bold text-xs uppercase tracking-wider text-[#181512] mb-2">
+                        Corte de Tecidos
+                      </h4>
+                      {project.cuttingPlan.fabricCuts.length === 0 ? (
+                        <p className="text-xs text-[#6B6257] italic">Nenhum tecido identificado.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {project.cuttingPlan.fabricCuts.map((f, idx) => (
+                            <div key={idx} className="p-2.5 rounded bg-white border border-[#E5DEC9] text-xs">
+                              <p className="font-semibold text-[#181512]">{f.materialName}</p>
+                              <p className="text-[11px] text-purple-700">
+                                Sentido: {f.grainDirection}
+                                {f.usableWidthMeters ? ` | Largura útil: ${f.usableWidthMeters}m` : ''}
+                              </p>
+                              <p className="text-[11px] text-[#57534E] mt-1">{f.layoutNotes}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-3 rounded-xl border border-[#E5DEC9] bg-[#FAF8F5]">
+                      <h4 className="font-bold text-xs uppercase tracking-wider text-[#181512] mb-2">
+                        Corte de Espumas
+                      </h4>
+                      {project.cuttingPlan.foamCuts.length === 0 ? (
+                        <p className="text-xs text-[#6B6257] italic">Nenhuma peça de espuma identificada.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {project.cuttingPlan.foamCuts.map((f, idx) => (
+                            <div key={idx} className="p-2.5 rounded bg-white border border-[#E5DEC9] text-xs">
+                              <p className="font-semibold text-[#181512]">
+                                {f.pieceName} <span className="font-mono text-[#57534E]">x{f.quantity}</span>
+                              </p>
+                              <p className="text-[11px] font-mono text-[#57534E]">
+                                {f.cutDimensionsMm.length ?? '?'} x {f.cutDimensionsMm.width ?? '?'} x {f.cutDimensionsMm.thickness ?? '?'} mm
+                              </p>
+                              {f.notes && <p className="text-[11px] text-[#57534E] mt-1">{f.notes}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {project.cuttingPlan.generalNotes && (
+                      <div className="md:col-span-2 p-2.5 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+                        <strong>Observações gerais:</strong> {project.cuttingPlan.generalNotes}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

@@ -109,6 +109,7 @@ import type {
   WeeklyActionPlanItem,
   AssemblyManual,
   AssemblyManualStep,
+  ManufacturingCuttingPlan,
   ReformMaterialsList,
   PurchaseRequestPackage,
   ReformComponentDecisionKey,
@@ -6879,6 +6880,245 @@ Sua tarefa agora é montar o manual de montagem sequencial de uma peça de fabri
     } catch (error) {
       console.error('Erro ao aprovar manual de montagem:', error);
       res.status(500).json({ error: 'Erro ao aprovar manual de montagem.' });
+    }
+  });
+
+  // ----------------------------------------------------------------------
+  // PLANO DE CORTE (TECIDOS E ESPUMAS) — Lucas, pedido de Fabricação. Gerado
+  // por IA só a partir dos materiais (aba 3) e componentes (aba 2) já
+  // cadastrados — nunca inventa um material/peça fora dessas listas. Nasce
+  // rascunho; exige aprovação humana explícita antes de valer pra oficina.
+  // ----------------------------------------------------------------------
+
+  app.post('/api/orders/:id/manufacturing/cutting-plan/prepare', async (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const mfg = attendance.manufacturingData;
+      const materials = mfg?.materialRequirements || mfg?.materials || [];
+      const components = mfg?.components || [];
+      if (materials.length === 0) {
+        res.status(400).json({
+          error: 'Gere a lista de materiais (aba 3) antes de gerar o plano de corte.',
+        });
+        return;
+      }
+
+      const fabricMaterials = materials.filter(
+        (m) => (m.consumptionUnit || m.unit || '').toLowerCase().includes('m') && !(m.consumptionUnit || m.unit || '').toLowerCase().includes('m²') || m.usableWidthMeters != null
+      );
+      const foamComponents = components.filter((c) => c.componentType === 'Espuma');
+
+      const fabricLines = fabricMaterials
+        .map((m) => `- ${m.materialName || m.name} | largura útil: ${m.usableWidthMeters ?? 'não informada'}m | unidade: ${m.consumptionUnit || m.unit}`)
+        .join('\n') || '(nenhum material têxtil identificado na lista)';
+      const foamLines = foamComponents
+        .map((c) => `- ${c.code} | ${c.name} | qtd/móvel: ${c.quantityPerUnit} | dimensões já cadastradas: ${c.dimensionsMm?.length ?? '?'}×${c.dimensionsMm?.width ?? '?'}×${c.dimensionsMm?.thickness ?? '?'} mm`)
+        .join('\n') || '(nenhuma peça de espuma identificada na lista de componentes)';
+
+      const dims = mfg?.dimensions;
+      const dimsText = dims && (dims.widthCm || dims.depthCm || dims.heightCm)
+        ? `${dims.widthCm ?? '?'}cm (L) x ${dims.depthCm ?? '?'}cm (P) x ${dims.heightCm ?? '?'}cm (A) | assento: ${dims.seatHeightCm ?? '?'}cm alt / ${dims.seatDepthCm ?? '?'}cm prof`
+        : attendance.approxMeasurements || 'Não informado';
+
+      const context = `
+DADOS JÁ CADASTRADOS DO PEDIDO (${attendance.attendanceNumber}) — não invente nada além disto:
+- Tipo de estofado: ${attendance.furnitureType || 'Estofado sob medida'}
+- Medidas gerais: ${dimsText}
+- Acabamento/tecido desejado: ${attendance.fabricAndComfortPreference || 'A definir'}
+
+MATERIAIS TÊXTEIS JÁ CADASTRADOS NA LISTA DE COMPRAS (use SOMENTE estes nomes — nunca invente um material novo):
+${fabricLines}
+
+PEÇAS DE ESPUMA JÁ CADASTRADAS NA LISTA DE PEÇAS (use SOMENTE estes nomes/códigos):
+${foamLines}
+
+TAREFA:
+Monte o PLANO DE CORTE técnico desta peça: (1) para cada material têxtil listado, recomende o sentido do fio/estampa (grainDirection) e explique em texto (layoutNotes) como aproveitar melhor a largura útil informada, minimizando perda; (2) para cada peça de espuma listada, proponha as dimensões de corte em mm (comprimento x largura x espessura) compatíveis com as medidas gerais do pedido acima — nunca invente uma peça de espuma que não esteja na lista. Se a lista de espumas estiver vazia, devolva foamCuts como array vazio, sem inventar peça.`;
+
+      const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
+      const systemInstruction = `Você é o AGENTE LUCAS — Engenheiro de Projetos e Fabricação de Produtos Novos da Castros Interiores.
+Sua tarefa agora é só montar o plano de corte técnico (tecidos e espumas) de uma peça de fabricação nova, com base nos materiais e componentes já cadastrados e aprovados neste pedido. Você é técnico e meticuloso. Nunca inventa um material ou peça que não esteja nas listas fornecidas.`;
+
+      const { response } = await generateContentWithRetryAndFallback({
+        preferredModel,
+        parts: [{ text: context }],
+        systemInstruction,
+        lockKey: `cutting-plan:${attendance.id}`,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            fabricCuts: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  materialName: { type: Type.STRING },
+                  grainDirection: {
+                    type: Type.STRING,
+                    description: "'Sentido do rolo', 'Largura / Atravessado' ou 'Indiferente'",
+                  },
+                  layoutNotes: { type: Type.STRING },
+                },
+                required: ['materialName', 'grainDirection', 'layoutNotes'],
+              },
+            },
+            foamCuts: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  pieceName: { type: Type.STRING },
+                  lengthMm: { type: Type.NUMBER },
+                  widthMm: { type: Type.NUMBER },
+                  thicknessMm: { type: Type.NUMBER },
+                  quantity: { type: Type.NUMBER },
+                  notes: { type: Type.STRING },
+                },
+                required: ['pieceName', 'quantity'],
+              },
+            },
+            generalNotes: { type: Type.STRING },
+          },
+          required: ['fabricCuts', 'foamCuts', 'generalNotes'],
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}');
+      const normalizeName = (s: string) => s.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+      const rawFabricCuts: any[] = Array.isArray(parsed.fabricCuts) ? parsed.fabricCuts : [];
+      const fabricCuts = rawFabricCuts
+        .map((f) => {
+          const fName = normalizeName(String(f.materialName || ''));
+          const matched = fabricMaterials.find((m) => {
+            const mName = normalizeName(m.materialName || m.name || '');
+            if (!mName || !fName) return false;
+            return mName === fName || mName.includes(fName) || fName.includes(mName);
+          });
+          if (!matched) return null;
+          const validDirections = ['Sentido do rolo', 'Largura / Atravessado', 'Indiferente'];
+          return {
+            materialName: matched.materialName || matched.name || '',
+            materialRequirementId: matched.id,
+            usableWidthMeters: matched.usableWidthMeters,
+            grainDirection: validDirections.includes(f.grainDirection) ? f.grainDirection : 'Indiferente',
+            layoutNotes: String(f.layoutNotes || ''),
+          };
+        })
+        .filter((f): f is NonNullable<typeof f> => f !== null);
+
+      const rawFoamCuts: any[] = Array.isArray(parsed.foamCuts) ? parsed.foamCuts : [];
+      const foamCuts = rawFoamCuts
+        .map((f) => {
+          const fName = normalizeName(String(f.pieceName || ''));
+          const matched = foamComponents.find((c) => {
+            const cName = normalizeName(c.name || '');
+            if (!cName || !fName) return false;
+            return cName === fName || cName.includes(fName) || fName.includes(cName);
+          });
+          if (!matched) return null;
+          return {
+            pieceName: matched.name,
+            componentId: matched.id,
+            cutDimensionsMm: {
+              length: typeof f.lengthMm === 'number' ? f.lengthMm : null,
+              width: typeof f.widthMm === 'number' ? f.widthMm : null,
+              thickness: typeof f.thicknessMm === 'number' ? f.thicknessMm : null,
+            },
+            quantity: Number(f.quantity) || matched.quantityPerUnit || 1,
+            notes: f.notes ? String(f.notes) : undefined,
+          };
+        })
+        .filter((f): f is NonNullable<typeof f> => f !== null);
+
+      const now = new Date().toISOString();
+      const existing = mfg!.cuttingPlan;
+      const cuttingPlan: ManufacturingCuttingPlan = {
+        id: existing?.id || `cut-${Date.now()}`,
+        version: (existing?.version || 0) + 1,
+        status: 'rascunho',
+        fabricCuts,
+        foamCuts,
+        generalNotes: String(parsed.generalNotes || ''),
+        generatedAt: now,
+      };
+      mfg!.cuttingPlan = cuttingPlan;
+      attendance.updatedAt = now;
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor: 'Lucas (Projetos & Fabricação — IA)',
+        stage: 'Plano de corte',
+        action: 'Plano de corte gerado/atualizado por IA',
+        details: `${fabricCuts.length} tecido(s) e ${foamCuts.length} peça(s) de espuma, a partir dos materiais e peças já cadastrados.`,
+      });
+
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+
+      res.json({ ok: true, order: attendance, cuttingPlan });
+    } catch (error) {
+      console.error('Erro ao gerar plano de corte:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Erro ao gerar plano de corte.',
+      });
+    }
+  });
+
+  app.post('/api/orders/:id/manufacturing/cutting-plan/approve', (req, res) => {
+    try {
+      const store = loadStore();
+      const { id } = req.params;
+      const attendance = store.attendances.find((a) => a.id === id);
+      if (!attendance) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const plan = attendance.manufacturingData?.cuttingPlan;
+      if (!plan || (plan.fabricCuts.length === 0 && plan.foamCuts.length === 0)) {
+        res.status(400).json({ error: 'Gere o plano de corte antes de aprovar.' });
+        return;
+      }
+      const { approvedBy } = req.body as { approvedBy?: string };
+      if (!approvedBy?.trim()) {
+        res.status(400).json({ error: 'Informe quem está aprovando o plano de corte.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      plan.status = 'aprovado';
+      plan.approvedBy = approvedBy.trim();
+      plan.approvedAt = now;
+      attendance.updatedAt = now;
+      attendance.auditHistory.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: now,
+        actor: approvedBy.trim(),
+        stage: 'Plano de corte',
+        action: 'Plano de corte aprovado para execução na oficina',
+        details: '',
+      });
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:updated',
+        timestamp: now,
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance,
+      });
+      res.json({ ok: true, order: attendance, cuttingPlan: plan });
+    } catch (error) {
+      console.error('Erro ao aprovar plano de corte:', error);
+      res.status(500).json({ error: 'Erro ao aprovar plano de corte.' });
     }
   });
 

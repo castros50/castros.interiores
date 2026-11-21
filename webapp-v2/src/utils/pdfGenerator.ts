@@ -2004,7 +2004,85 @@ export async function generateManufacturingInternalPdf(
 
   cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 7;
 
-  // 5. Custos Internos e Precificação (Oficina)
+  // 5. Plano de Corte (Tecidos e Espumas), quando gerado e aprovado
+  const cuttingPlan = proj.cuttingPlan;
+  if (cuttingPlan && (cuttingPlan.fabricCuts.length > 0 || cuttingPlan.foamCuts.length > 0)) {
+    if (cursorY > 220) {
+      doc.addPage();
+      cursorY = 20;
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(28, 25, 23);
+    doc.text('5. PLANO DE CORTE - TECIDOS E ESPUMAS', 15, cursorY);
+    cursorY += 2;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(120, 113, 108);
+    doc.text(
+      cuttingPlan.status === 'aprovado'
+        ? `Aprovado por ${cuttingPlan.approvedBy || ''}${cuttingPlan.approvedAt ? ' em ' + new Date(cuttingPlan.approvedAt).toLocaleDateString('pt-BR') : ''}`
+        : 'Rascunho - pendente de aprovação',
+      15,
+      cursorY + 3
+    );
+    cursorY += 6;
+
+    if (cuttingPlan.fabricCuts.length > 0) {
+      const fabricRows = cuttingPlan.fabricCuts.map((f) => [
+        f.materialName,
+        f.grainDirection,
+        f.usableWidthMeters != null ? `${f.usableWidthMeters}m` : '-',
+        f.layoutNotes || '-',
+      ]);
+      autoTable(doc, {
+        startY: cursorY,
+        margin: { left: 15, right: 15 },
+        theme: 'grid',
+        head: [['Tecido', 'Sentido do Corte', 'Larg. Útil', 'Orientação de Aproveitamento']],
+        headStyles: { fillColor: [24, 21, 18], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
+        styles: { fontSize: 8, cellPadding: 2, textColor: [28, 25, 23] },
+        body: fabricRows,
+      });
+      cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 5;
+    }
+
+    if (cursorY > 240) {
+      doc.addPage();
+      cursorY = 20;
+    }
+
+    if (cuttingPlan.foamCuts.length > 0) {
+      const foamRows = cuttingPlan.foamCuts.map((f) => [
+        f.pieceName,
+        `${f.cutDimensionsMm.length ?? '-'} x ${f.cutDimensionsMm.width ?? '-'} x ${f.cutDimensionsMm.thickness ?? '-'} mm`,
+        String(f.quantity),
+        f.notes || '-',
+      ]);
+      autoTable(doc, {
+        startY: cursorY,
+        margin: { left: 15, right: 15 },
+        theme: 'grid',
+        head: [['Peça de Espuma', 'Dimensões de Corte (C x L x E)', 'Qtd', 'Observações']],
+        headStyles: { fillColor: [24, 21, 18], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
+        styles: { fontSize: 8, cellPadding: 2, textColor: [28, 25, 23] },
+        body: foamRows,
+      });
+      cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 5;
+    }
+
+    if (cuttingPlan.generalNotes) {
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(8);
+      doc.setTextColor(87, 83, 78);
+      const notesLines = doc.splitTextToSize(`Observações gerais: ${cuttingPlan.generalNotes}`, 180);
+      doc.text(notesLines, 15, cursorY);
+      cursorY += notesLines.length * 4 + 3;
+    }
+    cursorY += 4;
+  }
+
+  // 6. Custos Internos e Precificação (Oficina)
   if (cursorY > 230) {
     doc.addPage();
     cursorY = 20;
@@ -2012,7 +2090,7 @@ export async function generateManufacturingInternalPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10.5);
   doc.setTextColor(28, 25, 23);
-  doc.text('5. APURAÇÃO DE CUSTOS INTERNOS E FORMAÇÃO DE PREÇO', 15, cursorY);
+  doc.text('6. APURAÇÃO DE CUSTOS INTERNOS E FORMAÇÃO DE PREÇO', 15, cursorY);
   cursorY += 3;
 
   const fin = attendance.financialData;
