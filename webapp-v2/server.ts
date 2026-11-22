@@ -9239,6 +9239,21 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     res.json({ ok: true, task });
   });
 
+  // Limpa o histórico de tarefas já encerradas (concluída/falhou/cancelada) —
+  // puro log de auditoria interna, sem efeito em nenhum pedido/cliente. Nunca
+  // remove uma tarefa ainda pendente/agendada, mesmo que o chamador peça —
+  // isso continua existindo e sendo processado normalmente.
+  app.delete('/api/tasks/finished', (req, res) => {
+    const store = loadStore();
+    const all = store.backgroundTasks || [];
+    const finishedStates = new Set(['concluida', 'falhou', 'cancelada']);
+    const remaining = all.filter((t) => !finishedStates.has(t.status));
+    const removedCount = all.length - remaining.length;
+    store.backgroundTasks = remaining;
+    saveStore(store);
+    res.json({ ok: true, removedCount, remainingCount: remaining.length });
+  });
+
   // Alvo do gatilho externo (Cloud Scheduler) que mantém a fila avançando mesmo
   // com o app fechado e sem ninguém olhando a tela. Protegido por um segredo que
   // só existe como variável de ambiente do servidor — nunca pedido pelo chat nem
