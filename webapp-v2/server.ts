@@ -10926,6 +10926,26 @@ Sua tarefa agora é montar o manual de execução de um produto pronto do catál
     }
   });
 
+  // Apaga de vez uma ordem de produção (ex.: cadastro de teste) — diferente de
+  // cancelar, que mantém o registro marcado como "Cancelada" no histórico.
+  app.delete('/api/henrique/production-orders/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      const henriqueData = getHenriqueData(store);
+      const idx = henriqueData.productionOrders.findIndex((o) => o.id === req.params.id);
+      if (idx === -1) {
+        res.status(404).json({ error: 'Ordem de produção não encontrada.' });
+        return;
+      }
+      henriqueData.productionOrders.splice(idx, 1);
+      saveStore(store);
+      res.json({ ok: true, henriqueData });
+    } catch (error) {
+      console.error('Erro ao apagar ordem de produção:', error);
+      res.status(500).json({ error: 'Erro ao apagar ordem de produção.' });
+    }
+  });
+
   // Generate or Correct (Corrigir) any of the 12 steps of Anúncio Inteligente with Claude
   app.post('/api/julia/ai-step', async (req, res) => {
     try {
