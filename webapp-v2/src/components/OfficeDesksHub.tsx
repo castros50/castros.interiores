@@ -589,31 +589,6 @@ export const OfficeDesksHub: React.FC<OfficeDesksHubProps> = ({
               Não informado ({attendances.filter((a) => !a.orderType).length})
             </button>
           </div>
-
-          {/* Atalhos para os 2 Cenários de Demonstração */}
-          <div className="flex items-center gap-1.5 pl-2 border-l border-[#E5DEC9]">
-            <span className="text-[11px] font-semibold text-[#6B6257]">Cenários de Teste:</span>
-            {attendances
-              .filter((a) => a.isTestScenario)
-              .map((sc) => (
-                <button
-                  key={sc.id}
-                  type="button"
-                  onClick={() => {
-                    onSelectAttendance(sc.id);
-                    setForceNoOrderView(false);
-                    if (sc.currentDesk) setSelectedDeskId(sc.currentDesk);
-                  }}
-                  className={`px-2.5 py-1 rounded border text-[11px] font-bold ${
-                    activeOrder?.id === sc.id
-                      ? 'bg-emerald-100 text-emerald-900 border-emerald-400'
-                      : 'bg-[#FAF8F5] text-[#181512] border-[#D6CFC5] hover:bg-white'
-                  }`}
-                >
-                  {sc.attendanceNumber}: {sc.furnitureType}
-                </button>
-              ))}
-          </div>
         </div>
 
         {/* Busca por código ou cliente */}
