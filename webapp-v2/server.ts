@@ -5454,6 +5454,27 @@ async function startServer() {
     }
   });
 
+  // Apaga de vez um cadastro de cliente (ex.: cadastro de teste). Não mexe em
+  // nenhum pedido existente — se algum pedido ainda referenciar este
+  // clientId, o nome gravado no próprio pedido continua intacto (o vínculo
+  // só deixa de resolver para um cadastro central).
+  app.delete('/api/clients/:id', (req, res) => {
+    try {
+      const store = loadStore();
+      const idx = (store.clients || []).findIndex((c) => c.id === req.params.id);
+      if (idx === -1) {
+        res.status(404).json({ error: 'Cliente não encontrado.' });
+        return;
+      }
+      store.clients!.splice(idx, 1);
+      saveStore(store);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('Erro ao apagar cliente:', err);
+      res.status(500).json({ error: 'Erro ao apagar cliente.' });
+    }
+  });
+
   // Update workshop settings
   app.put('/api/settings', (req, res) => {
     const store = loadStore();
