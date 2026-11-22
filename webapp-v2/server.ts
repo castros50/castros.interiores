@@ -11356,7 +11356,7 @@ Lembre-se: NUNCA mencione avaliação técnica de defeitos, problemas estruturai
   // essa mesma lista também guarda o histórico real das mensagens trocadas por WhatsApp
   // com os clientes — a confirmação em duas etapas desse caso específico acontece no
   // front-end; aqui só executa o que foi confirmado, sem adivinhar intenção.
-  app.delete('/api/chat/history', (req, res) => {
+  app.delete('/api/chat/history', async (req, res) => {
     try {
       const { deskId, actorName } = req.body as { deskId?: DepartmentId; actorName?: string };
       if (!deskId) {
@@ -11368,10 +11368,37 @@ Lembre-se: NUNCA mencione avaliação técnica de defeitos, problemas estruturai
       const previousCount = (store.agentChats[deskId] || []).length;
       store.agentChats[deskId] = [];
       saveStore(store);
+
+      // Apagar só o array local/no documento único não basta: desde a troca
+      // para coleções, a fonte de verdade de cada mesa é agentChats_v2_{deskId}
+      // (ver persistStoreKeysTransactionally, que só sabe ACRESCENTAR mensagens
+      // novas, nunca apagar) — sem isto, a próxima vez que uma instância nova
+      // subir (redeploy, autoscaling), restoreStoreFromFirestoreIfNeeded
+      // traria de volta as mensagens "apagadas", porque elas continuariam lá.
+      let firestoreDeletedCount = 0;
+      try {
+        const chatCol = db.collection(`${COLLECTION_CHAT_MESSAGE_PREFIX}${deskId}`);
+        const snap = await chatCol.get();
+        const docs = snap.docs;
+        const BATCH_SIZE = 450;
+        for (let i = 0; i < docs.length; i += BATCH_SIZE) {
+          const batch = db.batch();
+          for (const d of docs.slice(i, i + BATCH_SIZE)) batch.delete(d.ref);
+          await batch.commit();
+        }
+        firestoreDeletedCount = docs.length;
+      } catch (err) {
+        console.error(
+          `[chat] Falha ao apagar ${COLLECTION_CHAT_MESSAGE_PREFIX}${deskId} no Firestore (mensagens podem reaparecer numa instância nova):`,
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+
       console.log(
-        `[chat] Conversa da mesa "${deskId}" apagada por "${actorName || 'não identificado'}" (${previousCount} mensagem(ns) removida(s)).`
+        `[chat] Conversa da mesa "${deskId}" apagada por "${actorName || 'não identificado'}" ` +
+          `(${previousCount} mensagem(ns) local(is), ${firestoreDeletedCount} documento(s) apagado(s) no Firestore).`
       );
-      res.json({ ok: true, removedCount: previousCount });
+      res.json({ ok: true, removedCount: previousCount, firestoreDeletedCount });
     } catch (err) {
       console.error('Erro ao limpar histórico de chat:', err);
       res.status(500).json({ error: 'Erro ao limpar a conversa.' });
