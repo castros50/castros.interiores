@@ -3095,10 +3095,36 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
     }
   };
 
-  if (isLoading || !juliaData || !activeProject) {
+  if (isLoading || !juliaData) {
     return (
       <div className="p-8 rounded-xl bg-white border border-[#E5DEC9] text-center text-xs text-[#6B6257]">
         Carregando departamento Júlia Marketing, Publicidade e Divulgação...
+      </div>
+    );
+  }
+
+  // Sem nenhuma campanha salva (ex.: a última foi apagada) — nunca travar aqui
+  // pra sempre esperando um activeProject que não existe mais. As fotos já
+  // recebidas (ex.: enviadas pelo Juliano) continuam guardadas em
+  // juliaData.photos independente de ter campanha ou não; só o assistente de
+  // anúncio de 12 etapas precisa de uma campanha ativa pra funcionar.
+  if (!activeProject) {
+    return (
+      <div className="p-8 rounded-xl bg-white border border-[#E5DEC9] text-center space-y-3">
+        <p className="text-sm text-[#181512] font-semibold">Nenhuma campanha de anúncio ativa no momento.</p>
+        <p className="text-xs text-[#6B6257]">
+          {juliaData.photos.length > 0
+            ? `${juliaData.photos.length} foto(s) já estão guardadas na biblioteca (inclusive as enviadas por outras mesas) — crie uma campanha pra começar a usá-las num anúncio, pôster, carrossel ou catálogo.`
+            : 'Crie a primeira campanha pra começar a organizar fotos, anúncios e publicações.'}
+        </p>
+        <button
+          type="button"
+          onClick={handleCreateNewCampaignProject}
+          className="px-4 py-2 rounded-lg bg-[#181512] hover:bg-[#2A2420] text-white text-xs font-semibold inline-flex items-center gap-1.5"
+        >
+          <Plus className="w-4 h-4" />
+          Criar Primeira Campanha
+        </button>
       </div>
     );
   }
