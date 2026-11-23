@@ -9928,6 +9928,34 @@ REGRAS ESTRITAS E INEGOCIÁVEIS DA JÚLIA:
     res.json({ ok: true, juliaData: store.juliaData });
   });
 
+  // Apaga de vez um projeto de Anúncio Inteligente (ex.: campanha de teste) —
+  // não mexe nas fotos da biblioteca (podem estar em uso por outro projeto),
+  // só no projeto em si. Se o projeto apagado era o ativo, cai pro primeiro
+  // projeto restante (ou nenhum, se não sobrar nenhum).
+  app.delete('/api/julia/projects/:id', (req, res) => {
+    const store = loadStore();
+    if (!store.juliaData) {
+      store.juliaData = getDefaultJuliaData();
+    }
+    const { id } = req.params;
+    const existed = store.juliaData.projects.some((p) => p.id === id);
+    if (!existed) {
+      res.status(404).json({ error: 'Projeto de campanha não encontrado.' });
+      return;
+    }
+    store.juliaData.projects = store.juliaData.projects.filter((p) => p.id !== id);
+    if (store.juliaData.activeProjectId === id) {
+      store.juliaData.activeProjectId = store.juliaData.projects[0]?.id || '';
+    }
+    saveStore(store);
+    broadcastRealtimeEvent({
+      type: 'julia:updated',
+      timestamp: new Date().toISOString(),
+      juliaData: store.juliaData,
+    });
+    res.json({ ok: true, juliaData: store.juliaData });
+  });
+
   // ==========================================================================
   // JULIANO — VENDAS DE PRODUTOS PRONTOS (mesa 10)
   // Catálogo e vendas próprios, isolados de AttendanceRecord. A venda só toca
