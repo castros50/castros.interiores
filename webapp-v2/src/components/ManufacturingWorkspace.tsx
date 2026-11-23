@@ -411,12 +411,17 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
     });
   };
 
-  // Cálculo de Custos
-  const totalMaterialsCostCents = (project.materials || []).reduce(
+  // Cálculo de Custos — a lista de materiais "oficial" de um pedido de
+  // Fabricação é materialRequirements (gerada pelo Lucas na aba 3); o
+  // array materials só existe por compatibilidade com fluxos antigos. Ler
+  // só materials aqui fazia o consumo de materiais aparecer sempre R$0,00
+  // pra qualquer pedido que já usasse o fluxo atual.
+  const costMaterials = project.materialRequirements || project.materials || [];
+  const totalMaterialsCostCents = costMaterials.reduce(
     (sum, m) => sum + (m.totalCostCents || 0),
     0
   );
-  const totalPurchaseDisbursementCents = (project.materials || []).reduce(
+  const totalPurchaseDisbursementCents = costMaterials.reduce(
     (sum, m) => sum + (m.purchaseDisbursementCents || 0),
     0
   );
@@ -1568,25 +1573,31 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
                     <span className="font-mono font-bold">{formatCurrencyBRL(totalMaterialsCostCents)}</span>
                   </div>
 
-                  <div className="flex justify-between py-1 border-b border-[#EFECE6]">
-                    <span className="text-[#57534E]">Mão de Obra Tapeçaria/Costura (Oficina)</span>
-                    <span className="font-mono font-bold">{formatCurrencyBRL(finData.laborWorkshopCostCents || 0)}</span>
-                  </div>
-
-                  <div className="flex justify-between py-1 border-b border-[#EFECE6]">
-                    <span className="text-[#57534E]">Mão de Obra do Mestre/Proprietário</span>
-                    <span className="font-mono font-bold">{formatCurrencyBRL(finData.ownerLaborCostCents || 0)}</span>
-                  </div>
-
-                  <div className="flex justify-between py-1 border-b border-[#EFECE6]">
-                    <span className="text-[#57534E]">Rateio de Custos Fixos</span>
-                    <span className="font-mono font-bold">{formatCurrencyBRL(finData.overheadApportionmentCents || 0)}</span>
-                  </div>
-
-                  <div className="flex justify-between py-1 border-b border-[#EFECE6]">
-                    <span className="text-[#57534E]">Transporte / Coleta / Entrega</span>
-                    <span className="font-mono font-bold">{formatCurrencyBRL(finData.transportFreightCents || 0)}</span>
-                  </div>
+                  {(
+                    [
+                      { key: 'laborWorkshopCostCents', label: 'Mão de Obra Tapeçaria/Costura (Oficina)' },
+                      { key: 'ownerLaborCostCents', label: 'Mão de Obra do Mestre/Proprietário' },
+                      { key: 'overheadApportionmentCents', label: 'Rateio de Custos Fixos' },
+                      { key: 'transportFreightCents', label: 'Transporte / Coleta / Entrega' },
+                    ] as const
+                  ).map(({ key, label }) => (
+                    <div key={key} className="flex items-center justify-between py-1 border-b border-[#EFECE6] gap-2">
+                      <span className="text-[#57534E]">{label}</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={finData[key] ? (finData[key] as number) / 100 : ''}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          const cents = isNaN(val) ? 0 : Math.round(val * 100);
+                          const updatedFin = { ...finData, [key]: cents };
+                          onUpdateDraft({ ...attendance, financialData: updatedFin });
+                        }}
+                        placeholder="0,00"
+                        className="w-24 rounded border border-[#D6CFC5] px-2 py-1 text-xs font-mono text-right bg-white"
+                      />
+                    </div>
+                  ))}
 
                   <div className="flex justify-between pt-2 text-sm font-bold text-[#181512]">
                     <span>Custo Total Interno Apurado</span>
