@@ -10,6 +10,7 @@ import {
   XCircle,
   Plus,
   Printer,
+  Send,
 } from 'lucide-react';
 import {
   HenriqueDepartmentData,
@@ -107,6 +108,25 @@ export const HenriqueProducaoDesk: React.FC<HenriqueProducaoDeskProps> = ({ sett
       await loadAll();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Erro ao iniciar a ordem.');
+    }
+  };
+
+  const [sendingToLucasId, setSendingToLucasId] = useState<string | null>(null);
+
+  const handleSendToLucas = async (order: ProductionOrder) => {
+    setSendingToLucasId(order.id);
+    try {
+      const res = await fetch(`/api/henrique/production-orders/${order.id}/send-to-lucas`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao encaminhar para o Lucas.');
+      await loadAll();
+      alert(
+        `Encaminhado para o Lucas como pedido ${data.attendance?.attendanceNumber || ''} — ele já pode abrir a ficha técnica, a lista de materiais e o plano de corte.`
+      );
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erro ao encaminhar para o Lucas.');
+    } finally {
+      setSendingToLucasId(null);
     }
   };
 
@@ -523,6 +543,23 @@ export const HenriqueProducaoDesk: React.FC<HenriqueProducaoDeskProps> = ({ sett
                       </>
                     );
                   })()}
+                  {order.linkedAttendanceId ? (
+                    <span className="px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs font-semibold flex items-center gap-1.5">
+                      <Send className="w-3.5 h-3.5" />
+                      Já encaminhado ao Lucas
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={sendingToLucasId === order.id}
+                      onClick={() => handleSendToLucas(order)}
+                      title="Cria um pedido de Fabricação na mesa do Lucas pra gerar ficha técnica, lista de materiais e plano de corte"
+                      className="px-2.5 py-1.5 rounded-lg bg-[#9A7138] hover:bg-[#845E2B] text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      {sendingToLucasId === order.id ? 'Encaminhando...' : 'Encaminhar para o Lucas'}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => handleCancel(order)}

@@ -5633,28 +5633,23 @@ async function startServer() {
     }
   });
 
-  // Create new attendance with automatic number
-  app.post('/api/attendances', async (req, res) => {
-    try {
-      const store = loadStore();
-      const incoming = req.body as AttendanceRecord;
-      
-      // Prevent duplicates by checking if ID already exists
-      if (incoming.id && store.attendances.find(a => a.id === incoming.id)) {
-        res.json({ ok: true, attendance: store.attendances.find(a => a.id === incoming.id) });
-        return;
-      }
-      
-      const now = new Date();
-      const count = store.attendances.length + 1;
-      const formattedSeq = String(count).padStart(4, '0');
-      const attendanceNumber =
-        incoming.orderType === 'Fabricação'
-          ? `FAB-2026-${formattedSeq}`
-          : `CI-2026-${formattedSeq}`;
+  // Monta um AttendanceRecord completo e válido a partir de campos parciais,
+  // preenchendo todo campo obrigatório que não veio informado com o mesmo
+  // padrão "rascunho" usado desde sempre por POST /api/attendances — extraído
+  // pra função porque outras rotas (ex.: Henrique encaminhando uma ordem de
+  // produção para o Lucas) também precisam criar um atendimento de verdade,
+  // sem duplicar essa lista de defaults.
+  function buildNewAttendanceRecord(store: PersistentStore, incoming: Partial<AttendanceRecord>): AttendanceRecord {
+    const now = new Date();
+    const count = store.attendances.length + 1;
+    const formattedSeq = String(count).padStart(4, '0');
+    const attendanceNumber =
+      incoming.orderType === 'Fabricação'
+        ? `FAB-2026-${formattedSeq}`
+        : `CI-2026-${formattedSeq}`;
 
-      const newRecord: AttendanceRecord = {
-        ...incoming,
+    const newRecord: AttendanceRecord = {
+      ...(incoming as AttendanceRecord),
         id: incoming.id || `att-${Date.now()}`,
         attendanceNumber: incoming.attendanceNumber || attendanceNumber,
         status: incoming.status || 'Rascunho',
@@ -5732,10 +5727,26 @@ async function startServer() {
           proposalNeedsReview: false,
           opinionNeedsReview: false,
         },
-        orderType: incoming.orderType || 'Reforma',
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      };
+      orderType: incoming.orderType || 'Reforma',
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+    return newRecord;
+  }
+
+  // Create new attendance with automatic number
+  app.post('/api/attendances', async (req, res) => {
+    try {
+      const store = loadStore();
+      const incoming = req.body as AttendanceRecord;
+
+      // Prevent duplicates by checking if ID already exists
+      if (incoming.id && store.attendances.find(a => a.id === incoming.id)) {
+        res.json({ ok: true, attendance: store.attendances.find(a => a.id === incoming.id) });
+        return;
+      }
+
+      const newRecord = buildNewAttendanceRecord(store, incoming);
       // Update store (saveStore já sincroniza o estado inteiro com o Firestore)
       store.attendances.push(newRecord);
       saveStore(store);
@@ -10992,6 +11003,79 @@ Sua tarefa agora é montar o manual de execução de um produto pronto do catál
     } catch (error) {
       console.error('Erro ao apagar ordem de produção:', error);
       res.status(500).json({ error: 'Erro ao apagar ordem de produção.' });
+    }
+  });
+
+  // Encaminha uma ordem de produção interna (reposição de estoque de produto
+  // pronto) para a mesa do Lucas virar um pedido de Fabricação de verdade —
+  // mesmo sistema de ficha técnica, lista de peças/materiais e plano de
+  // corte já usado pra pedido de cliente. Henrique e Juliano têm seu próprio
+  // catálogo/produção (ReadyMadeProduct/ProductionOrder), deliberadamente
+  // separado de AttendanceRecord; esta rota é a ponte explícita entre os
+  // dois mundos, nunca criada automaticamente.
+  app.post('/api/henrique/production-orders/:id/send-to-lucas', (req, res) => {
+    try {
+      const store = loadStore();
+      const henriqueData = getHenriqueData(store);
+      const order = henriqueData.productionOrders.find((o) => o.id === req.params.id);
+      if (!order) {
+        res.status(404).json({ error: 'Ordem de produção não encontrada.' });
+        return;
+      }
+      if (order.linkedAttendanceId) {
+        res.status(400).json({ error: 'Esta ordem já foi encaminhada para o Lucas.' });
+        return;
+      }
+      if (order.status === 'Cancelada' || order.status === 'Concluída') {
+        res.status(400).json({ error: `Ordem em "${order.status}" não pode ser encaminhada — já está encerrada.` });
+        return;
+      }
+
+      const julianoData = getJulianoData(store);
+      const product = julianoData.products.find((p) => p.id === order.productId);
+
+      const dims = order.officialMeasurements;
+      const measurementsText =
+        dims && (dims.widthCm || dims.heightCm || dims.depthCm)
+          ? `${dims.widthCm ?? '?'}cm (L) x ${dims.depthCm ?? '?'}cm (P) x ${dims.heightCm ?? '?'}cm (A)`
+          : product && (product.widthCm || product.heightCm || product.depthCm)
+          ? `${product.widthCm ?? '?'}cm (L) x ${product.depthCm ?? '?'}cm (P) x ${product.heightCm ?? '?'}cm (A)`
+          : 'A validar na oficina';
+
+      const newAttendance = buildNewAttendanceRecord(store, {
+        orderType: 'Fabricação',
+        clientName: `Produção Interna — Reposição de Estoque (${order.orderNumber})`,
+        clientPhone: 'não aplicável (produção interna)',
+        furnitureType: order.productName,
+        piecesCount: `${order.quantityToProduce} unidade(s)`,
+        approxMeasurements: measurementsText,
+        fabricAndComfortPreference: product?.description || product?.color || 'não informado',
+        notes: `Ordem de produção interna ${order.orderNumber}, encaminhada por Henrique (Produção e Controle de Estoque). ${
+          order.reason ? `Motivo da produção: ${order.reason}.` : ''
+        } Esta não é uma venda a cliente — é reposição de estoque do catálogo de produtos prontos.`,
+      });
+      store.attendances.push(newAttendance);
+
+      createOrderHandoff(store, newAttendance, {
+        fromDesk: 'henrique_producao',
+        toDesk: 'lucas_projetos',
+        reason: `Ordem de produção interna ${order.orderNumber} (reposição de estoque de "${order.productName}") precisa de ficha técnica, lista de materiais e plano de corte.`,
+        completedSummary: `Ordem de produção criada por Henrique: ${order.productName}, ${order.quantityToProduce} unidade(s).`,
+        nextActionExpected: 'Gerar a ficha técnica, a lista de peças/componentes, a relação de materiais e o plano de corte.',
+      });
+
+      order.linkedAttendanceId = newAttendance.id;
+      saveStore(store);
+      broadcastRealtimeEvent({
+        type: 'attendance:created',
+        timestamp: new Date().toISOString(),
+        sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
+        attendance: newAttendance,
+      });
+      res.json({ ok: true, attendance: newAttendance, henriqueData });
+    } catch (error) {
+      console.error('Erro ao encaminhar ordem de produção para o Lucas:', error);
+      res.status(500).json({ error: 'Erro ao encaminhar ordem de produção para o Lucas.' });
     }
   });
 

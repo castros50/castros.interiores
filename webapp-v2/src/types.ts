@@ -1922,6 +1922,11 @@ export interface ProductionOrder {
   completedBy?: string;
   notes?: string;
   cancelReason?: string;
+  // Id do pedido de Fabricação criado na mesa do Lucas quando esta ordem foi
+  // encaminhada pra ele gerar a ficha técnica, a lista de materiais e o
+  // plano de corte — nunca mais de um por ordem (reenviar atualizaria o
+  // mesmo pedido, não criaria outro).
+  linkedAttendanceId?: string;
 }
 
 export interface StockEntryRecord {
