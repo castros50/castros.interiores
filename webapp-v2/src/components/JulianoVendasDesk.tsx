@@ -658,9 +658,13 @@ export const JulianoVendasDesk: React.FC = () => {
                           className="hidden"
                           disabled={uploadingPhotoId === product.id}
                           onChange={(e) => {
+                            // Capturar a seleção ANTES de limpar o campo — e.target.files é uma
+                            // referência viva: zerar e.target.value primeiro esvazia essa mesma
+                            // lista antes do handler abaixo conseguir lê-la (bug real encontrado
+                            // em produção: a foto nunca chegava a ser enviada).
                             const files = e.target.files;
-                            e.target.value = '';
                             if (files && files.length > 0) handleAddPhotos(product, files);
+                            e.target.value = '';
                           }}
                         />
                         <img
@@ -683,9 +687,11 @@ export const JulianoVendasDesk: React.FC = () => {
                           className="hidden"
                           disabled={uploadingPhotoId === product.id}
                           onChange={(e) => {
+                            // Mesmo cuidado de ordem do card com foto acima: capturar a
+                            // referência antes de zerar e.target.value.
                             const files = e.target.files;
-                            e.target.value = '';
                             if (files && files.length > 0) handleAddPhotos(product, files);
+                            e.target.value = '';
                           }}
                         />
                         <div className="w-full h-28 flex flex-col items-center justify-center gap-1 rounded bg-[#EFECE6] text-[#9A9388] hover:bg-[#E5DEC9]">
@@ -726,9 +732,11 @@ export const JulianoVendasDesk: React.FC = () => {
                             className="hidden"
                             disabled={uploadingPhotoId === product.id}
                             onChange={(e) => {
+                              // Mesmo cuidado de ordem: capturar a referência antes de zerar
+                              // e.target.value.
                               const files = e.target.files;
-                              e.target.value = '';
                               if (files && files.length > 0) handleAddPhotos(product, files);
+                              e.target.value = '';
                             }}
                           />
                           <Plus className="w-4 h-4" />
