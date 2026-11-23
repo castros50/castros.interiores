@@ -80,7 +80,7 @@ const DEFAULT_12_STEPS: AssemblyManualStep[] = [
   {
     stepNumber: 1,
     title: 'Corte e Esquadrejamento da Madeira',
-    description: 'Corte preciso dos elementos estruturais de madeira maciça tratada conforme dimensões em mm da lista de peças.',
+    description: 'Corte preciso dos elementos estruturais de madeira maciça tratada conforme dimensões em cm da lista de peças.',
     piecesUsed: ['P-01', 'P-02', 'P-03', 'P-04'],
     toolsRequired: ['Serra esquadrejadeira', 'Trena milimétrica', 'Esquadro metálico de precisão'],
     sequenceOrder: 1,
@@ -369,10 +369,10 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
       code: newCode,
       name: 'Novo Componente Estrutural',
       componentType: 'Madeira',
-      dimensionsMm: {
-        length: 1200,
-        width: 70,
-        thickness: 25,
+      dimensionsCm: {
+        length: 120,
+        width: 7,
+        thickness: 2.5,
       },
       specification: 'Eucalipto tratado seco em estufa',
       quantityPerUnit: 2,
@@ -882,7 +882,7 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
                 <strong className="font-bold">Diretriz da Fabricação Castros Interiores:</strong>
                 <p className="mt-0.5 text-blue-800">
                   A fotografia serve como referência visual estética para reproduzir a aparência externa do modelo.
-                  Medidas estruturais em mm, tipo de madeiramento, densidade de espumas e ferragens internas exigem especificação confirmada da oficina e não são inferidas das fotos.
+                  Medidas estruturais em cm, tipo de madeiramento, densidade de espumas e ferragens internas exigem especificação confirmada da oficina e não são inferidas das fotos.
                 </p>
               </div>
             </div>
@@ -1326,10 +1326,10 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
               <div>
                 <span className="text-[11px] font-bold uppercase tracking-wider text-[#9A7138]">Etapa 05 de 08</span>
                 <h2 className="text-xl font-serif-display font-bold text-[#181512]">
-                  Lista de Peças em mm, Materiais e Plano de Corte
+                  Lista de Peças em cm, Materiais e Plano de Corte
                 </h2>
                 <p className="text-xs text-[#6B6257]">
-                  Componentes dimensionados em mm por unidade e por lote ({project.unitsCount} un), consumo com largura útil (1,40m) e verificação de estoque.
+                  Componentes dimensionados em cm por unidade e por lote ({project.unitsCount} un), consumo com largura útil (1,40m) e verificação de estoque.
                 </p>
               </div>
 
@@ -1353,10 +1353,10 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
               </div>
             </div>
 
-            {/* TABELA DE COMPONENTES ESTRUTURAIS EM MM */}
+            {/* TABELA DE COMPONENTES ESTRUTURAIS EM CM */}
             <div className="space-y-3">
               <h3 className="font-bold text-xs uppercase tracking-wide text-[#181512] flex items-center justify-between">
-                <span>Peças da Estrutura (Dimensões em mm)</span>
+                <span>Peças da Estrutura (Dimensões em cm)</span>
                 <span className="text-[11px] text-[#6B6257] font-normal">
                   Total multiplicado pelo lote: <strong className="text-[#181512]">{project.unitsCount} unidade(s)</strong>
                 </span>
@@ -1369,7 +1369,7 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
                       <th className="p-2.5">Código</th>
                       <th className="p-2.5">Nome da Peça</th>
                       <th className="p-2.5">Tipo</th>
-                      <th className="p-2.5">Dimensões em mm (C x L x E)</th>
+                      <th className="p-2.5">Dimensões em cm (C x L x E)</th>
                       <th className="p-2.5">Especificação</th>
                       <th className="p-2.5 text-center">Qtd/Un</th>
                       <th className="p-2.5 text-center">Total Lote</th>
@@ -1396,7 +1396,7 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
                           </td>
                           <td className="p-2.5">{c.componentType}</td>
                           <td className="p-2.5 font-mono">
-                            {c.dimensionsMm?.length || '-'} x {c.dimensionsMm?.width || '-'} x {c.dimensionsMm?.thickness || '-'} mm
+                            {c.dimensionsCm?.length || '-'} x {c.dimensionsCm?.width || '-'} x {c.dimensionsCm?.thickness || '-'} cm
                           </td>
                           <td className="p-2.5 text-[#6B6257]">{c.specification}</td>
                           <td className="p-2.5 text-center font-bold">{c.quantityPerUnit}</td>
@@ -1726,7 +1726,7 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
                   Manual de Fabricação e Montagem (12 Passos Padronizados)
                 </h2>
                 <p className="text-xs text-[#6B6257]">
-                  Sequência executiva da bancada Castros Interiores com ferramentas necessárias, peças e conferência de tolerância em mm.
+                  Sequência executiva da bancada Castros Interiores com ferramentas necessárias, peças e conferência de tolerância em cm.
                 </p>
               </div>
             </div>
@@ -1848,7 +1848,7 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
                     Ficha Técnica & Manual de Fabricação
                   </h3>
                   <p className="text-xs text-[#6B6257] mt-1">
-                    Inclui dimensões em mm, lista de peças codificadas por unidade e por lote, relação de tecidos (1,40m útil), plano de corte, 12 passos do manual e custos apurados.
+                    Inclui dimensões em cm, lista de peças codificadas por unidade e por lote, relação de tecidos (1,40m útil), plano de corte, 12 passos do manual e custos apurados.
                   </p>
                 </div>
 

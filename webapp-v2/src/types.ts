@@ -2043,7 +2043,10 @@ export interface ManufacturingComponent {
     | 'Ferragem'
     | 'Sustentação'
     | 'Acessório';
-  dimensionsMm: {
+  // Castros Interiores trabalha só em centímetros (nunca milímetros) em toda
+  // peça/produto — mesma unidade já usada em todo o resto do sistema
+  // (dimensions.widthCm, ReadyMadeProduct.widthCm, officialMeasurements etc.).
+  dimensionsCm: {
     length: number | null;
     width: number | null;
     thickness: number | null;
@@ -2056,15 +2059,15 @@ export interface ManufacturingComponent {
   material?: string;
   source: SpecificationSource;
   notes?: string;
-  // Dimensão de corte (com margens) vs. dimensionsMm acima (dimensão acabada/nominal)
-  cutDimensionsMm?: {
+  // Dimensão de corte (com margens) vs. dimensionsCm acima (dimensão acabada/nominal)
+  cutDimensionsCm?: {
     length: number | null;
     width: number | null;
     thickness: number | null;
   };
-  seamAllowanceMm?: number; // margem de costura
-  foldAllowanceMm?: number; // margem de dobra
-  fixingAllowanceMm?: number; // margem de fixação/grampeamento
+  seamAllowanceCm?: number; // margem de costura
+  foldAllowanceCm?: number; // margem de dobra
+  fixingAllowanceCm?: number; // margem de fixação/grampeamento
   // Reaproveitamento (somente relevante em atendimentos de Reforma)
   reformStatus?: 'Recuperar' | 'Substituir' | 'Aguardar desmontagem';
   sourceReuseItemId?: string; // vínculo ao ReuseEvaluationItem de origem, quando houver
@@ -2176,7 +2179,7 @@ export interface ManufacturingFabricCuttingGuidance {
 export interface ManufacturingFoamCuttingGuidance {
   pieceName: string;
   componentId?: string;
-  cutDimensionsMm: { length: number | null; width: number | null; thickness: number | null };
+  cutDimensionsCm: { length: number | null; width: number | null; thickness: number | null };
   quantity: number;
   notes?: string;
 }

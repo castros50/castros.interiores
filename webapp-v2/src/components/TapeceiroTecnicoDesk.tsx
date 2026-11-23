@@ -163,7 +163,7 @@ export const TapeceiroTecnicoDesk: React.FC<TapeceiroTecnicoDeskProps> = ({
       code: `P-${String(components.length + 1).padStart(2, '0')}`,
       name: 'Nova peça (preencher)',
       componentType: 'Acessório',
-      dimensionsMm: { length: null, width: null, thickness: null },
+      dimensionsCm: { length: null, width: null, thickness: null },
       specification: '',
       quantityPerUnit: 1,
       totalQuantity: 1,
@@ -489,8 +489,8 @@ export const TapeceiroTecnicoDesk: React.FC<TapeceiroTecnicoDeskProps> = ({
                       <th className="py-2 px-3">Peça</th>
                       <th className="py-2 px-3">Tipo</th>
                       {order.orderType === 'Reforma' && <th className="py-2 px-3">Situação</th>}
-                      <th className="py-2 px-3">Dim. Acabada (mm)</th>
-                      <th className="py-2 px-3">Dim. de Corte (mm)</th>
+                      <th className="py-2 px-3">Dim. Acabada (cm)</th>
+                      <th className="py-2 px-3">Dim. de Corte (cm)</th>
                       <th className="py-2 px-3">Qtd.</th>
                       <th className="py-2 px-3 text-center">Ação</th>
                     </tr>
@@ -558,11 +558,11 @@ export const TapeceiroTecnicoDesk: React.FC<TapeceiroTecnicoDeskProps> = ({
                                 key={dim}
                                 type="number"
                                 placeholder={dim === 'length' ? 'C' : dim === 'width' ? 'L' : 'E'}
-                                value={c.dimensionsMm[dim] ?? ''}
+                                value={c.dimensionsCm[dim] ?? ''}
                                 onChange={(e) => {
                                   const val = e.target.value === '' ? null : parseFloat(e.target.value);
                                   handleUpdateComponent(c.id, {
-                                    dimensionsMm: { ...c.dimensionsMm, [dim]: val },
+                                    dimensionsCm: { ...c.dimensionsCm, [dim]: val },
                                   });
                                 }}
                                 className="w-14 rounded border border-[#D6CFC5] px-1 py-1 text-xs tabular-nums"
@@ -577,14 +577,14 @@ export const TapeceiroTecnicoDesk: React.FC<TapeceiroTecnicoDeskProps> = ({
                                 key={dim}
                                 type="number"
                                 placeholder={dim === 'length' ? 'C' : dim === 'width' ? 'L' : 'E'}
-                                value={c.cutDimensionsMm?.[dim] ?? ''}
+                                value={c.cutDimensionsCm?.[dim] ?? ''}
                                 onChange={(e) => {
                                   const val = e.target.value === '' ? null : parseFloat(e.target.value);
                                   handleUpdateComponent(c.id, {
-                                    cutDimensionsMm: {
-                                      length: c.cutDimensionsMm?.length ?? null,
-                                      width: c.cutDimensionsMm?.width ?? null,
-                                      thickness: c.cutDimensionsMm?.thickness ?? null,
+                                    cutDimensionsCm: {
+                                      length: c.cutDimensionsCm?.length ?? null,
+                                      width: c.cutDimensionsCm?.width ?? null,
+                                      thickness: c.cutDimensionsCm?.thickness ?? null,
                                       [dim]: val,
                                     },
                                   });

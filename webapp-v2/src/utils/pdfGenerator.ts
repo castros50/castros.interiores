@@ -1924,7 +1924,7 @@ export async function generateManufacturingInternalPdf(
     cursorY += photoHeight + 8;
   }
 
-  // 3. Lista de Peças e Componentes em mm
+  // 3. Lista de Peças e Componentes em cm
   if (cursorY > 220) {
     doc.addPage();
     cursorY = 20;
@@ -1932,7 +1932,7 @@ export async function generateManufacturingInternalPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10.5);
   doc.setTextColor(28, 25, 23);
-  doc.text('3. LISTA DE PEÇAS DA ESTRUTURA (DIMENSÕES EM MM)', 15, cursorY);
+  doc.text('3. LISTA DE PEÇAS DA ESTRUTURA (DIMENSÕES EM CM)', 15, cursorY);
   cursorY += 3;
 
   const compRows = (proj.components && proj.components.length > 0)
@@ -1940,12 +1940,12 @@ export async function generateManufacturingInternalPdf(
         c.code,
         c.name,
         c.componentType,
-        `${c.dimensionsMm?.length || '-'} x ${c.dimensionsMm?.width || '-'} x ${c.dimensionsMm?.thickness || '-'} mm`,
+        `${c.dimensionsCm?.length || '-'} x ${c.dimensionsCm?.width || '-'} x ${c.dimensionsCm?.thickness || '-'} cm`,
         c.specification || 'Padrão',
         String(c.quantityPerUnit),
         String(c.totalQuantity),
       ])
-    : [['P-01', 'Quadro estrutural básico', 'Madeira', '1600 x 70 x 25 mm', 'Eucalipto tratado seco', '2', String(2 * (proj.unitsCount ?? 1))]];
+    : [['P-01', 'Quadro estrutural básico', 'Madeira', '160 x 7 x 2,5 cm', 'Eucalipto tratado seco', '2', String(2 * (proj.unitsCount ?? 1))]];
 
   autoTable(doc, {
     startY: cursorY,
@@ -2055,7 +2055,7 @@ export async function generateManufacturingInternalPdf(
     if (cuttingPlan.foamCuts.length > 0) {
       const foamRows = cuttingPlan.foamCuts.map((f) => [
         f.pieceName,
-        `${f.cutDimensionsMm.length ?? '-'} x ${f.cutDimensionsMm.width ?? '-'} x ${f.cutDimensionsMm.thickness ?? '-'} mm`,
+        `${f.cutDimensionsCm.length ?? '-'} x ${f.cutDimensionsCm.width ?? '-'} x ${f.cutDimensionsCm.thickness ?? '-'} cm`,
         String(f.quantity),
         f.notes || '-',
       ]);

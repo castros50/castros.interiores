@@ -4736,7 +4736,7 @@ function buildComponentsFromReuseItems(attendance: AttendanceRecord): Manufactur
       code: `RF-${String(idx + 1).padStart(2, '0')}`,
       name: item.component,
       componentType: mapReuseComponentToManufacturingType(item.component),
-      dimensionsMm: { length: null, width: null, thickness: null },
+      dimensionsCm: { length: null, width: null, thickness: null },
       specification: item.condition,
       quantityPerUnit: 1,
       totalQuantity: 1,
@@ -4796,7 +4796,7 @@ function computeInitialPlanStatus(
   const hasPendingComponent = components.some(
     (c) =>
       c.reformStatus === 'Aguardar desmontagem' ||
-      (c.dimensionsMm.length == null && c.dimensionsMm.width == null && c.dimensionsMm.thickness == null)
+      (c.dimensionsCm.length == null && c.dimensionsCm.width == null && c.dimensionsCm.thickness == null)
   );
   return hasPendingMaterial || hasPendingComponent ? 'Pendente de medição' : 'Rascunho';
 }
@@ -6559,7 +6559,7 @@ DADOS DO PEDIDO DE FABRICAÇÃO SOB MEDIDA (${attendance.attendanceNumber}):
 - Notas da Oficina: ${attendance.notes || 'Sem observações'}
 
 TAREFA:
-Monte a LISTA DE PEÇAS E COMPONENTES ESTRUTURAIS desta peça (armação de madeira, pés, travessas, molas/percinta de sustentação, espuma de assento e encosto, e qualquer outro componente estrutural — NÃO inclua aqui itens de revestimento/tecido em metros, isso é a lista de materiais de compra, que é outra tela). Para cada peça, informe nome, tipo (Madeira, Espuma, Revestimento, Ferragem, Sustentação ou Acessório), material/especificação, dimensões em milímetros (comprimento x largura x espessura — quando não for possível estimar uma medida exata, descreva em texto livre) e quantidade por unidade do móvel. Esta é uma PROPOSTA TÉCNICA preliminar a partir do briefing — a oficina vai validar/ajustar cada peça na bancada antes de ela valer como definitiva. Nunca invente uma medida como se fosse certeza; quando a medida depender do projeto executivo final, diga isso explicitamente nas observações.`;
+Monte a LISTA DE PEÇAS E COMPONENTES ESTRUTURAIS desta peça (armação de madeira, pés, travessas, molas/percinta de sustentação, espuma de assento e encosto, e qualquer outro componente estrutural — NÃO inclua aqui itens de revestimento/tecido em metros, isso é a lista de materiais de compra, que é outra tela). Para cada peça, informe nome, tipo (Madeira, Espuma, Revestimento, Ferragem, Sustentação ou Acessório), material/especificação, dimensões em CENTÍMETROS — nunca milímetros, a Castros Interiores não trabalha com milímetros (comprimento x largura x espessura — quando não for possível estimar uma medida exata, descreva em texto livre) e quantidade por unidade do móvel. Esta é uma PROPOSTA TÉCNICA preliminar a partir do briefing — a oficina vai validar/ajustar cada peça na bancada antes de ela valer como definitiva. Nunca invente uma medida como se fosse certeza; quando a medida depender do projeto executivo final, diga isso explicitamente nas observações.`;
 
       const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const LUCAS_COMPONENTS_SYSTEM_INSTRUCTION = `Você é o AGENTE LUCAS — Engenheiro de Projetos e Fabricação de Produtos Novos da Castros Interiores.
@@ -6585,10 +6585,10 @@ Sua tarefa agora é só montar a lista preliminar de peças e componentes estrut
                   },
                   material: { type: Type.STRING },
                   specification: { type: Type.STRING },
-                  lengthMm: { type: Type.NUMBER },
-                  widthMm: { type: Type.NUMBER },
-                  thicknessMm: { type: Type.NUMBER },
-                  dimensionsRawText: { type: Type.STRING, description: 'Usar quando não der pra estimar mm exatos' },
+                  lengthCm: { type: Type.NUMBER },
+                  widthCm: { type: Type.NUMBER },
+                  thicknessCm: { type: Type.NUMBER },
+                  dimensionsRawText: { type: Type.STRING, description: 'Usar quando não der pra estimar cm exatos' },
                   quantityPerUnit: { type: Type.NUMBER },
                   notes: { type: Type.STRING },
                 },
@@ -6661,10 +6661,10 @@ Sua tarefa agora é só montar a lista preliminar de peças e componentes estrut
           code: prev?.code || `P-${String(idx + 1).padStart(2, '0')}`,
           name,
           componentType,
-          dimensionsMm: {
-            length: typeof it.lengthMm === 'number' ? it.lengthMm : null,
-            width: typeof it.widthMm === 'number' ? it.widthMm : null,
-            thickness: typeof it.thicknessMm === 'number' ? it.thicknessMm : null,
+          dimensionsCm: {
+            length: typeof it.lengthCm === 'number' ? it.lengthCm : null,
+            width: typeof it.widthCm === 'number' ? it.widthCm : null,
+            thickness: typeof it.thicknessCm === 'number' ? it.thicknessCm : null,
             rawText: it.dimensionsRawText || undefined,
           },
           material: it.material || undefined,
@@ -6737,7 +6737,7 @@ Sua tarefa agora é só montar a lista preliminar de peças e componentes estrut
       const componentsLines = components
         .map(
           (c) =>
-            `- ${c.code} | ${c.name} | material: ${c.material || c.specification || 'não informado'} | dimensões (mm): ${c.dimensionsMm?.length ?? '?'}×${c.dimensionsMm?.width ?? '?'}×${c.dimensionsMm?.thickness ?? '?'} | qtd/móvel: ${c.quantityPerUnit}`
+            `- ${c.code} | ${c.name} | material: ${c.material || c.specification || 'não informado'} | dimensões (cm): ${c.dimensionsCm?.length ?? '?'}×${c.dimensionsCm?.width ?? '?'}×${c.dimensionsCm?.thickness ?? '?'} | qtd/móvel: ${c.quantityPerUnit}`
         )
         .join('\n');
       const materialsLines = materials
@@ -6950,7 +6950,7 @@ Sua tarefa agora é montar o manual de montagem sequencial de uma peça de fabri
         .map((m) => `- ${m.materialName || m.name} | largura útil: ${m.usableWidthMeters ?? 'não informada'}m | unidade: ${m.consumptionUnit || m.unit}`)
         .join('\n') || '(nenhum material têxtil identificado na lista)';
       const foamLines = foamComponents
-        .map((c) => `- ${c.code} | ${c.name} | qtd/móvel: ${c.quantityPerUnit} | dimensões já cadastradas: ${c.dimensionsMm?.length ?? '?'}×${c.dimensionsMm?.width ?? '?'}×${c.dimensionsMm?.thickness ?? '?'} mm`)
+        .map((c) => `- ${c.code} | ${c.name} | qtd/móvel: ${c.quantityPerUnit} | dimensões já cadastradas: ${c.dimensionsCm?.length ?? '?'}×${c.dimensionsCm?.width ?? '?'}×${c.dimensionsCm?.thickness ?? '?'} cm`)
         .join('\n') || '(nenhuma peça de espuma identificada na lista de componentes)';
 
       const dims = mfg?.dimensions;
@@ -6971,7 +6971,7 @@ PEÇAS DE ESPUMA JÁ CADASTRADAS NA LISTA DE PEÇAS (use SOMENTE estes nomes/có
 ${foamLines}
 
 TAREFA:
-Monte o PLANO DE CORTE técnico desta peça: (1) para cada material têxtil listado, recomende o sentido do fio/estampa (grainDirection) e explique em texto (layoutNotes) como aproveitar melhor a largura útil informada, minimizando perda; (2) para cada peça de espuma listada, proponha as dimensões de corte em mm (comprimento x largura x espessura) compatíveis com as medidas gerais do pedido acima — nunca invente uma peça de espuma que não esteja na lista. Se a lista de espumas estiver vazia, devolva foamCuts como array vazio, sem inventar peça.`;
+Monte o PLANO DE CORTE técnico desta peça: (1) para cada material têxtil listado, recomende o sentido do fio/estampa (grainDirection) e explique em texto (layoutNotes) como aproveitar melhor a largura útil informada, minimizando perda; (2) para cada peça de espuma listada, proponha as dimensões de corte em CENTÍMETROS — nunca milímetros, a Castros Interiores não trabalha com milímetros (comprimento x largura x espessura) compatíveis com as medidas gerais do pedido acima — nunca invente uma peça de espuma que não esteja na lista. Se a lista de espumas estiver vazia, devolva foamCuts como array vazio, sem inventar peça.`;
 
       const preferredModel = store.settings.aiModel || 'claude-sonnet-5';
       const systemInstruction = `Você é o AGENTE LUCAS — Engenheiro de Projetos e Fabricação de Produtos Novos da Castros Interiores.
@@ -7006,9 +7006,9 @@ Sua tarefa agora é só montar o plano de corte técnico (tecidos e espumas) de 
                 type: Type.OBJECT,
                 properties: {
                   pieceName: { type: Type.STRING },
-                  lengthMm: { type: Type.NUMBER },
-                  widthMm: { type: Type.NUMBER },
-                  thicknessMm: { type: Type.NUMBER },
+                  lengthCm: { type: Type.NUMBER },
+                  widthCm: { type: Type.NUMBER },
+                  thicknessCm: { type: Type.NUMBER },
                   quantity: { type: Type.NUMBER },
                   notes: { type: Type.STRING },
                 },
@@ -7058,10 +7058,10 @@ Sua tarefa agora é só montar o plano de corte técnico (tecidos e espumas) de 
           return {
             pieceName: matched.name,
             componentId: matched.id,
-            cutDimensionsMm: {
-              length: typeof f.lengthMm === 'number' ? f.lengthMm : null,
-              width: typeof f.widthMm === 'number' ? f.widthMm : null,
-              thickness: typeof f.thicknessMm === 'number' ? f.thicknessMm : null,
+            cutDimensionsCm: {
+              length: typeof f.lengthCm === 'number' ? f.lengthCm : null,
+              width: typeof f.widthCm === 'number' ? f.widthCm : null,
+              thickness: typeof f.thicknessCm === 'number' ? f.thicknessCm : null,
             },
             quantity: Number(f.quantity) || matched.quantityPerUnit || 1,
             notes: f.notes ? String(f.notes) : undefined,
@@ -7363,7 +7363,7 @@ Sua tarefa agora é só montar o plano de corte técnico (tecidos e espumas) de 
           return;
         }
         const signature = JSON.stringify(
-          sourceComponents.map((c) => [c.code, c.dimensionsMm, c.quantityPerUnit, c.totalQuantity])
+          sourceComponents.map((c) => [c.code, c.dimensionsCm, c.quantityPerUnit, c.totalQuantity])
         );
         const sourceMaterials = existing.materialRequirements || existing.materials || [];
 
@@ -7532,7 +7532,7 @@ Sua tarefa agora é só montar o plano de corte técnico (tecidos e espumas) de 
       const pendingComponents = (plan.components || []).filter(
         (c) =>
           c.reformStatus === 'Aguardar desmontagem' ||
-          (c.dimensionsMm.length == null && c.dimensionsMm.width == null && c.dimensionsMm.thickness == null)
+          (c.dimensionsCm.length == null && c.dimensionsCm.width == null && c.dimensionsCm.thickness == null)
       );
       if (pendingMaterials.length > 0 || pendingComponents.length > 0) {
         res.status(400).json({
@@ -8421,7 +8421,7 @@ REGRAS DE CONFIABILIDADE TÉCNICA (INVIOLÁVEIS):
       parts.push({ text: briefingContext });
 
       const LUCAS_SYSTEM_INSTRUCTION = `Você é o AGENTE LUCAS — Engenheiro de Projetos e Fabricação de Produtos Novos da Castros Interiores.
-Sua missão é desenvolver a ficha técnica do modelo, lista de peças numeradas com medidas em milímetros, plano de corte preliminar de tecidos e espumas, e manual de fabricação sequencial em 12 etapas para a marcenaria e tapeçaria.
+Sua missão é desenvolver a ficha técnica do modelo, lista de peças numeradas com medidas em centímetros (a Castros Interiores não trabalha com milímetros), plano de corte preliminar de tecidos e espumas, e manual de fabricação sequencial em 12 etapas para a marcenaria e tapeçaria.
 Você é técnico, meticuloso e nunca inventa dados de estrutura interna como conhecidos apenas por fotografia.`;
 
       const { response, usedModel } = await generateContentWithRetryAndFallback({
@@ -8466,9 +8466,9 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
                     type: Type.STRING,
                     description: 'Madeira, Espuma, Revestimento, Ferragem, Sustentação ou Acessório',
                   },
-                  lengthMm: { type: Type.NUMBER },
-                  widthMm: { type: Type.NUMBER },
-                  thicknessMm: { type: Type.NUMBER },
+                  lengthCm: { type: Type.NUMBER },
+                  widthCm: { type: Type.NUMBER },
+                  thicknessCm: { type: Type.NUMBER },
                   specification: { type: Type.STRING },
                   quantityPerUnit: { type: Type.NUMBER },
                   source: {
@@ -8480,9 +8480,9 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
                   'code',
                   'name',
                   'componentType',
-                  'lengthMm',
-                  'widthMm',
-                  'thicknessMm',
+                  'lengthCm',
+                  'widthCm',
+                  'thicknessCm',
                   'specification',
                   'quantityPerUnit',
                   'source',
@@ -8603,10 +8603,10 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
           componentType: (['Madeira', 'Espuma', 'Revestimento', 'Ferragem', 'Sustentação', 'Acessório'].includes(c.componentType)
             ? c.componentType
             : 'Madeira') as any,
-          dimensionsMm: {
-            length: Number(c.lengthMm) || null,
-            width: Number(c.widthMm) || null,
-            thickness: Number(c.thicknessMm) || null,
+          dimensionsCm: {
+            length: Number(c.lengthCm) || null,
+            width: Number(c.widthCm) || null,
+            thickness: Number(c.thicknessCm) || null,
           },
           specification: c.specification || 'Especificação técnica da oficina',
           quantityPerUnit: Number(c.quantityPerUnit) || 1,
@@ -11599,7 +11599,7 @@ Regra: NUNCA afirme que a estrutura interna está íntegra sem abertura na ofici
       title: 'Lucas (Projetos & Fabricação Nova)',
       systemPrompt: `Você é o LUCAS, engenheiro e projetista de estofados novos sob medida da Castros Interiores.
 Missão: Elaborar projetos novos nas 8 etapas de fabricação (briefing, referências, modelo, revisão do responsável, plano de corte/materiais, custos, aprovação e manual de montagem).
-Regra: NUNCA confunda fabricação nova com reforma. Não fale de defeitos ou reaproveitamento; detalhe medidas em mm, tecidos com margem de perda e componentes novos.`,
+Regra: NUNCA confunda fabricação nova com reforma. Não fale de defeitos ou reaproveitamento; detalhe medidas de peças em centímetros (nunca milímetros — a Castros Interiores não trabalha com milímetros), tecidos com margem de perda e componentes novos.`,
     },
     ana_compras: {
       name: 'Ana',

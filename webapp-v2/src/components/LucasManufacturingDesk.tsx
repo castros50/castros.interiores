@@ -695,7 +695,7 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                     <th className="py-2.5 px-3">Código</th>
                     <th className="py-2.5 px-3">Nome do Componente</th>
                     <th className="py-2.5 px-3">Material</th>
-                    <th className="py-2.5 px-3 text-right">Dimensões (mm)</th>
+                    <th className="py-2.5 px-3 text-right">Dimensões (cm)</th>
                     <th className="py-2.5 px-3 text-center">Qtd / Móvel</th>
                     <th className="py-2.5 px-3 text-center font-bold">Qtd Total Lote</th>
                     <th className="py-2.5 px-3">Origem dos Dados</th>
@@ -709,9 +709,9 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                       <td className="py-2 px-3 font-medium text-[#181512]">{comp.name}</td>
                       <td className="py-2 px-3 text-[#57534E]">{comp.material}</td>
                       <td className="py-2 px-3 text-right font-mono tabular-nums">
-                        {comp.dimensionsMm.length != null || comp.dimensionsMm.width != null || comp.dimensionsMm.thickness != null
-                          ? `${comp.dimensionsMm.length ?? '?'} × ${comp.dimensionsMm.width ?? '?'} × ${comp.dimensionsMm.thickness ?? '?'}`
-                          : comp.dimensionsMm.rawText || 'A definir'}
+                        {comp.dimensionsCm.length != null || comp.dimensionsCm.width != null || comp.dimensionsCm.thickness != null
+                          ? `${comp.dimensionsCm.length ?? '?'} × ${comp.dimensionsCm.width ?? '?'} × ${comp.dimensionsCm.thickness ?? '?'}`
+                          : comp.dimensionsCm.rawText || 'A definir'}
                       </td>
                       <td className="py-2 px-3 text-center font-mono">{comp.quantityPerUnit}</td>
                       <td className="py-2 px-3 text-center font-mono font-bold text-[#9A7138]">
@@ -1017,7 +1017,7 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                                 {f.pieceName} <span className="font-mono text-[#57534E]">x{f.quantity}</span>
                               </p>
                               <p className="text-[11px] font-mono text-[#57534E]">
-                                {f.cutDimensionsMm.length ?? '?'} x {f.cutDimensionsMm.width ?? '?'} x {f.cutDimensionsMm.thickness ?? '?'} mm
+                                {f.cutDimensionsCm.length ?? '?'} x {f.cutDimensionsCm.width ?? '?'} x {f.cutDimensionsCm.thickness ?? '?'} cm
                               </p>
                               {f.notes && <p className="text-[11px] text-[#57534E] mt-1">{f.notes}</p>}
                             </div>

@@ -107,7 +107,7 @@ export const OFFICE_DESKS: DeskMeta[] = [
     name: 'Lucas',
     role: 'Projetos e Fabricação de Produtos Novos',
     roomTitle: 'Mesa de Projetos e Engenharia de Fabricação',
-    summary: 'Desenvolvimento de produtos novos sob medida com lista de peças em mm, materiais e manual de montagem.',
+    summary: 'Desenvolvimento de produtos novos sob medida com lista de peças em cm, materiais e manual de montagem.',
     iconName: 'lucas',
     colorBadge: 'bg-blue-100 text-blue-900 border-blue-300',
     accentBg: 'from-blue-50 to-white',
@@ -115,7 +115,7 @@ export const OFFICE_DESKS: DeskMeta[] = [
       'Desenvolvimento técnico de sofás, poltronas, cadeiras, puffs e cabeceiras sob medida com fichas técnicas, lista de peças, plano de corte e manual de montagem.',
     responsibilities: [
       'Ficha técnica do modelo com diferenciação clara entre informado, visto em fotos, calculado e proposto',
-      'Lista de peças codificadas com dimensões em mm por produto e total do lote',
+      'Lista de peças codificadas com dimensões em cm por produto e total do lote',
       'Relação de materiais com larguras úteis, sentido de estampa e perdas justificadas',
       'Manual de montagem estruturado em 12 passos com pontos de atenção',
       'Definição de pontos de conferência e tolerância de qualidade',
@@ -518,10 +518,10 @@ export function createDemoSofa2Places(): AttendanceRecord {
           code: 'P-01',
           name: 'Longarina Frontal da Base',
           componentType: 'Madeira',
-          dimensionsMm: {
+          dimensionsCm: {
             length: null,
-            width: 70,
-            thickness: 25,
+            width: 7,
+            thickness: 2.5,
             rawText: 'Comprimento a confirmar pela largura final do sofá',
           },
           specification: 'Eucalipto tratado aparelhado e seco em estufa',
@@ -535,10 +535,10 @@ export function createDemoSofa2Places(): AttendanceRecord {
           code: 'P-02',
           name: 'Longarina Traseira da Base',
           componentType: 'Madeira',
-          dimensionsMm: {
+          dimensionsCm: {
             length: null,
-            width: 70,
-            thickness: 25,
+            width: 7,
+            thickness: 2.5,
             rawText: 'Comprimento igual à frontal',
           },
           specification: 'Eucalipto tratado aparelhado e seco em estufa',
@@ -551,10 +551,10 @@ export function createDemoSofa2Places(): AttendanceRecord {
           code: 'P-03',
           name: 'Bloco de Espuma do Assento (D33)',
           componentType: 'Espuma',
-          dimensionsMm: {
+          dimensionsCm: {
             length: null,
             width: null,
-            thickness: 120,
+            thickness: 12,
             rawText: 'Espessura 12cm certificada',
           },
           specification: 'Espuma D33 Alta Resiliência com selo de qualidade',
@@ -1027,10 +1027,10 @@ export function createDemoPoltronas4Un(): AttendanceRecord {
           code: 'POL-01',
           name: 'Arco Curvo Estrutural do Encosto',
           componentType: 'Madeira',
-          dimensionsMm: {
+          dimensionsCm: {
             length: null,
-            width: 80,
-            thickness: 20,
+            width: 8,
+            thickness: 2,
             rawText: 'Compensado multilaminado curvado em prensa',
           },
           specification: 'Compensado naval multilaminado prensado em molde',
@@ -1044,8 +1044,8 @@ export function createDemoPoltronas4Un(): AttendanceRecord {
           code: 'POL-02',
           name: 'Pés Palito Cônicos (Jogo de 4 por poltrona)',
           componentType: 'Acessório',
-          dimensionsMm: {
-            length: 350,
+          dimensionsCm: {
+            length: 35,
             width: null,
             thickness: null,
             rawText: 'Altura 35cm com sapata metálica articulada',
