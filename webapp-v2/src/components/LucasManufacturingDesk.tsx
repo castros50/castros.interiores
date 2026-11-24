@@ -333,6 +333,25 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
     handleSaveProject(next);
   };
 
+  // Custo unitário ESTIMADO (orçamento prévio, antes da compra) — a IA só
+  // preenche isso quando o nome do item casa com o catálogo real; quando não
+  // casa, fica sem preço e o "Consumo de Materiais" da Etapa 6 soma R$0,00.
+  // Este campo permite ao operador informar o preço estimado manualmente
+  // nesses casos, sem precisar esperar a compra real.
+  const handleUpdateEstimatedCost = (id: string, unitCostCentsInput: number | null) => {
+    const next = { ...project };
+    next.materialRequirements = (next.materialRequirements || []).map((m) => {
+      if (m.id !== id) return m;
+      const qty = m.totalOrderRequirement || m.quantityPerUnit || m.totalRequired || m.requiredPerProduct || 0;
+      return {
+        ...m,
+        unitCostCents: unitCostCentsInput ?? undefined,
+        totalCostCents: unitCostCentsInput != null ? Math.round(unitCostCentsInput * qty) : undefined,
+      };
+    });
+    handleSaveProject(next);
+  };
+
   const getSourceBadge = (source: SourceClassification) => {
     switch (source) {
       case 'informado_oficina':
@@ -824,6 +843,7 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                     <th className="py-2.5 px-3 text-right">Estoque Disp.</th>
                     <th className="py-2.5 px-3 text-right font-bold text-amber-300">Necessidade Compra</th>
                     <th className="py-2.5 px-3">Status</th>
+                    <th className="py-2.5 px-3 text-right">Custo Unit. Estimado</th>
                     <th className="py-2.5 px-3 text-center">Comprado</th>
                     <th className="py-2.5 px-3 text-right">Preço Real / Total</th>
                   </tr>
@@ -865,6 +885,26 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                           {toBuy > 0 ? `${toBuy.toFixed(1)} ${mat.unit}` : 'Suficiente em estoque'}
                         </td>
                         <td className="py-2 px-3">{getSourceBadge(mat.source)}</td>
+                        <td className="py-2 px-3 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="Preço estimado (R$)"
+                            defaultValue={
+                              mat.unitCostCents != null ? (mat.unitCostCents / 100).toFixed(2) : ''
+                            }
+                            onBlur={(e) => {
+                              const val = e.target.value.trim();
+                              handleUpdateEstimatedCost(mat.id, val === '' ? null : Math.round(parseFloat(val) * 100));
+                            }}
+                            className="w-24 px-1.5 py-1 rounded border border-[#D6CFC5] text-right text-xs"
+                          />
+                          {mat.totalCostCents != null && (
+                            <p className="text-[10px] text-[#6B6257] mt-0.5">
+                              Total: {formatCurrencyBRL(mat.totalCostCents)}
+                            </p>
+                          )}
+                        </td>
                         <td className="py-2 px-3 text-center">
                           <input
                             type="checkbox"
@@ -899,7 +939,7 @@ export const LucasManufacturingDesk: React.FC<LucasManufacturingDeskProps> = ({
                   })}
                   {(project.materialRequirements || []).length === 0 && (
                     <tr>
-                      <td colSpan={10} className="py-6 px-3 text-center text-[#6B6257]">
+                      <td colSpan={11} className="py-6 px-3 text-center text-[#6B6257]">
                         Nenhum item na lista ainda.{' '}
                         {order.orderType === 'Fabricação'
                           ? 'Use o botão "Gerar Lista de Compras com IA" acima.'
