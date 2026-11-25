@@ -939,6 +939,13 @@ export interface AttendanceRecord {
   createdAt: string;
   updatedAt: string;
 
+  // Marca pedidos de reposição interna de estoque (criados pela ponte Henrique → Lucas,
+  // ver POST /api/henrique/production-orders/:id/send-to-lucas): não há cliente real, então
+  // fluxos automáticos de pós-homologação de orçamento (ex.: "negociar com o cliente")
+  // precisam desviar — aqui, quem recebe de volta é o Juliano (Vendas/Estoque), não a Carla.
+  isInternalProduction?: boolean;
+  linkedProductionOrderId?: string;
+
   // Cadastro inicial feito pela Carla (Atendimento ao Cliente)
   requestType?: AttendanceRequestType;
   clientId?: string; // vínculo com o cadastro geral de clientes (ClientRecord), quando houver

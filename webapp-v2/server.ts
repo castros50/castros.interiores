@@ -1488,6 +1488,56 @@ function nextProductionOrderNumber(store: PersistentStore): string {
   return `OP-2026-${String(count).padStart(4, '0')}`;
 }
 
+// Dá baixa da ordem de produção e entrada no estoque — extraído de
+// POST /api/henrique/production-orders/:id/complete pra ser reaproveitado pelo
+// fechamento automático (ver POST /api/orders/:id/itemized-budget), que fecha
+// a ordem sozinha assim que a Mila homologa o custo de uma produção interna,
+// sem precisar do clique manual "Concluir" na mesa do Henrique.
+function completeProductionOrder(
+  store: PersistentStore,
+  order: ProductionOrder,
+  params: { actualQuantityProduced: number; completedBy: string; notes?: string }
+): { ok: true; stockEntry: StockEntryRecord } | { ok: false; error: string } {
+  if (order.status === 'Concluída' || order.status === 'Cancelada') {
+    return { ok: false, error: `Ordem já está em "${order.status}" — nada a concluir.` };
+  }
+  if (!params.actualQuantityProduced || params.actualQuantityProduced <= 0) {
+    return { ok: false, error: 'Informe a quantidade efetivamente fabricada (maior que zero).' };
+  }
+  if (!params.completedBy?.trim()) {
+    return { ok: false, error: 'Informe quem confirma que o produto está pronto.' };
+  }
+  const julianoData = getJulianoData(store);
+  const henriqueData = getHenriqueData(store);
+  const product = julianoData.products.find((p) => p.id === order.productId);
+  if (!product) {
+    return { ok: false, error: 'Produto do catálogo não encontrado mais — não é possível dar entrada no estoque.' };
+  }
+
+  const now = new Date().toISOString();
+  order.status = 'Concluída';
+  order.completedAt = now;
+  order.actualQuantityProduced = params.actualQuantityProduced;
+  order.completedBy = params.completedBy.trim();
+  order.notes = params.notes?.trim() || order.notes;
+
+  product.stockQuantity += params.actualQuantityProduced;
+  product.updatedAt = now;
+
+  const stockEntry: StockEntryRecord = {
+    id: `se-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    productId: product.id,
+    productName: product.name,
+    quantity: params.actualQuantityProduced,
+    productionOrderId: order.id,
+    enteredAt: now,
+    enteredBy: params.completedBy.trim(),
+  };
+  henriqueData.stockEntries.unshift(stockEntry);
+
+  return { ok: true, stockEntry };
+}
+
 // Henrique — verifica se um produto pronto caiu no (ou abaixo do) estoque
 // mínimo cadastrado e, se sim, gera uma ordem de produção de reposição —
 // mas nunca duplica: se já existe uma ordem Pendente ou Em Fabricação para
@@ -10904,50 +10954,18 @@ Sua tarefa agora é montar o manual de execução de um produto pronto do catál
         res.status(404).json({ error: 'Ordem de produção não encontrada.' });
         return;
       }
-      if (order.status === 'Concluída' || order.status === 'Cancelada') {
-        res.status(400).json({ error: `Ordem já está em "${order.status}" — nada a concluir.` });
-        return;
-      }
       const { actualQuantityProduced, completedBy, notes } = req.body as {
         actualQuantityProduced: number;
         completedBy: string;
         notes?: string;
       };
-      if (!actualQuantityProduced || actualQuantityProduced <= 0) {
-        res.status(400).json({ error: 'Informe a quantidade efetivamente fabricada (maior que zero).' });
-        return;
-      }
-      if (!completedBy?.trim()) {
-        res.status(400).json({ error: 'Informe quem confirma que o produto está pronto.' });
-        return;
-      }
-      const product = julianoData.products.find((p) => p.id === order.productId);
-      if (!product) {
-        res.status(404).json({ error: 'Produto do catálogo não encontrado mais — não é possível dar entrada no estoque.' });
+      const result = completeProductionOrder(store, order, { actualQuantityProduced, completedBy, notes });
+      if (!result.ok) {
+        res.status(400).json({ error: result.error });
         return;
       }
 
       const now = new Date().toISOString();
-      order.status = 'Concluída';
-      order.completedAt = now;
-      order.actualQuantityProduced = actualQuantityProduced;
-      order.completedBy = completedBy.trim();
-      order.notes = notes?.trim() || order.notes;
-
-      product.stockQuantity += actualQuantityProduced;
-      product.updatedAt = now;
-
-      const stockEntry: StockEntryRecord = {
-        id: `se-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        productId: product.id,
-        productName: product.name,
-        quantity: actualQuantityProduced,
-        productionOrderId: order.id,
-        enteredAt: now,
-        enteredBy: completedBy.trim(),
-      };
-      henriqueData.stockEntries.unshift(stockEntry);
-
       saveStore(store);
       broadcastRealtimeEvent({
         type: 'juliano:updated',
@@ -10955,7 +10973,7 @@ Sua tarefa agora é montar o manual de execução de um produto pronto do catál
         sourceDeviceId: (req.headers['x-device-id'] as string) || undefined,
         julianoData,
       });
-      res.json({ ok: true, order, stockEntry, henriqueData, julianoData });
+      res.json({ ok: true, order, stockEntry: result.stockEntry, henriqueData, julianoData });
     } catch (error) {
       console.error('Erro ao concluir ordem de produção:', error);
       res.status(500).json({ error: 'Erro ao concluir ordem de produção.' });
@@ -11054,6 +11072,8 @@ Sua tarefa agora é montar o manual de execução de um produto pronto do catál
           order.reason ? `Motivo da produção: ${order.reason}.` : ''
         } Esta não é uma venda a cliente — é reposição de estoque do catálogo de produtos prontos.`,
       });
+      newAttendance.isInternalProduction = true;
+      newAttendance.linkedProductionOrderId = order.id;
       store.attendances.push(newAttendance);
 
       createOrderHandoff(store, newAttendance, {
@@ -14713,16 +14733,54 @@ Leia SOMENTE o que está realmente impresso no cupom — nunca invente item, qua
       });
 
       let handoff = null;
+      let autoClosedProductionOrder: ProductionOrder | null = null;
       if (itemizedBudget.confirmedByResponsible) {
-        const result = createOrderHandoff(store, order, {
-          fromDesk: fromDesk || order.currentDesk || 'mila_financeiro',
-          toDesk: 'carla_atendimento',
-          reason: 'Orçamento itemizado homologado — pronto para negociação com o cliente.',
-          completedSummary: 'Orçamento por produto e total calculados e homologados pela Mila.',
-          nextActionExpected: 'Negociar condições com o cliente (entrada, parcelas, aceite).',
-          deskStatusOverride: 'aguardando_negociacao_cliente',
-        });
-        handoff = result.handoff;
+        if (order.isInternalProduction) {
+          // Pedido de reposição interna de estoque (ponte Henrique → Lucas) não tem cliente
+          // real — "negociar com o cliente" na Carla não se aplica, e nem a mesa do Juliano
+          // nem a do Henrique mostram pedidos individuais roteados (só catálogo/estoque),
+          // então não existe handoff de mesa aqui. Em vez disso, fecha sozinha a ordem de
+          // produção original (mesmo efeito do botão "Concluir" do Henrique: dá entrada no
+          // estoque que o Juliano vende), já que o custo homologado é a última confirmação
+          // de que a peça está pronta.
+          const henriqueData = getHenriqueData(store);
+          const productionOrder = order.linkedProductionOrderId
+            ? henriqueData.productionOrders.find((po) => po.id === order.linkedProductionOrderId)
+            : undefined;
+          if (productionOrder) {
+            const result = completeProductionOrder(store, productionOrder, {
+              actualQuantityProduced: productionOrder.quantityToProduce,
+              completedBy: 'Mila (Administração Financeira) — fechamento automático',
+              notes: `Fechado automaticamente ao homologar o custo interno (${order.attendanceNumber}).`,
+            });
+            if (result.ok) {
+              autoClosedProductionOrder = productionOrder;
+            }
+          }
+          order.deskStatus = 'concluido';
+          order.auditHistory.unshift({
+            id: `log-${Date.now()}`,
+            timestamp: now,
+            actor: responsibleName || 'Mila (Administração Financeira)',
+            stage: 'Orçamento Itemizado',
+            action: autoClosedProductionOrder
+              ? 'Custo interno homologado — ordem de produção fechada automaticamente e estoque atualizado.'
+              : 'Custo interno homologado — produção interna sem ordem de produção vinculada encontrada para fechar sozinha.',
+            details: autoClosedProductionOrder
+              ? `${autoClosedProductionOrder.orderNumber}: ${autoClosedProductionOrder.quantityToProduce} unidade(s) dada(s) entrada no estoque.`
+              : 'Verifique manualmente a ordem de produção na mesa do Henrique.',
+          });
+        } else {
+          const result = createOrderHandoff(store, order, {
+            fromDesk: fromDesk || order.currentDesk || 'mila_financeiro',
+            toDesk: 'carla_atendimento',
+            reason: 'Orçamento itemizado homologado — pronto para negociação com o cliente.',
+            completedSummary: 'Orçamento por produto e total calculados e homologados pela Mila.',
+            nextActionExpected: 'Negociar condições com o cliente (entrada, parcelas, aceite).',
+            deskStatusOverride: 'aguardando_negociacao_cliente',
+          });
+          handoff = result.handoff;
+        }
       }
 
       saveStore(store);
@@ -14732,8 +14790,16 @@ Leia SOMENTE o que está realmente impresso no cupom — nunca invente item, qua
         sourceStationName: 'Mila (Administração Financeira)',
         attendance: order,
       });
+      if (autoClosedProductionOrder) {
+        broadcastRealtimeEvent({
+          type: 'juliano:updated',
+          timestamp: now,
+          sourceStationName: 'Mila (Administração Financeira)',
+          julianoData: getJulianoData(store),
+        });
+      }
 
-      res.json({ ok: true, order, itemizedBudget, handoff });
+      res.json({ ok: true, order, itemizedBudget, handoff, autoClosedProductionOrder });
     } catch (error) {
       console.error('Erro ao montar orçamento itemizado:', error);
       res.status(500).json({ error: 'Erro ao montar orçamento itemizado.' });
