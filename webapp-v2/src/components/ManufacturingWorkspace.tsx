@@ -1345,7 +1345,7 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
                   className="px-3.5 py-2 rounded-lg bg-[#181512] hover:bg-[#2E2722] text-xs font-semibold text-white flex items-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  Nova Peça (mm)
+                  Nova Peça (cm)
                 </button>
                 <button
                   type="button"
@@ -1489,8 +1489,27 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
                               {(m.toPurchaseQuantity ?? 0) > 0 ? `${m.toPurchaseQuantity} ${m.consumptionUnit}` : 'OK'}
                             </span>
                           </td>
-                          <td className="p-2.5 text-right font-mono">
-                            {formatCurrencyBRL(m.unitCostCents)}
+                          <td className="p-2.5 text-right">
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="Preço (R$)"
+                              value={m.unitCostCents != null ? (m.unitCostCents / 100).toFixed(2) : ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const parsed = val.trim() === '' ? null : Math.round(parseFloat(val) * 100);
+                                const unitCostCents = parsed != null && !Number.isNaN(parsed) ? parsed : null;
+                                const totalReq = m.totalRequired ?? m.requiredPerProduct ?? 0;
+                                const mats = [...(project.materials || [])];
+                                mats[idx] = {
+                                  ...m,
+                                  unitCostCents: unitCostCents ?? undefined,
+                                  totalCostCents: unitCostCents != null ? Math.round(unitCostCents * totalReq) : undefined,
+                                };
+                                handleUpdateProject({ materials: mats });
+                              }}
+                              className="w-20 px-1.5 py-1 rounded border border-[#D6CFC5] text-right text-xs font-mono"
+                            />
                           </td>
                           <td className="p-2.5 text-right font-mono font-bold text-[#181512]">
                             {formatCurrencyBRL(m.totalCostCents)}
