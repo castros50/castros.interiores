@@ -8722,7 +8722,24 @@ Você é técnico, meticuloso e nunca inventa dados de estrutura interna como co
       currentMfg.technicalDraftStatus = 'rascunho_tecnico';
       currentMfg.version = 'v1.0-rascunho';
       if (Array.isArray(parsed.visibleFeatures)) currentMfg.aiVisibleObservations = parsed.visibleFeatures;
-      if (Array.isArray(parsed.missingTechnicalInformation)) currentMfg.aiMissingQuestions = parsed.missingTechnicalInformation;
+      if (Array.isArray(parsed.missingTechnicalInformation)) {
+        // Regenerar a análise não pode apagar respostas já dadas — casa pelo texto da
+        // pergunta (normalizado), mesmo princípio já usado pra preservar conferência de
+        // compra ao regenerar a lista de materiais (ver prepare-fabrication acima).
+        const prevByQuestion = new Map(
+          (currentMfg.aiMissingQuestions || []).map((q) => [normalizeName(q.question), q])
+        );
+        currentMfg.aiMissingQuestions = (parsed.missingTechnicalInformation as string[]).map((q, idx) => {
+          const prev = prevByQuestion.get(normalizeName(q));
+          return (
+            prev || {
+              id: `mq-${Date.now()}-${idx}`,
+              question: q,
+              resolved: false,
+            }
+          );
+        });
+      }
 
       attendance.manufacturingData = currentMfg;
       attendance.aiPreliminarySummary = `Projeto preliminar estruturado pelo Agente Lucas (${usedModel}). ${parsed.visibleFeatures?.length || 0} características visíveis identificadas nas fotos; ${parsed.missingTechnicalInformation?.length || 0} pendências técnicas para validação da oficina.`;

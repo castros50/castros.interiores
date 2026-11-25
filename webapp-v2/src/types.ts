@@ -2203,6 +2203,18 @@ export interface ManufacturingCuttingPlan {
   approvedAt?: string;
 }
 
+// Pendência técnica levantada pela IA (Lucas) ao analisar fotos/briefing — nasce
+// sempre não respondida; a oficina responde e marca como resolvida na própria
+// Etapa 3, sem precisar caçar o campo certo noutra etapa pra "aplicar" a resposta.
+export interface ManufacturingMissingQuestion {
+  id: string;
+  question: string;
+  answer?: string;
+  resolved: boolean;
+  resolvedAt?: string;
+  resolvedBy?: string;
+}
+
 export interface ManufacturingProjectData {
   id?: string;
   modelName: string;
@@ -2261,7 +2273,7 @@ export interface ManufacturingProjectData {
   assemblyManual: AssemblyManual;
   qualityCheckpoints: QualityCheckpoint[];
   aiVisibleObservations?: string[];
-  aiMissingQuestions?: string[];
+  aiMissingQuestions?: ManufacturingMissingQuestion[];
 
   // Mesa do Tapeceiro Técnico — plano de produção e materiais (Fase 1: sem mapa visual de corte)
   planStatus?: 'Rascunho' | 'Pendente de medição' | 'Em revisão' | 'Liberado pelo responsável';

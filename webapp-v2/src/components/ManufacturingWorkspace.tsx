@@ -1113,12 +1113,73 @@ export const ManufacturingWorkspace: React.FC<ManufacturingWorkspaceProps> = ({
                   {renderSourceBadge('proposta_pendente')}
                 </div>
 
-                <div className="space-y-1.5 text-xs text-[#57534E]">
+                <div className="space-y-2 text-xs text-[#57534E]">
                   {(project.aiMissingQuestions && project.aiMissingQuestions.length > 0) ? (
                     project.aiMissingQuestions.map((q, idx) => (
-                      <div key={idx} className="flex items-start gap-2 bg-amber-50/70 p-2 rounded border border-amber-200 text-amber-900">
-                        <span className="font-bold text-amber-700">?</span>
-                        <span>{q}</span>
+                      <div
+                        key={q.id || idx}
+                        className={`p-2 rounded border space-y-1.5 ${
+                          q.resolved
+                            ? 'bg-emerald-50/70 border-emerald-200'
+                            : 'bg-amber-50/70 border-amber-200'
+                        }`}
+                      >
+                        <div className="flex items-start gap-2">
+                          <span className={`font-bold ${q.resolved ? 'text-emerald-700' : 'text-amber-700'}`}>
+                            {q.resolved ? '✓' : '?'}
+                          </span>
+                          <span className={q.resolved ? 'text-emerald-900' : 'text-amber-900'}>{q.question}</span>
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={q.answer || ''}
+                          disabled={q.resolved}
+                          onChange={(e) => {
+                            const questions = [...(project.aiMissingQuestions || [])];
+                            questions[idx] = { ...q, answer: e.target.value };
+                            handleUpdateProject({ aiMissingQuestions: questions });
+                          }}
+                          placeholder="Escreva aqui a resposta/confirmação da oficina..."
+                          className="w-full rounded border border-[#D6CFC5] p-1.5 text-xs bg-white disabled:bg-transparent disabled:border-transparent disabled:text-emerald-900 disabled:p-0"
+                        />
+                        {q.resolved ? (
+                          <div className="flex items-center justify-between text-[10px] text-emerald-800">
+                            <span>
+                              Respondida por {q.resolvedBy}
+                              {q.resolvedAt ? ` em ${new Date(q.resolvedAt).toLocaleDateString('pt-BR')}` : ''}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const questions = [...(project.aiMissingQuestions || [])];
+                                questions[idx] = { ...q, resolved: false };
+                                handleUpdateProject({ aiMissingQuestions: questions });
+                              }}
+                              className="underline hover:text-emerald-950"
+                            >
+                              Reabrir
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={!q.answer?.trim()}
+                            onClick={() => {
+                              const questions = [...(project.aiMissingQuestions || [])];
+                              questions[idx] = {
+                                ...q,
+                                resolved: true,
+                                resolvedBy: settings.responsibleDefaultName || 'Responsável Técnico Castros',
+                                resolvedAt: new Date().toISOString(),
+                              };
+                              handleUpdateProject({ aiMissingQuestions: questions });
+                            }}
+                            className="px-2 py-1 rounded bg-amber-700 hover:bg-amber-800 disabled:opacity-40 disabled:hover:bg-amber-700 text-[11px] font-semibold text-white flex items-center gap-1"
+                          >
+                            <Check className="w-3 h-3" />
+                            Marcar como respondida
+                          </button>
+                        )}
                       </div>
                     ))
                   ) : (
