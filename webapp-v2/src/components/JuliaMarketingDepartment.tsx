@@ -5874,24 +5874,35 @@ export const JuliaMarketingDepartment: React.FC<JuliaMarketingDepartmentProps> =
                   {(juliaData?.paidAdProposals || [])
                     .filter((p) => p.projectId === activeProject.id)
                     .map((p) => (
-                      <div key={p.id} className="p-3 rounded-lg border border-[#E5DEC9] bg-white text-xs flex items-center justify-between gap-3">
-                        <div>
-                          <p className="font-semibold text-[#181512]">
-                            {p.objective} · R$ {(p.budgetCents / 100).toFixed(2)} ({p.budgetPeriod}) · {p.durationDays} dia(s)
-                          </p>
-                          <p className="text-[11px] text-[#57534E]">{p.targetAudienceDescription}</p>
+                      <div key={p.id} className="p-3 rounded-lg border border-[#E5DEC9] bg-white text-xs space-y-1.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="font-semibold text-[#181512]">
+                              {p.objective} · R$ {(p.budgetCents / 100).toFixed(2)} ({p.budgetPeriod}) · {p.durationDays} dia(s)
+                            </p>
+                            <p className="text-[11px] text-[#57534E]">{p.targetAudienceDescription}</p>
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase shrink-0 ${
+                              p.status === 'aprovado' || p.status === 'em_veiculacao'
+                                ? 'bg-emerald-100 text-emerald-900'
+                                : p.status === 'rejeitado' || p.status === 'falhou'
+                                ? 'bg-red-100 text-red-900'
+                                : 'bg-amber-100 text-amber-900'
+                            }`}
+                          >
+                            {p.status.replace(/_/g, ' ')}
+                          </span>
                         </div>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase shrink-0 ${
-                            p.status === 'aprovado' || p.status === 'em_veiculacao'
-                              ? 'bg-emerald-100 text-emerald-900'
-                              : p.status === 'rejeitado' || p.status === 'falhou'
-                              ? 'bg-red-100 text-red-900'
-                              : 'bg-amber-100 text-amber-900'
-                          }`}
-                        >
-                          {p.status.replace(/_/g, ' ')}
-                        </span>
+                        {p.integrationNote && (
+                          <p
+                            className={`text-[10px] p-1.5 rounded ${
+                              p.status === 'falhou' ? 'bg-red-50 text-red-900' : 'bg-emerald-50 text-emerald-900'
+                            }`}
+                          >
+                            {p.integrationNote}
+                          </p>
+                        )}
                       </div>
                     ))}
                 </div>

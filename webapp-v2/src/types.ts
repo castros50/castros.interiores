@@ -1744,8 +1744,15 @@ export interface PaidAdBudgetProposal {
   proposedAt: string;
   approval?: PaidAdBudgetApproval;
   backgroundTaskId?: string;
-  // Só preenchido depois de uma confirmação real da Meta — nunca estimado.
+  // Só preenchidos depois de uma confirmação real da Meta — nunca estimados.
   externalCampaignId?: string;
+  externalAdSetId?: string;
+  externalCreativeId?: string;
+  externalAdId?: string;
+  // Resultado em texto da última tentativa de criação na Meta (sucesso ou erro real
+  // da Graph API — nunca uma mensagem inventada). Mesmo padrão de
+  // JuliaCampaignScheduleItem.integrationNote.
+  integrationNote?: string;
   createdAt: string;
 }
 

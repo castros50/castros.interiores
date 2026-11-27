@@ -2658,6 +2658,223 @@ async function checkPaidAdsIntegrationConnection(): Promise<{
   }
 }
 
+// ----------------------------------------------------------------------------
+// CRIAÇÃO REAL DE CAMPANHA PAGA NA META MARKETING API — chamada só depois de
+// checkPaidAdsIntegrationConnection() confirmar a conta de anúncios. SEMPRE cria
+// em modo PAUSADO (campanha, conjunto de anúncios e anúncio) — nunca ativa
+// sozinho: segmentação detalhada e revisão final sempre exigem uma pessoa
+// olhando no Gerenciador de Anúncios da Meta antes de a verba sair de verdade.
+// Não tenta reproduzir o público-alvo em texto livre (targetAudienceDescription)
+// como segmentação estruturada da Meta — isso exigiria resolver interesses
+// pelo endpoint de busca da própria Meta, o que não dá pra validar sem uma
+// conta de anúncios real; a segmentação nasce ampla (só país) e o texto do
+// público fica registrado para o responsável ajustar manualmente.
+// ----------------------------------------------------------------------------
+
+type MetaGraphCreateResult = { ok: true; id: string } | { ok: false; errorMessage: string };
+
+async function metaGraphCreate(path: string, body: Record<string, unknown>): Promise<MetaGraphCreateResult> {
+  try {
+    const resp = await fetch(`https://graph.facebook.com/v20.0/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = (await resp.json()) as { id?: string; error?: { message?: string } };
+    if (!resp.ok || data.error || !data.id) {
+      return { ok: false, errorMessage: data.error?.message || `Falha na Graph API (HTTP ${resp.status}).` };
+    }
+    return { ok: true, id: data.id };
+  } catch (err) {
+    return { ok: false, errorMessage: err instanceof Error ? err.message : 'Falha de rede ao chamar a Graph API.' };
+  }
+}
+
+function mapPaidAdObjectiveToMeta(objective: PaidAdObjective): {
+  metaObjective: string;
+  optimizationGoal: string;
+  note?: string;
+} {
+  switch (objective) {
+    case 'Alcance':
+      return { metaObjective: 'OUTCOME_AWARENESS', optimizationGoal: 'REACH' };
+    case 'Tráfego':
+      return { metaObjective: 'OUTCOME_TRAFFIC', optimizationGoal: 'LINK_CLICKS' };
+    case 'Mensagens':
+      return {
+        metaObjective: 'OUTCOME_ENGAGEMENT',
+        optimizationGoal: 'LINK_CLICKS',
+        note:
+          'Objetivo "Mensagens" criado como campanha de tráfego com link direto pro WhatsApp (clique abre a conversa) — ' +
+          'não usa o anúncio nativo "Clique para o WhatsApp" da Meta porque isso exigiria o número oficial conectado ' +
+          'à Meta Business, separado da integração YCloud já usada aqui.',
+      };
+    case 'Conversões':
+      return {
+        metaObjective: 'OUTCOME_TRAFFIC',
+        optimizationGoal: 'LINK_CLICKS',
+        note:
+          'Objetivo "Conversões" criado como campanha de tráfego — rastreamento real de conversão não está configurado ' +
+          '(precisaria de um Pixel/API de Conversões da Meta instalado), então a Meta não consegue otimizar por conversão de verdade ainda.',
+      };
+    default:
+      return { metaObjective: 'OUTCOME_TRAFFIC', optimizationGoal: 'LINK_CLICKS' };
+  }
+}
+
+// Monta o número de WhatsApp em dígitos com código do país (55), a partir do
+// mesmo campo que a Etapa 12 da Júlia já usa como contato da campanha
+// (project.whatsappDirectNumber, com fallback pro telefone geral da oficina).
+function buildWhatsAppClickDigits(rawPhone: string | undefined): string | null {
+  const digits = (rawPhone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('55') && digits.length >= 12) return digits;
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  return digits;
+}
+
+async function launchMetaPaidAdCampaign(params: {
+  proposal: PaidAdBudgetProposal;
+  caption: string;
+  headline: string;
+  imagePublicUrl: string;
+  whatsappPhoneDigits: string | null;
+  referenceCode?: string;
+}): Promise<{
+  ok: boolean;
+  errorMessage?: string;
+  note?: string;
+  externalCampaignId?: string;
+  externalAdSetId?: string;
+  externalCreativeId?: string;
+  externalAdId?: string;
+}> {
+  const token = process.env.META_ADS_ACCESS_TOKEN;
+  const adAccountId = process.env.META_AD_ACCOUNT_ID;
+  const pageId = process.env.META_PAGE_ID;
+  const igBusinessId = process.env.META_IG_BUSINESS_ACCOUNT_ID;
+  if (!token || !adAccountId) {
+    return {
+      ok: false,
+      errorMessage: 'Integração de anúncios pagos não configurada (META_ADS_ACCESS_TOKEN/META_AD_ACCOUNT_ID ausentes).',
+    };
+  }
+  if (!pageId) {
+    return {
+      ok: false,
+      errorMessage:
+        'META_PAGE_ID não configurado — a Meta exige uma Página do Facebook vinculada ao anúncio, mesmo pra veicular só no Instagram.',
+    };
+  }
+
+  const { proposal, caption, headline, imagePublicUrl, whatsappPhoneDigits, referenceCode } = params;
+  const { metaObjective, optimizationGoal, note: objectiveNote } = mapPaidAdObjectiveToMeta(proposal.objective);
+
+  const campaignResult = await metaGraphCreate(`${adAccountId}/campaigns`, {
+    name: `Castros Interiores — ${proposal.objective} — ${proposal.id}`,
+    objective: metaObjective,
+    status: 'PAUSED',
+    special_ad_categories: [],
+    access_token: token,
+  });
+  if (!campaignResult.ok) {
+    return { ok: false, errorMessage: `Falha ao criar a campanha: ${campaignResult.errorMessage}` };
+  }
+  const externalCampaignId = campaignResult.id;
+
+  const nowMs = Date.now();
+  const startTime = new Date(nowMs + 5 * 60 * 1000).toISOString();
+  const endTime = new Date(nowMs + (proposal.durationDays || 1) * 24 * 60 * 60 * 1000).toISOString();
+  const budgetField = proposal.budgetPeriod === 'total' ? 'lifetime_budget' : 'daily_budget';
+
+  const adSetResult = await metaGraphCreate(`${adAccountId}/adsets`, {
+    name: `Conjunto — ${proposal.objective} — ${proposal.id}`,
+    campaign_id: externalCampaignId,
+    [budgetField]: proposal.budgetCents,
+    billing_event: 'IMPRESSIONS',
+    optimization_goal: optimizationGoal,
+    bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
+    targeting: { geo_locations: { countries: ['BR'] } },
+    start_time: startTime,
+    end_time: endTime,
+    status: 'PAUSED',
+    access_token: token,
+  });
+  if (!adSetResult.ok) {
+    return {
+      ok: false,
+      errorMessage: `Campanha criada (id: ${externalCampaignId}), mas falhou ao criar o conjunto de anúncios: ${adSetResult.errorMessage}`,
+      externalCampaignId,
+    };
+  }
+  const externalAdSetId = adSetResult.id;
+
+  const ctaLink = whatsappPhoneDigits
+    ? `https://wa.me/${whatsappPhoneDigits}?text=${encodeURIComponent(
+        `Olá! Vi o anúncio "${headline}"${referenceCode ? ` (ref: ${referenceCode})` : ''} e quero saber mais.`
+      )}`
+    : `https://wa.me/`; // nunca deveria cair aqui — checado antes de chamar esta função
+
+  const creativeResult = await metaGraphCreate(`${adAccountId}/adcreatives`, {
+    name: `Criativo — ${proposal.id}`,
+    object_story_spec: {
+      page_id: pageId,
+      ...(igBusinessId ? { instagram_actor_id: igBusinessId } : {}),
+      link_data: {
+        link: ctaLink,
+        message: caption,
+        name: headline,
+        picture: imagePublicUrl,
+        // "LEARN_MORE" é o CTA genérico mais universalmente aceito pra link ads — evita o
+        // formato nativo "Clique para o WhatsApp" da Meta (call_to_action WHATSAPP_MESSAGE),
+        // que exige o número oficial vinculado à Meta Business (ver nota do objetivo acima).
+        call_to_action: { type: 'LEARN_MORE' },
+      },
+    },
+    access_token: token,
+  });
+  if (!creativeResult.ok) {
+    return {
+      ok: false,
+      errorMessage: `Campanha e conjunto criados (ids: ${externalCampaignId} / ${externalAdSetId}), mas falhou ao criar o criativo: ${creativeResult.errorMessage}`,
+      externalCampaignId,
+      externalAdSetId,
+    };
+  }
+  const externalCreativeId = creativeResult.id;
+
+  const adResult = await metaGraphCreate(`${adAccountId}/ads`, {
+    name: `Anúncio — ${proposal.id}`,
+    adset_id: externalAdSetId,
+    creative: { creative_id: externalCreativeId },
+    status: 'PAUSED',
+    access_token: token,
+  });
+  if (!adResult.ok) {
+    return {
+      ok: false,
+      errorMessage: `Campanha, conjunto e criativo criados (ids: ${externalCampaignId} / ${externalAdSetId} / ${externalCreativeId}), mas falhou ao criar o anúncio: ${adResult.errorMessage}`,
+      externalCampaignId,
+      externalAdSetId,
+      externalCreativeId,
+    };
+  }
+
+  return {
+    ok: true,
+    note: [
+      'Campanha criada com SUCESSO na Meta — em modo PAUSADO. Revise segmentação (hoje só "Brasil", o texto de público-alvo descrito não foi aplicado automaticamente), imagem e texto no Gerenciador de Anúncios da Meta antes de ativar.',
+      objectiveNote,
+    ]
+      .filter(Boolean)
+      .join(' '),
+    externalCampaignId,
+    externalAdSetId,
+    externalCreativeId,
+    externalAdId: adResult.id,
+  };
+}
+
 // Verifica a integração do WhatsApp junto à YCloud (Provedor de Soluções/BSP
 // oficial da Meta) usando só credenciais do ambiente do servidor — nunca
 // solicitadas pelo chat nem expostas ao navegador. Sem as variáveis, resultado
@@ -3482,20 +3699,77 @@ async function executeBackgroundTask(
       const proposal = proposalId
         ? store.juliaData?.paidAdProposals?.find((p) => p.id === proposalId)
         : undefined;
-
-      const result = await checkPaidAdsIntegrationConnection();
-      if (!result.ok) {
-        if (proposal) proposal.status = 'aguardando_integracao';
-        throw new Error(result.message);
+      if (!proposal) {
+        throw new Error('Proposta de anúncio pago não encontrada — pode ter sido removida.');
       }
-      // A verificação da conta de anúncios passou, mas a chamada real de criação
-      // de campanha/conjunto de anúncios/anúncio na Marketing API da Meta ainda
-      // não está implementada — nunca afirmar que o anúncio foi ao ar sem esse
-      // código existir de fato. Isso é código preparado, não uma automação ativa.
-      if (proposal) proposal.status = 'aguardando_integracao';
-      throw new Error(
-        'Conta de anúncios verificada, mas a criação automática da campanha paga ainda não está implementada — crie manualmente na Meta por enquanto.'
-      );
+
+      const connCheck = await checkPaidAdsIntegrationConnection();
+      if (!connCheck.ok) {
+        proposal.status = 'aguardando_integracao';
+        proposal.integrationNote = connCheck.message;
+        throw new Error(connCheck.message);
+      }
+
+      const scheduleItem = proposal.campaignScheduleItemId
+        ? store.juliaData?.campaigns.find((c) => c.id === proposal.campaignScheduleItemId)
+        : undefined;
+      if (!scheduleItem) {
+        proposal.status = 'falhou';
+        proposal.integrationNote =
+          'Esta proposta não está vinculada a nenhum item de agenda da Júlia (campanha/post) — não há imagem/texto pra montar o anúncio.';
+        throw new Error(proposal.integrationNote);
+      }
+      const project = scheduleItem.projectId
+        ? store.juliaData?.projects.find((p) => p.id === scheduleItem.projectId)
+        : undefined;
+      const photo = scheduleItem.photoId
+        ? store.juliaData?.photos.find((p) => p.id === scheduleItem.photoId)
+        : undefined;
+      const baseUrl = getPublicBaseUrl();
+      if (!baseUrl) {
+        proposal.status = 'falhou';
+        proposal.integrationNote = 'APP_URL não configurado no ambiente — não é possível montar a URL pública da imagem para a Graph API.';
+        throw new Error(proposal.integrationNote);
+      }
+      if (!photo) {
+        proposal.status = 'falhou';
+        proposal.integrationNote = 'Nenhuma foto real vinculada ao item de agenda desta proposta — não é possível criar o anúncio sem imagem.';
+        throw new Error(proposal.integrationNote);
+      }
+      const whatsappPhoneDigits = buildWhatsAppClickDigits(project?.whatsappDirectNumber || store.settings.phoneWhatsapp);
+      if (!whatsappPhoneDigits) {
+        proposal.status = 'falhou';
+        proposal.integrationNote =
+          'Nenhum telefone de WhatsApp configurado (nem na campanha, nem em Configurações) — não é possível montar o link do anúncio.';
+        throw new Error(proposal.integrationNote);
+      }
+
+      const result = await launchMetaPaidAdCampaign({
+        proposal,
+        caption: project?.copyText || scheduleItem.captionPreview,
+        headline: project?.ctaButtonText || scheduleItem.title || 'Castros Interiores',
+        imagePublicUrl: `${baseUrl}${photo.imageUrl}`,
+        whatsappPhoneDigits,
+        referenceCode: scheduleItem.referenceCode,
+      });
+
+      // Guarda qualquer id externo já criado, mesmo em falha parcial (ex.: campanha
+      // criada mas conjunto de anúncios falhou) — nunca perder rastro do que já
+      // existe de verdade na Meta, pra não duplicar numa nova tentativa às cegas.
+      if (result.externalCampaignId) proposal.externalCampaignId = result.externalCampaignId;
+      if (result.externalAdSetId) proposal.externalAdSetId = result.externalAdSetId;
+      if (result.externalCreativeId) proposal.externalCreativeId = result.externalCreativeId;
+      if (result.externalAdId) proposal.externalAdId = result.externalAdId;
+
+      if (!result.ok) {
+        proposal.status = 'falhou';
+        proposal.integrationNote = result.errorMessage || 'Falha desconhecida ao criar a campanha na Meta.';
+        throw new Error(proposal.integrationNote);
+      }
+
+      proposal.status = 'pausado';
+      proposal.integrationNote = result.note || 'Campanha criada com sucesso na Meta, em modo pausado.';
+      return proposal.integrationNote;
     }
     default:
       throw new Error(`Tipo de tarefa desconhecido: ${task.type}`);

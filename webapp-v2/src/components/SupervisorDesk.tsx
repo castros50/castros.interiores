@@ -1091,6 +1091,20 @@ export const SupervisorDesk: React.FC<SupervisorDeskProps> = ({
                               {p.approval.notes ? ` — "${p.approval.notes}"` : ''}
                             </p>
                           )}
+                          {p.integrationNote && (
+                            <p
+                              className={`text-[10px] mt-1 p-1.5 rounded ${
+                                p.status === 'falhou' ? 'bg-red-50 text-red-900' : 'bg-emerald-50 text-emerald-900'
+                              }`}
+                            >
+                              {p.integrationNote}
+                              {p.externalCampaignId && (
+                                <span className="block mt-0.5 font-mono opacity-80">
+                                  ID da campanha na Meta: {p.externalCampaignId}
+                                </span>
+                              )}
+                            </p>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <span
