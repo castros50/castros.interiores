@@ -17674,6 +17674,42 @@ Leia SOMENTE o que está realmente impresso no cupom — nunca invente item, qua
     }
   });
 
+  // Páginas públicas exigidas pela Meta pra publicar o app (Política de Privacidade e
+  // Termos de Serviço) — conteúdo real e específico deste sistema (não genérico/fictício),
+  // já que ele processa conversas de clientes via WhatsApp integrado e fotos de produtos.
+  app.get('/privacidade', (_req, res) => {
+    res.type('html').send(`<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8"><title>Política de Privacidade — Castros Interiores</title>
+<style>body{font-family:system-ui,sans-serif;max-width:700px;margin:40px auto;padding:0 20px;line-height:1.6;color:#181512}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:1.5rem}</style></head>
+<body>
+<h1>Política de Privacidade — Castros Interiores</h1>
+<p>Este sistema é uma ferramenta interna de gestão da Castros Interiores (atendimento, orçamentos, fabricação, produção e vendas), usada apenas pela equipe da empresa.</p>
+<h2>Quais dados tratamos</h2>
+<p>Dados de contato e conversas de clientes recebidas pelo WhatsApp oficial da empresa (nome, telefone, mensagens trocadas), fotos de produtos e móveis enviadas por clientes ou pela equipe, e dados de pedidos/orçamentos.</p>
+<h2>Como usamos</h2>
+<p>Esses dados são usados exclusivamente para atender pedidos de orçamento, fabricação e reforma de estofados, e para divulgação dos produtos e serviços da empresa. Nunca são vendidos nem compartilhados com terceiros fora das integrações oficiais necessárias (WhatsApp/Meta) para o próprio atendimento.</p>
+<h2>Retenção e exclusão</h2>
+<p>Os dados ficam armazenados enquanto o atendimento/relacionamento com o cliente estiver ativo. Para solicitar exclusão dos seus dados, entre em contato pelo WhatsApp oficial da empresa.</p>
+<h2>Contato</h2>
+<p>Dúvidas sobre esta política: contato via WhatsApp oficial da Castros Interiores.</p>
+</body></html>`);
+  });
+  app.get('/termos', (_req, res) => {
+    res.type('html').send(`<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8"><title>Termos de Serviço — Castros Interiores</title>
+<style>body{font-family:system-ui,sans-serif;max-width:700px;margin:40px auto;padding:0 20px;line-height:1.6;color:#181512}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:1.5rem}</style></head>
+<body>
+<h1>Termos de Serviço — Castros Interiores</h1>
+<p>Este sistema é uma ferramenta interna de gestão da Castros Interiores, empresa de reforma e fabricação de estofados (sofás, poltronas, cadeiras e afins), usada pela própria equipe para atendimento ao cliente, orçamentos, produção e vendas.</p>
+<h2>Uso do atendimento via WhatsApp</h2>
+<p>Ao entrar em contato pelo WhatsApp oficial da Castros Interiores, o cliente concorda em trocar mensagens com a equipe (humana ou assistida por automação) para fins de orçamento, atendimento e acompanhamento do seu pedido.</p>
+<h2>Limitação</h2>
+<p>As informações fornecidas pelo sistema (orçamentos, prazos, condições) estão sujeitas a confirmação final da equipe responsável antes de qualquer compromisso comercial.</p>
+<h2>Contato</h2>
+<p>Dúvidas sobre estes termos: contato via WhatsApp oficial da Castros Interiores.</p>
+</body></html>`);
+  });
+
   // Vite middleware in development or static files in production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
