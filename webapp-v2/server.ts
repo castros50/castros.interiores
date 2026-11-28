@@ -3725,21 +3725,26 @@ async function executeBackgroundTask(
         throw new Error(connCheck.message);
       }
 
+      // A proposta nasce vinculada ao projeto (campanha) da Júlia, não necessariamente
+      // a um item específico da agenda — "Propor Anúncio Pago" (Etapa 11) nunca pede
+      // pra escolher um post exato, só a campanha. O projeto já tem tudo que precisa
+      // (copyText/headline/fotos selecionadas); scheduleItem é só um complemento
+      // opcional (ex.: para o código de referência), quando existir.
+      const project = store.juliaData?.projects.find((p) => p.id === proposal.projectId);
+      if (!project) {
+        proposal.status = 'falhou';
+        proposal.integrationNote =
+          'A campanha vinculada a esta proposta não foi encontrada — pode ter sido removida.';
+        throw new Error(proposal.integrationNote);
+      }
       const scheduleItem = proposal.campaignScheduleItemId
         ? store.juliaData?.campaigns.find((c) => c.id === proposal.campaignScheduleItemId)
         : undefined;
-      if (!scheduleItem) {
-        proposal.status = 'falhou';
-        proposal.integrationNote =
-          'Esta proposta não está vinculada a nenhum item de agenda da Júlia (campanha/post) — não há imagem/texto pra montar o anúncio.';
-        throw new Error(proposal.integrationNote);
-      }
-      const project = scheduleItem.projectId
-        ? store.juliaData?.projects.find((p) => p.id === scheduleItem.projectId)
-        : undefined;
-      const photo = scheduleItem.photoId
-        ? store.juliaData?.photos.find((p) => p.id === scheduleItem.photoId)
-        : undefined;
+
+      const caption = project.copyText || project.adFeedText || scheduleItem?.captionPreview;
+      const headline = project.headline || project.ctaButtonText || scheduleItem?.title || 'Castros Interiores';
+      const photoId = project.selectedPhotoIds?.[0] || scheduleItem?.photoId;
+      const photo = photoId ? store.juliaData?.photos.find((p) => p.id === photoId) : undefined;
       const baseUrl = getPublicBaseUrl();
       if (!baseUrl) {
         proposal.status = 'falhou';
@@ -3748,10 +3753,15 @@ async function executeBackgroundTask(
       }
       if (!photo) {
         proposal.status = 'falhou';
-        proposal.integrationNote = 'Nenhuma foto real vinculada ao item de agenda desta proposta — não é possível criar o anúncio sem imagem.';
+        proposal.integrationNote = 'Nenhuma foto real selecionada nesta campanha — não é possível criar o anúncio sem imagem.';
         throw new Error(proposal.integrationNote);
       }
-      const whatsappPhoneDigits = buildWhatsAppClickDigits(project?.whatsappDirectNumber || store.settings.phoneWhatsapp);
+      if (!caption) {
+        proposal.status = 'falhou';
+        proposal.integrationNote = 'Nenhum texto publicitário encontrado nesta campanha — gere o texto (Etapa 5) antes de propor o anúncio pago.';
+        throw new Error(proposal.integrationNote);
+      }
+      const whatsappPhoneDigits = buildWhatsAppClickDigits(project.whatsappDirectNumber || store.settings.phoneWhatsapp);
       if (!whatsappPhoneDigits) {
         proposal.status = 'falhou';
         proposal.integrationNote =
@@ -3761,11 +3771,11 @@ async function executeBackgroundTask(
 
       const result = await launchMetaPaidAdCampaign({
         proposal,
-        caption: project?.copyText || scheduleItem.captionPreview,
-        headline: project?.ctaButtonText || scheduleItem.title || 'Castros Interiores',
+        caption,
+        headline,
         imagePublicUrl: `${baseUrl}${photo.imageUrl}`,
         whatsappPhoneDigits,
-        referenceCode: scheduleItem.referenceCode,
+        referenceCode: scheduleItem?.referenceCode,
       });
 
       // Guarda qualquer id externo já criado, mesmo em falha parcial (ex.: campanha
