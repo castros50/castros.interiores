@@ -2813,6 +2813,10 @@ async function launchMetaPaidAdCampaign(params: {
     objective: metaObjective,
     status: 'PAUSED',
     special_ad_categories: [],
+    // Exigido pela Graph API quando o orçamento é definido no conjunto de anúncios
+    // (daily_budget/lifetime_budget abaixo), não na campanha — nunca compartilha
+    // orçamento entre conjuntos porque esta automação só cria um conjunto por campanha.
+    is_adset_budget_sharing_enabled: false,
     access_token: token,
   });
   if (!campaignResult.ok) {
