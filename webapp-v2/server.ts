@@ -2695,9 +2695,32 @@ async function metaGraphCreate(path: string, body: Record<string, unknown>): Pro
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = (await resp.json()) as { id?: string; error?: { message?: string } };
+    const data = (await resp.json()) as {
+      id?: string;
+      error?: {
+        message?: string;
+        type?: string;
+        code?: number;
+        error_subcode?: number;
+        error_user_title?: string;
+        error_user_msg?: string;
+        fbtrace_id?: string;
+      };
+    };
     if (!resp.ok || data.error || !data.id) {
-      return { ok: false, errorMessage: data.error?.message || `Falha na Graph API (HTTP ${resp.status}).` };
+      const e = data.error;
+      // A mensagem curta da Meta (ex.: "Invalid parameter") quase nunca diz QUAL
+      // parâmetro — error_user_msg/error_user_title costumam ter o detalhe real
+      // (ex.: qual campo e por quê). Nunca descarta isso, senão cada falha fica
+      // sem pista nenhuma de como corrigir.
+      const parts = [
+        e?.message || `Falha na Graph API (HTTP ${resp.status})`,
+        e?.error_user_title,
+        e?.error_user_msg,
+        e?.code != null ? `código ${e.code}${e.error_subcode != null ? `/${e.error_subcode}` : ''}` : undefined,
+        e?.fbtrace_id ? `fbtrace_id: ${e.fbtrace_id}` : undefined,
+      ].filter(Boolean);
+      return { ok: false, errorMessage: parts.join(' — ') };
     }
     return { ok: true, id: data.id };
   } catch (err) {
