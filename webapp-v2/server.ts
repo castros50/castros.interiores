@@ -2857,24 +2857,39 @@ async function launchMetaPaidAdCampaign(params: {
       )}`
     : `https://wa.me/`; // nunca deveria cair aqui — checado antes de chamar esta função
 
-  const creativeResult = await metaGraphCreate(`${adAccountId}/adcreatives`, {
+  const linkData = {
+    link: ctaLink,
+    message: caption,
+    name: headline,
+    picture: imagePublicUrl,
+    // "LEARN_MORE" é o CTA genérico mais universalmente aceito pra link ads — evita o
+    // formato nativo "Clique para o WhatsApp" da Meta (call_to_action WHATSAPP_MESSAGE),
+    // que exige o número oficial vinculado à Meta Business (ver nota do objetivo acima).
+    call_to_action: { type: 'LEARN_MORE' },
+  };
+  let creativeResult = await metaGraphCreate(`${adAccountId}/adcreatives`, {
     name: `Criativo — ${proposal.id}`,
     object_story_spec: {
       page_id: pageId,
       ...(igBusinessId ? { instagram_actor_id: igBusinessId } : {}),
-      link_data: {
-        link: ctaLink,
-        message: caption,
-        name: headline,
-        picture: imagePublicUrl,
-        // "LEARN_MORE" é o CTA genérico mais universalmente aceito pra link ads — evita o
-        // formato nativo "Clique para o WhatsApp" da Meta (call_to_action WHATSAPP_MESSAGE),
-        // que exige o número oficial vinculado à Meta Business (ver nota do objetivo acima).
-        call_to_action: { type: 'LEARN_MORE' },
-      },
+      link_data: linkData,
     },
     access_token: token,
   });
+  // META_IG_BUSINESS_ACCOUNT_ID pode estar configurado mas não ser reconhecido pela
+  // Graph API pra esta conta de anúncios específica (ex.: Instagram ainda não
+  // vinculado corretamente a este Business Manager) — nesse caso específico,
+  // tenta de novo sem o Instagram em vez de falhar a campanha inteira; o anúncio
+  // ainda roda normalmente, só que sem posicionamento explícito no Instagram.
+  let instagramSkipped = false;
+  if (!creativeResult.ok && igBusinessId && /instagram_actor_id/i.test(creativeResult.errorMessage)) {
+    instagramSkipped = true;
+    creativeResult = await metaGraphCreate(`${adAccountId}/adcreatives`, {
+      name: `Criativo — ${proposal.id}`,
+      object_story_spec: { page_id: pageId, link_data: linkData },
+      access_token: token,
+    });
+  }
   if (!creativeResult.ok) {
     return {
       ok: false,
@@ -2907,6 +2922,9 @@ async function launchMetaPaidAdCampaign(params: {
     note: [
       'Campanha criada com SUCESSO na Meta — em modo PAUSADO. Revise segmentação (hoje só "Brasil", o texto de público-alvo descrito não foi aplicado automaticamente), imagem e texto no Gerenciador de Anúncios da Meta antes de ativar.',
       objectiveNote,
+      instagramSkipped
+        ? 'O Instagram configurado (META_IG_BUSINESS_ACCOUNT_ID) não foi aceito pela Meta para esta conta de anúncios — o criativo foi criado só para Facebook. Confira em Configurações da Empresa > Contas do Instagram se essa conta está corretamente vinculada ao Business Manager.'
+        : undefined,
     ]
       .filter(Boolean)
       .join(' '),
