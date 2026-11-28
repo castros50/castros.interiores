@@ -264,6 +264,18 @@ function normalizePhoneDigits(phone: string | undefined | null): string {
   return (phone || '').replace(/\D/g, '');
 }
 
+// Proteção contra vazamento de sintaxe de chamada de ferramenta/parâmetro bruta
+// dentro do texto de resposta da IA — mesmo com responseSchema restringindo a
+// estrutura (JSON válido), o modelo às vezes "aluciona" esse formato dentro do
+// próprio valor de uma string (ex.: "...resposta normal</parameter>\n<parameter
+// name=\"hasAgentRelay\">true"). Corta tudo a partir do primeiro sinal desse
+// vazamento — nunca mostra esse lixo pro operador nem, pior, pro cliente real
+// no WhatsApp.
+function sanitizeAiReplyText(text: string): string {
+  const match = text.match(/<\/?parameter\b/i);
+  return typeof match?.index === 'number' ? text.slice(0, match.index).trim() : text;
+}
+
 function findClientByPhoneOrName(
   clients: ClientRecord[],
   phone: string | undefined,
@@ -2533,7 +2545,10 @@ function validateAndCoerceCarlaWhatsAppOutput(
   // Não dá pra encaminhar sem saber se é reforma ou fabricação nova.
   const readyForHandoff = Boolean(parsed.readyForHandoff) && requestTypeDetected !== 'indefinido';
 
-  let replyText = typeof parsed.replyText === 'string' && parsed.replyText.trim() ? parsed.replyText.trim() : '';
+  let replyText =
+    typeof parsed.replyText === 'string' && parsed.replyText.trim()
+      ? sanitizeAiReplyText(parsed.replyText.trim())
+      : '';
   let priceOverrideApplied = false;
   if (!replyText || (CURRENCY_MENTION_PATTERN.test(replyText) && !hasConfirmedPrice)) {
     priceOverrideApplied = Boolean(replyText) && !hasConfirmedPrice;
@@ -12599,7 +12614,9 @@ DIRETRIZES DE RESPOSTA:
 
       const parsed = JSON.parse(response.text || '{}');
       const replyText =
-        parsed.replyText ||
+        (typeof parsed.replyText === 'string' && parsed.replyText.trim()
+          ? sanitizeAiReplyText(parsed.replyText.trim())
+          : '') ||
         `Entendido. Estou à disposição na mesa de ${meta.name} para prosseguir com os trabalhos.`;
 
       let actionProposal: AgentActionProposal | undefined;
@@ -12916,7 +12933,9 @@ INSTRUÇÕES ESPECIAIS:
 
       const parsed = JSON.parse(response.text || '{}');
       const replyText =
-        parsed.replyText ||
+        (typeof parsed.replyText === 'string' && parsed.replyText.trim()
+          ? sanitizeAiReplyText(parsed.replyText.trim())
+          : '') ||
         'Perfeito! Registrei sua orientação aqui no departamento de Marketing, Publicidade e Divulgação.';
 
       const juliaMsg: JuliaVoiceTextMessage = {
